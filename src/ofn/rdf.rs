@@ -1307,8 +1307,14 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
     fn header(&mut self, ontology: Span) -> M<Node> {
         let v = self.v;
         let kw = self.source.ontology_keyword(ontology);
-        let last = self.doc.version_iri.or(self.doc.ontology_iri);
-        let end = last.map_or(kw.end, |i| self.span(i).end);
+        // To the later of the two IRIs: OWL/XML may write the version IRI
+        // first, as an attribute of the root.
+        let end = [self.doc.ontology_iri, self.doc.version_iri]
+            .into_iter()
+            .flatten()
+            .map(|i| self.span(i).end)
+            .max()
+            .unwrap_or(kw.end);
         self.statements.push(Statement {
             span: Span::new(ontology.start, end),
             subject: None,

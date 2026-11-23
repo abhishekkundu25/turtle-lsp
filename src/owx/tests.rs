@@ -388,7 +388,8 @@ fn the_header_its_iris_and_its_statement() {
     );
     assert_eq!(statements(&text, &p)[0], ("<Ontology", None));
     // The version IRI first in the tag: the references in text order, the
-    // statement to the end of the version IRI.
+    // statement to the end of the later IRI, so it holds its subject (found
+    // by the OWL/XML chaos shards).
     let text = format!("{start} versionIRI=\"{v}\" ontologyIRI=\"{o}\"{tail}");
     let p = clean(&text);
     let theirs = functional(&format!(
@@ -399,11 +400,10 @@ fn the_header_its_iris_and_its_statement() {
         refs(&text, &p)[..2],
         [(v, v, Object, IRI), (o, o, Subject, IRI)]
     );
-    assert!(
-        statements(&text, &p)[0]
-            .0
-            .ends_with(&format!("versionIRI=\"{v}"))
-    );
+    let (header, subject) = statements(&text, &p)[0];
+    assert!(header.ends_with(&format!("ontologyIRI=\"{o}")), "{header}");
+    assert!(header.contains(&format!("versionIRI=\"{v}\"")), "{header}");
+    assert_eq!(subject, Some(o));
 }
 
 #[test]
