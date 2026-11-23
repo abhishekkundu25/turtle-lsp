@@ -1,0 +1,12 @@
+ <DatatypeDefinition>
+    <Datatype IRI="personAge"/>
+    <DatatypeRestriction>
+       <Datatype IRI="http://www.w3.org/2001/XMLSchema#integer"/>
+       <FacetRestriction facet="http://www.w3.org/2001/XMLSchema#minInclusive">
+         <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">0</Literal>
+       </FacetRestriction>
+       <FacetRestriction facet="http://www.w3.org/2001/XMLSchema#maxInclusive">
+         <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">150</Literal>
+       </FacetRestriction>
+    </DatatypeRestriction>
+  </DatatypeDefinition>

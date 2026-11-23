@@ -1,0 +1,7 @@
+ <ClassAssertion>
+   <ObjectMaxCardinality cardinality="4">
+     <ObjectProperty IRI="hasChild"/>
+     <Class IRI="Parent"/>
+   </ObjectMaxCardinality>
+   <NamedIndividual IRI="John"/>
+ </ClassAssertion>

@@ -11,9 +11,12 @@ Copied without the generated reports so the conformance tests run offline.
 | `shacl/core/` (SHACL Core) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/core`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 | `shacl/sparql/` (SHACL-SPARQL) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/sparql`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 | `owl2/` (OWL 2 Functional-Style Syntax: the 78 Functional texts of the approved OWL 2 test cases, one file each, the 57 RDF/XML texts of the same ontologies, and their `MANIFEST.tsv`) | https://www.w3.org/2009/11/owl-test/all.rdf (the W3C archive of the OWL 2 Test Case Repository) | `Last-Modified` 2009-11-18, sha256 `5383f1ddf4cf2f03703a2f886f41d4e5bc375633a1cfa94a03254fd89330f8bb` |
+| `owl2-primer/` (OWL 2 XML Serialization: the OWL/XML and Functional texts of the 59 examples of the OWL 2 Primer, the RDF/XML and Turtle texts of its appendix ontology, 120 files, and their `MANIFEST.tsv`) | https://www.w3.org/TR/2012/REC-owl2-primer-20121211/ (W3C Recommendation 11 December 2012) | fetched 2026-11-23, sha256 `e64c94d2900e24142940cd45126651082f8e9a23e23396899f39ce4be9543630` |
 
 Each directory keeps its upstream licence (`LICENSE.md`); `owl2/` is
-CC BY 3.0, with its authors named per file.
+CC BY 3.0, with its authors named per file; `owl2-primer/` is under the
+W3C Document License, and its `LICENSE.md` says how the texts were taken
+from the HTML.
 
 ## OWL 2 Functional-Style Syntax
 
@@ -34,6 +37,60 @@ an RDF/XML text of the same ontology (`owl2/rdfxml/`, the rows flagged
 missing triple, a `differentFrom` pair the other way, a list ended with
 the `rdf:` namespace IRI instead of `rdf:nil`), each listed with the edit
 that makes them agree, which the test checks.
+
+## OWL 2 XML Serialization (OWL/XML)
+
+The test-case archive of `owl2/` has no OWL/XML text. It holds 489 test
+cases and 811 ontology texts: 103 Functional (`test:fsPremiseOntology`,
+`test:fsConclusionOntology`, `test:fsNonConclusionOntology`) and 708
+RDF/XML (`test:rdfXmlPremiseOntology`, `test:rdfXmlConclusionOntology`,
+`test:rdfXmlNonConclusionOntology`, `test:rdfXmlInputOntology`); no
+property holds any other syntax, no `test:normativeSyntax` is other than
+`FUNCTIONAL` or `RDFXML`, and the string "OWL/XML" does not occur in it.
+The W3C OWL/XML texts are those of the OWL 2 Primer, in `owl2-primer/`.
+
+`tests/owx_oracle.rs` reads them through `Analysis`. Two things are done to
+the texts in memory, the files staying verbatim: each U+00A0 in a
+Functional or Turtle text (357 and 103 of them, each before a `:` or `;`,
+where the HTML writes a space as `&nbsp;`) is read as a space; and each
+known difference is corrected by its edit (`KNOWN`, 35 edits, each with the
+sentence of the Primer or of the specifications that decides it). 32 of
+them are faults of the texts; 3 are not (see 59 below). The test
+checks that each edit applies once and is needed: with any one left out,
+the texts do not agree.
+
+- `the_primer_s_examples_agree_between_owl_xml_and_functional`: each
+  example's OWL/XML text and Functional text, put inside the header of the
+  appendix ontology in their syntax (its prefixes, `xml:base` and
+  entities; a prefix the example declares itself left out of the header,
+  as in example 52), or read as they are for the three whole documents
+  (50, 51, 59), parse with no error to isomorphic graphs. Result: 51 of
+  59 as they are (50, and 52 with that prefix left out); the other 8 with
+  their edits. 22: `Happy` for
+  `HappyPerson` in the OWL/XML. 49: quotes inside the OWL/XML `Literal`.
+  50 and 51: `...` for the elided parts, in both texts. 56, 57, 58:
+  `DisjointClasses` with Father before Mother in the OWL/XML, a different
+  `owl:members` list. 59: the same two OWL/XML faults, a declaration of
+  `Meg` only in the OWL/XML, and axioms written twice (a property chain in
+  the OWL/XML, an `EquivalentClasses` in both). An axiom written twice is
+  not a fault of the text: it is one axiom of the ontology, but
+  turtle-lsp maps each axiom as written, in Functional syntax as in
+  OWL/XML, so its graph has two blank-node copies. Whether the mapping
+  should merge them is open.
+- `the_primer_s_ontology_is_one_graph_in_four_syntaxes`: the appendix
+  ontology in OWL/XML, Functional syntax, RDF/XML and Turtle parses with
+  no error once edited (the Turtle text as given does not parse: a `.`
+  inside `[ ]`). The OWL/XML, Functional and RDF/XML texts give one graph
+  of 315 triples, the RDF/XML with 14 edits (19 declarations it lacks, 2
+  it has, `owl:DataProperty`, two typed inverse properties, six literals
+  with the element's white space, two classes as `owl:AllDisjointClasses`
+  instead of `owl:disjointWith`). The Turtle is not the same ontology: it
+  leaves out 61 of the graph's statements (40 declarations, 21 axioms).
+  With 6 edits, everything it says is in the graph, and what it leaves out
+  is pinned (count and fingerprint). The RDF/XML and Turtle graphs are also
+  those of oxrdfxml and oxttl.
+- `the_primer_s_manifest_names_every_file`: `MANIFEST.tsv` and the files
+  agree.
 
 ## RDF/XML 1.1
 

@@ -1,0 +1,5 @@
+ SubClassOf( 
+   Annotation( rdfs:comment "States that every man is a person." )
+   :Man 
+   :Person 
+ )

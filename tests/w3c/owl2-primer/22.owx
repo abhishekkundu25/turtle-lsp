@@ -1,0 +1,7 @@
+ <EquivalentClasses>
+   <Class IRI="HappyPerson"/>
+   <ObjectAllValuesFrom>
+     <ObjectProperty IRI="hasChild"/>
+     <Class IRI="Happy"/>
+   </ObjectAllValuesFrom>
+ </EquivalentClasses>

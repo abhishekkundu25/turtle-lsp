@@ -1,0 +1,4 @@
+ ClassAssertion(
+   ObjectMinCardinality( 2 :hasChild :Parent ) 
+   :John
+ )

@@ -1,0 +1,4 @@
+ <DisjointObjectProperties>
+   <ObjectProperty IRI="hasParent"/>
+   <ObjectProperty IRI="hasSpouse"/>
+ </DisjointObjectProperties>

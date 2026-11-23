@@ -1,0 +1,7 @@
+ EquivalentClasses(
+   :Orphan
+   ObjectAllValuesFrom(
+     ObjectInverseOf( :hasChild )
+     :Dead
+   )
+ ) 

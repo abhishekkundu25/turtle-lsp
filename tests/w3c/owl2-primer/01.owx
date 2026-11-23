@@ -1,0 +1,4 @@
+ <ClassAssertion>
+    <Class IRI="Person"/>
+    <NamedIndividual IRI="Mary"/>
+ </ClassAssertion>

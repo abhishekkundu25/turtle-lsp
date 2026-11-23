@@ -1,0 +1,7 @@
+ <ClassAssertion>
+   <ObjectMinCardinality cardinality="2">
+     <ObjectProperty IRI="hasChild"/>
+     <Class IRI="Parent"/>
+   </ObjectMinCardinality>
+   <NamedIndividual IRI="John"/>
+ </ClassAssertion>

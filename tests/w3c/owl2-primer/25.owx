@@ -1,0 +1,6 @@
+ <EquivalentClasses>
+   <Class IRI="NarcisticPerson"/>
+   <ObjectHasSelf>
+     <ObjectProperty IRI="loves"/>
+   </ObjectHasSelf>
+ </EquivalentClasses>

@@ -1,0 +1,4 @@
+ <SubObjectPropertyOf>
+   <ObjectProperty IRI="hasWife"/>
+   <ObjectProperty IRI="hasSpouse"/>
+ </SubObjectPropertyOf>

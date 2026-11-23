@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :HappyPerson 
+   ObjectAllValuesFrom( :hasChild :HappyPerson )
+ )

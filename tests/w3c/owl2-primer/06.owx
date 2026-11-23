@@ -1,0 +1,4 @@
+ <DisjointClasses>
+     <Class IRI="Woman"/>
+     <Class IRI="Man"/>
+ </DisjointClasses>

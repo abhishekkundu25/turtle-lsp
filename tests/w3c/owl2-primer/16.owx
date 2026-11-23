@@ -1,0 +1,7 @@
+ <EquivalentClasses>
+   <Class IRI="Mother"/>
+   <ObjectIntersectionOf>
+     <Class IRI="Woman"/>
+     <Class IRI="Parent"/>
+   </ObjectIntersectionOf>
+ </EquivalentClasses>

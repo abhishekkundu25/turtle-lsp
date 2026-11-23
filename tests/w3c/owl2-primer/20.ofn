@@ -1,0 +1,7 @@
+ ClassAssertion(
+   ObjectIntersectionOf(
+     :Person 
+     ObjectComplementOf( :Parent )
+   ) 
+   :Jack
+ )

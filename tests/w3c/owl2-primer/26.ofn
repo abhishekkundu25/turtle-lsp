@@ -1,0 +1,4 @@
+ ClassAssertion(
+   ObjectMaxCardinality( 4 :hasChild :Parent ) 
+   :John
+ )

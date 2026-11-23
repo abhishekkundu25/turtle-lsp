@@ -1,0 +1,4 @@
+ <SubClassOf>
+   <Class IRI="Mother"/>
+   <Class IRI="Woman"/>
+ </SubClassOf>

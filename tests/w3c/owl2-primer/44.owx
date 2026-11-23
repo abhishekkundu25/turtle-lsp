@@ -1,0 +1,9 @@
+ <DatatypeDefinition>
+    <Datatype IRI="majorAge"/>
+    <DataIntersectionOf>
+       <Datatype IRI="personAge"/>
+       <DataComplementOf>
+         <Datatype IRI="minorAge"/>
+       </DataComplementOf>
+    </DataIntersectionOf>
+  </DatatypeDefinition>

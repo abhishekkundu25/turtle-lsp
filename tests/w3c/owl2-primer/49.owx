@@ -1,0 +1,8 @@
+ <SubClassOf>
+   <Annotation>
+       <AnnotationProperty IRI="&rdfs;comment"/>
+       <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#string">"States that every man is a person."</Literal>
+   </Annotation>
+   <Class IRI="Man"/>
+   <Class IRI="Person"/>
+ </SubClassOf>

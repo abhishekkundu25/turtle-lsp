@@ -1,0 +1,8 @@
+ Prefix(:=<http://example.com/owl/families/>)
+ Prefix(otherOnt:=<http://example.org/otherOntologies/families/>)
+ Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+ 
+ Ontology(<http://example.com/owl/families>
+    ...
+ )

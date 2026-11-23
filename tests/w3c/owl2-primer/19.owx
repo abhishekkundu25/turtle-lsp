@@ -1,0 +1,7 @@
+ <SubClassOf>
+   <Class IRI="Grandfather"/>
+   <ObjectIntersectionOf>
+     <Class IRI="Man"/>
+     <Class IRI="Parent"/>
+   </ObjectIntersectionOf>
+ </SubClassOf>

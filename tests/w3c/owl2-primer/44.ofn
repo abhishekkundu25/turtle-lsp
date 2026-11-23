@@ -1,0 +1,7 @@
+ DatatypeDefinition(
+   :majorAge
+   DataIntersectionOf(
+     :personAge 
+     DataComplementOf( :minorAge ) 
+   ) 
+ ) 

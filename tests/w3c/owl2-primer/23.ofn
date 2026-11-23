@@ -1,0 +1,7 @@
+ EquivalentClasses(
+   :HappyPerson 
+   ObjectIntersectionOf(
+     ObjectAllValuesFrom( :hasChild :HappyPerson )
+     ObjectSomeValuesFrom( :hasChild :HappyPerson )
+   )
+ )

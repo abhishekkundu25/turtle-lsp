@@ -1,0 +1,5 @@
+ <DataPropertyAssertion>
+   <DataProperty IRI="hasAge"/>
+   <NamedIndividual IRI="John"/>
+   <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">51</Literal>
+ </DataPropertyAssertion>

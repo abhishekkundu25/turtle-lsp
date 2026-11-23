@@ -1,0 +1,7 @@
+ <EquivalentClasses>
+   <Class IRI="Parent"/>
+   <ObjectSomeValuesFrom>
+     <ObjectProperty IRI="hasChild"/>
+     <Class IRI="Person"/>
+   </ObjectSomeValuesFrom>
+ </EquivalentClasses>
