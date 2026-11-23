@@ -528,18 +528,18 @@ mod tests {
     #[test]
     fn an_owl_xml_ontology_serves_the_turtle_files_that_use_it() {
         let onto = r#"<?xml version="1.0"?>
-<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/onto">
-<Prefix name="ex" IRI="http://example.org/"/>
-<Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
-<Declaration><Class abbreviatedIRI="ex:Widget"/></Declaration>
-<Declaration><Class abbreviatedIRI="ex:Gadget"/></Declaration>
-<Declaration><Class abbreviatedIRI="ex:Part"/></Declaration>
-<Declaration><ObjectProperty abbreviatedIRI="ex:hasPart"/></Declaration>
-<AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>ex:Widget</AbbreviatedIRI><Literal xml:lang="en">Widget</Literal></AnnotationAssertion>
-<SubClassOf><Class abbreviatedIRI="ex:Gadget"/><Class abbreviatedIRI="ex:Widget"/></SubClassOf>
-<SubClassOf><Class abbreviatedIRI="ex:Widget"/><ObjectSomeValuesFrom><ObjectProperty abbreviatedIRI="ex:hasPart"/><Class abbreviatedIRI="ex:Part"/></ObjectSomeValuesFrom></SubClassOf>
-</Ontology>
-"#;
+            <Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/onto">
+            <Prefix name="ex" IRI="http://example.org/"/>
+            <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+            <Declaration><Class abbreviatedIRI="ex:Widget"/></Declaration>
+            <Declaration><Class abbreviatedIRI="ex:Gadget"/></Declaration>
+            <Declaration><Class abbreviatedIRI="ex:Part"/></Declaration>
+            <Declaration><ObjectProperty abbreviatedIRI="ex:hasPart"/></Declaration>
+            <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>ex:Widget</AbbreviatedIRI><Literal xml:lang="en">Widget</Literal></AnnotationAssertion>
+            <SubClassOf><Class abbreviatedIRI="ex:Gadget"/><Class abbreviatedIRI="ex:Widget"/></SubClassOf>
+            <SubClassOf><Class abbreviatedIRI="ex:Widget"/><ObjectSomeValuesFrom><ObjectProperty abbreviatedIRI="ex:hasPart"/><Class abbreviatedIRI="ex:Part"/></ObjectSomeValuesFrom></SubClassOf>
+            </Ontology>
+        "#;
         an_ontology_serves_the_turtle_files_that_use_it(
             "owl-xml",
             onto,
