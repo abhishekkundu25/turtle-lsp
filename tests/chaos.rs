@@ -1,8 +1,8 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
 //! Takes real Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with
-//! embedded SPARQL among them), JSON-LD and RDF/XML documents and SPARQL
-//! queries and updates, mutates them thousands of times (cuts, unbalanced brackets, stray
+//! embedded SPARQL among them), JSON-LD, RDF/XML and OWL Functional
+//! documents and SPARQL queries and updates, mutates them thousands of times (cuts, unbalanced brackets, stray
 //! quotes, multi-byte characters, CRLF and lone CR, truncation, repeated
 //! brackets, huge tokens) and runs the parser and every editor feature on each
 //! result at random positions in both position encodings. Any panic, and any
@@ -855,11 +855,12 @@ fn fix_all_leaves_rdf_xml(rng: &mut Rng, name: &str, text: &str) {
     };
     let file = batch::BatchFile::named(name, text.to_string(), false);
     let out = batch::fix_all(&[file], &Settings::default(), unsafe_too);
-    if Syntax::of(None, name, text) == Syntax::RdfXml {
+    let syntax = Syntax::of(None, name, text);
+    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
         let after = &out.files[0].text;
         assert!(
             after == text,
-            "fix all changed an RDF/XML text: {}",
+            "fix all changed an {syntax:?} text: {}",
             first_difference(text, after)
         );
     }
@@ -1335,6 +1336,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::NQuads => "file:///chaos/doc.nq",
         Syntax::JsonLd => "file:///chaos/doc.jsonld",
         Syntax::RdfXml => "file:///chaos/doc.rdf",
+        Syntax::OwlFunctional => "file:///chaos/doc.ofn",
     }
 }
 
@@ -1442,12 +1444,12 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
 }
 
 /// `text` parsed with its own frontend: JSON-LD with no remote contexts,
-/// RDF/XML (through an analysis, against `base` or the document's URL), the
-/// Turtle family with `prefixes` from outside.
+/// RDF/XML and OWL Functional syntax (through an analysis, against `base` or
+/// the document's URL), the Turtle family with `prefixes` from outside.
 fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
     match syntax {
         Syntax::JsonLd => jsonld::parse(text, base, &jsonld::NoNetwork::default()),
-        Syntax::RdfXml => {
+        Syntax::RdfXml | Syntax::OwlFunctional => {
             let uri = base.unwrap_or(doc_uri(syntax)).to_string();
             let external = Arc::new(prefixes.clone());
             Analysis::with_syntax(uri, text, external, false, syntax).parsed
@@ -1461,10 +1463,19 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     let p = parse_doc(text, syntax, None, &PrefixMap::default());
     spans_are_inside(text, &p);
     // RDF/XML's blank nodes are numbered, not named at random: a second read
-    // gives the same parse.
-    if syntax == Syntax::RdfXml {
+    // gives the same parse. So does OWL Functional syntax's.
+    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
         let again = parse_doc(text, syntax, None, &PrefixMap::default());
-        assert!(p == again, "two reads of one RDF/XML text differ");
+        assert!(p == again, "two reads of one {syntax:?} text differ");
+    }
+    // An OWL Functional parse holds its errors and nothing else.
+    if syntax == Syntax::OwlFunctional {
+        assert!(p.triples.is_empty() && p.refs.is_empty() && p.statements.is_empty());
+        assert!(
+            p.errors.iter().all(|e| e.code == "ofn-syntax"),
+            "{:?}",
+            p.errors
+        );
     }
 
     // Import sources: catalogs and RDF/XML come from outside too.
@@ -1534,12 +1545,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // nothing to format when empty.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    // RDF/XML is never formatted.
+    // RDF/XML and OWL Functional syntax are never formatted.
     let refused = match syntax {
         Syntax::JsonLd => {
             a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()
         }
-        Syntax::RdfXml => true,
+        Syntax::RdfXml | Syntax::OwlFunctional => true,
         _ => a
             .parsed
             .errors
@@ -1682,7 +1693,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     };
     let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
     let name = format!("doc.{}", extension(syntax));
-    if syntax == Syntax::RdfXml {
+    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
         fix_all_leaves_rdf_xml(rng, &name, text);
     } else {
         fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
@@ -1891,6 +1902,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::NQuads => "nq",
         Syntax::JsonLd => "jsonld",
         Syntax::RdfXml => "rdf",
+        Syntax::OwlFunctional => "ofn",
     }
 }
 
@@ -3019,6 +3031,185 @@ fn mutated_rdfxml(k: usize) {
     }
 }
 
+/// OWL Functional documents to mutate: a head as OWL API writes it with an
+/// axiom of each kind, the W3C test inputs, and shapes the mutations cut.
+fn functional_corpus() -> Vec<String> {
+    let mut out: Vec<String> = [
+        "",
+        "Ontology()",
+        "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\n)",
+        "Ontology(SubClassOf(Annotation(Annotation(rdfs:comment \"why\") rdfs:label \"a\"@en) <http://example.org/A> ObjectComplementOf(ObjectComplementOf(<http://example.org/B>))))",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    out.push(FUNCTIONAL_AXIOMS.to_string());
+    for path in sorted_files(&root().join("tests/w3c/owl2/fs"), false) {
+        out.push(fs::read_to_string(path).unwrap());
+    }
+    out
+}
+
+/// One axiom of each kind, in the head OWL API writes.
+const FUNCTIONAL_AXIOMS: &str = "Prefix(:=<http://example.org/o#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+
+Ontology(<http://example.org/o>
+<http://example.org/o/1.0>
+Import(<http://example.org/i>)
+Annotation(rdfs:label \"o\"@en)
+
+# Class: :A (a thing)
+
+Declaration(Class(:A))
+Declaration(ObjectProperty(:p))
+Declaration(DataProperty(:dp))
+Declaration(NamedIndividual(:i))
+AnnotationAssertion(rdfs:label :A \"a \\\"thing\\\"\"@en)
+SubClassOf(:A ObjectIntersectionOf(:B ObjectSomeValuesFrom(:p ObjectUnionOf(:C ObjectOneOf(:i _:j)))))
+EquivalentClasses(:A ObjectMinCardinality(1 :p :B) DataHasValue(:dp \"1\"^^xsd:integer))
+DisjointUnion(:A :B :C)
+SubObjectPropertyOf(ObjectPropertyChain(:p ObjectInverseOf(:q)) :r)
+DataPropertyRange(:dp DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer))
+DatatypeDefinition(:dt DataUnionOf(xsd:string DataOneOf(\"a\" \"b\")))
+HasKey(:A (:p) (:dp))
+ClassAssertion(:A :i)
+NegativeDataPropertyAssertion(:dp :i \"x\")
+DLSafeRule(Body(ClassAtom(:A Variable(:x)))Head(ClassAtom(:B Variable(:x))))
+)
+";
+
+const FUNCTIONAL_SNIPPETS: &[&str] = &[
+    "(",
+    ")",
+    "((",
+    "))",
+    "\"",
+    "\\",
+    "<",
+    ">",
+    "^^",
+    "^",
+    "@",
+    "@en",
+    "_:",
+    ":",
+    "=",
+    "#",
+    "Prefix(",
+    "Ontology(",
+    "SubClassOf(",
+    "ObjectIntersectionOf(",
+    "Annotation(",
+    "DLSafeRule(Body(",
+    "HasKey(:A () ())",
+    "-1",
+    "10abc",
+    "é",
+    "😀",
+    "\n",
+    "\r",
+    " ",
+];
+
+#[test]
+fn mutated_functional_never_panics_1() {
+    mutated_functional(0);
+}
+
+#[test]
+fn mutated_functional_never_panics_2() {
+    mutated_functional(1);
+}
+
+#[test]
+fn mutated_functional_never_panics_3() {
+    mutated_functional(2);
+}
+
+#[test]
+fn mutated_functional_never_panics_4() {
+    mutated_functional(3);
+}
+
+/// Mutated OWL Functional documents through every feature, as a `.ofn`
+/// file; one in four is also edited as LSP changes and checked against a
+/// fresh open, with the document named `.owl` one time in two, so the
+/// syntax its text gives is decided again at each change.
+fn mutated_functional(k: usize) {
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 1200usize);
+    let seeds = functional_corpus();
+    // The workspace the document joins: some of the Turtle fixtures.
+    let docs: Vec<(String, Syntax)> = corpus()
+        .into_iter()
+        .filter(|(t, _)| t.len() < 20_000)
+        .step_by(3)
+        .collect();
+    let mut base = knowledge_of(&docs);
+    let mut dog = Watchdog::new("functional", seed, iters);
+    for i in iterations(iters, k) {
+        let mut rng = Rng::at(seed, i);
+        let source = &seeds[rng.below(seeds.len())];
+        let text = mutate_with(&mut rng, source, FUNCTIONAL_SNIPPETS, true, Lexer::Turtle);
+        let edits = rng.below(4) == 0;
+        let as_owl = rng.below(2) == 0;
+        dog.start(i, &text, "ofn");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exercise(
+                &mut Rng(seed ^ i as u64 ^ 0x0F17),
+                &text,
+                Syntax::OwlFunctional,
+                &mut base,
+            );
+            if !edits {
+                return Ok(());
+            }
+            let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
+            let mut e = Edited::new(source, Some(enc));
+            let mut batches = Vec::new();
+            for _ in 0..1 + rng.below(4) {
+                for _ in 0..1 + rng.below(4) {
+                    mutation(&mut rng, &mut e, FUNCTIONAL_SNIPPETS, true, Lexer::Turtle);
+                }
+                let analyse = rng.below(2) == 0;
+                batches.push(Batch {
+                    changes: e.take(),
+                    analyse,
+                });
+            }
+            // An `.owl` name: its syntax comes from its text at each change.
+            let syntax = if as_owl {
+                Syntax::RdfXml
+            } else {
+                Syntax::OwlFunctional
+            };
+            match oracle::check(syntax, source, batches, enc) {
+                Err(diff) => Err(format!("differs from a fresh open ({enc:?}): {diff}")),
+                Ok(report) if report.text != e.text => Err(format!(
+                    "the edits left another text than the mutations ({enc:?}): {}",
+                    first_difference(&e.text, &report.text)
+                )),
+                Ok(_) => Ok(()),
+            }
+        }));
+        let why = match r {
+            Ok(Ok(())) => continue,
+            Ok(Err(why)) => why,
+            Err(e) => panic_message(&*e),
+        };
+        panic!(
+            "{}",
+            failure_report("functional", seed, iters, i, "ofn", &text, &why)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pathological inputs: written down, not found by chance.
 
@@ -3200,6 +3391,82 @@ fn pathological_huge_tokens() {
         Syntax::JsonLd,
         Duration::from_secs(10),
     );
+}
+
+/// OWL Functional syntax: 100,000 levels of class expressions, of
+/// annotations and of bare parentheses are one error each, and tokens of a
+/// megabyte are read once, through the analysis and every feature.
+#[test]
+fn pathological_functional() {
+    const N: usize = 100_000;
+    let mb = 1 << 20;
+    let long = "a".repeat(mb);
+    let ontology = |body: String| format!("Prefix(:=<http://e/>)\nOntology({body}\n)\n");
+    let cases = [
+        (
+            "nested class expressions",
+            ontology(format!(
+                "SubClassOf(:A {}:B{})",
+                "ObjectComplementOf(".repeat(N),
+                ")".repeat(N)
+            )),
+        ),
+        (
+            "nested annotations",
+            ontology(format!(
+                "SubClassOf({}rdfs:label \"x\"{} :A :B)",
+                "Annotation(".repeat(N),
+                ")".repeat(N)
+            )),
+        ),
+        ("open parentheses", ontology("(".repeat(N))),
+        (
+            "closed parentheses",
+            ontology(format!("{}{}", "(".repeat(N), ")".repeat(N))),
+        ),
+        (
+            "unclosed axioms",
+            ontology("SubClassOf(ObjectComplementOf(\n".repeat(N / 10)),
+        ),
+        ("IRI", ontology(format!("SubClassOf(<http://e/{long}> :B)"))),
+        (
+            "unclosed IRI",
+            ontology(format!("SubClassOf(<http://e/{long}")),
+        ),
+        (
+            "string",
+            ontology(format!("AnnotationAssertion(rdfs:label :A \"{long}\")")),
+        ),
+        (
+            "unclosed string",
+            ontology(format!("AnnotationAssertion(rdfs:label :A \"{long}")),
+        ),
+        (
+            "escapes",
+            ontology(format!(
+                "AnnotationAssertion(rdfs:label :A \"{}\")",
+                "\\x".repeat(mb / 2)
+            )),
+        ),
+        ("local name", ontology(format!("SubClassOf(:{long} :B)"))),
+        ("word", ontology(long.clone())),
+        (
+            "language tag",
+            ontology(format!("AnnotationAssertion(rdfs:label :A \"x\"@{long})")),
+        ),
+        (
+            "comment",
+            ontology(format!("# {long}\nDeclaration(Class(:A))")),
+        ),
+        ("node ID", ontology(format!("ClassAssertion(:A _:{long})"))),
+        (
+            "errors",
+            ontology("SubClassOf(nope:A nope:B)\n".repeat(N / 4)),
+        ),
+    ];
+    for (what, text) in cases {
+        survive(what, text, Syntax::OwlFunctional, Duration::from_secs(10));
+    }
 }
 
 /// [`survive`] for a SPARQL query.

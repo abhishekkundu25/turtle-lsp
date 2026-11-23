@@ -15,6 +15,7 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `ide`, `analysis`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis` |
 | `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner, with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term | `analysis`, `imports` |
+| `ofn` | OWL 2 Functional-Style Syntax: a lexer, the grammar of the OWL 2 specification into a flat tree with the exact span of every construct, read on past each error to the next axiom; its parse holds the errors only (no triples yet) | `analysis` |
 | `analysis` | One document's parse, positions and per-IRI indexes | `features`, `ide`, `server` |
 | `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `server`, `ide`, `batch`, `cli`, `features`, `diagnose`, `imports`, `jsonld` |
 | `knowledge` | What the workspace says about each IRI | `features` |
@@ -40,13 +41,14 @@ page follows; the module docs (`//!` at the top of each file) say the rest.
 Core code never names `extensions`, except the router in `server` and the
 Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
 `sparql::spargebra_input` name no module outside that set, and `syntax` and
-the lexer name only `syntax`. The RDF/XML frontend `rdfxml` names only
-`syntax`, so it can move with the parsers. The `boundaries` test in
+the lexer name only `syntax`. The RDF/XML frontend `rdfxml` and the OWL
+Functional frontend `ofn` name only `syntax`, so they can move with the
+parsers. The `boundaries` test in
 `src/lib.rs` checks these rules.
 
-Ten modules are private to the crate: `commands`, `diagnose`,
-`extensions`, `fetch`, `ide`, `layout`, `rdfxml`, `reasoning`, `vocab` and
-`workspace`. The others are public because a consumer uses them: the
+Eleven modules are private to the crate: `commands`, `diagnose`,
+`extensions`, `fetch`, `ide`, `layout`, `ofn`, `rdfxml`, `reasoning`,
+`vocab` and `workspace`. The others are public because a consumer uses them: the
 browser engine, the examples, the integration tests or `src/main.rs`. The
 "Public interface" section of the crate doc lists every path those
 consumers use, one per line, as a doctest, so
@@ -64,7 +66,8 @@ Inside the larger modules, these files hold one part each:
 | `src/syntax/splice.rs` | The statement splice: the parse after one edit, from the parse before it and the statements around the edit, or a `Fallback` that says why the caller parses in full |
 | `src/features/kept.rs` | `Kept`: the findings an open document keeps between edits, for the checks that keep them, and what each update checks again |
 | `src/oracle.rs` | The incremental oracle: a document edited through the workspace must give what a fresh workspace opened on the final text gives (public, hidden from the docs, for the tests) |
-| `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF, RDF whose syntax its content gives (`.owl`, `.rdf`), SPARQL, catalogs or JSON, and in which letter case |
+| `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF (`.ofn` among them, OWL Functional syntax), RDF whose syntax its content gives (`.owl`, `.rdf`), SPARQL, catalogs or JSON, and in which letter case |
+| `src/ofn/{lexer,grammar,tree}.rs` | OWL Functional syntax: the tokens and their spans; the productions, one signature of argument slots per keyword, the checks the specification states, and recovery at the next axiom; the flat tree in preorder, each node's span and the index past its subtree |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
 | `src/reasoning/state.rs` | `Shared`: the result of the run whose findings the server shows (the reasoner, its base and proof cache), and a finished run's result until the server shows or drops it; hover reads the result shown without waiting for a run |
@@ -75,7 +78,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
 | `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
-| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl` and `.rdf` out |
+| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl`, `.rdf` and the read-only `ofn` language (`.ofn`) out |
 
 ## One parse per document version
 
@@ -103,7 +106,17 @@ entity reference, `rdf:ID`, `rdf:li`, a name in the default namespace) is
 semantic tokens) leave it out. The syntax gates the writing:
 `features::writes` keeps RDF/XML read-only (no rename, quick fix,
 refactoring or formatting), and it gets no completion, splice, semantic
-tokens or inlay hints. A
+tokens or inlay hints. OWL Functional syntax (`Syntax::OwlFunctional`: a
+`.ofn` name, the `ofn` language id, or a `.owl` text that starts with
+`Prefix(` or `Ontology(`) goes through `ofn`, whose parse holds the
+document's errors (`ofn-syntax`) and nothing else: no triples, references,
+statements, prefixes or tokens, so the knowledge index, SHACL, reasoning
+and every editor feature see an empty document, and of the checks only
+`Check::Syntax` runs on it. `ofn` keeps its own tree with the exact span of
+every construct (`ofn::tree`); nothing outside it reads the tree yet, and
+the analysis does not keep it. The syntax is read-only like RDF/XML
+(`features::writes`), and an import of a Functional file is not read
+(`imports::load::format_of` refuses it with the reason the sniff gives). A
 SPARQL document gets a `SparqlAnalysis` instead, with the same position
 helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.
@@ -188,6 +201,9 @@ diagnostics and for `batch`, so the editor and `check` cannot disagree
 errors. The editor and the browser toolbox show the first 1,000 of a
 Turtle-family document and one error that says there are more
 (`features::diagnostics::MAX_SYNTAX_ERRORS`); `check` reports all of them.
+An OWL Functional document has a limit of its own, in the parser: at most
+10,000 errors (`ofn::MAX_ERRORS`), the last saying so, for the editor and
+`check` alike; the editor's cap applies within them.
 
 Every `Workspace` method that changes what the workspace holds (a document
 opened, edited, saved or closed, files changed on disk, the settings'
@@ -204,7 +220,7 @@ every row, and a test checks it. `Syntax::from_extension` and
 `workspace`, and a test checks them against the table's RDF and ontology
 rows. `Syntax::of` (language id, URI, text) is the one place that decides
 a document's syntax: for an `.owl` or `.rdf` name, the text's start says
-Turtle, JSON-LD or else RDF/XML. An open document's kind is decided again
+Turtle, JSON-LD, OWL Functional syntax or else RDF/XML. An open document's kind is decided again
 at each change of its text, so a change of syntax parses it in full.
 
 The shape lint and the validator read one shape model (`shacl::model`) and

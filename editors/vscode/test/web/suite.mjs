@@ -130,6 +130,24 @@ check("a .owl file keeps VS Code's XML language and gets the server's hover, but
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 
+check("a .ofn file is OWL Functional syntax: its errors are listed before and after it is opened, and the extension offers no hover, formatter, rename, completion or code actions there", async () => {
+  // The browser reads the workspace's files: listed before it is opened.
+  ok(!vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith("/onto.ofn")), "onto.ofn was opened")
+  const errors = (d) => d.some((x) => codeOf(x) === "ofn-syntax")
+  await until("onto.ofn's error, unopened", () => vscode.languages.getDiagnostics(uri("onto.ofn")), errors, 10_000)
+  const doc = await open("onto.ofn")
+  ok(doc.languageId === "ofn", `language ${doc.languageId}`)
+  const diags = await until("onto.ofn's error", () => vscode.languages.getDiagnostics(doc.uri), errors, 10_000)
+  ok(fmt(diags) === "3:14 [ofn-syntax] Undeclared prefix 'nope:'", fmt(diags))
+  const text = hoverText(await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, posOf(doc, ":A))", 1)))
+  ok(text === "", `hover: ${JSON.stringify(text)}`)
+  for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction"]) {
+    const feature = api.client().getFeature(method)
+    ok(feature.getProvider(doc) === undefined, `${method}: a provider for onto.ofn`)
+  }
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
 check("turtle/query, as another extension sends it, uses the root's prefixes.ttl", async () => {
   const api = vscode.extensions.getExtension(EXTENSION).exports
   const r = await api.client().sendRequest("turtle/query", { query: "SELECT ?c WHERE { ?c a owl:Class }" })

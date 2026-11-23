@@ -60,7 +60,7 @@
   "main": "./out/extension.js",
   "browser": "./out/web/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf}",
+    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}",
     "onLanguage:json"
   ],
   "capabilities": {
@@ -159,6 +159,17 @@
           "application/sparql-update"
         ],
         "configuration": "./sparql-language-configuration.json"
+      },
+      {
+        "id": "ofn",
+        "aliases": [
+          "OWL Functional Syntax",
+          "ofn"
+        ],
+        "extensions": [
+          ".ofn"
+        ],
+        "configuration": "./ofn-language-configuration.json"
       }
     ],
     "grammars": [
@@ -186,6 +197,11 @@
         "language": "sparql",
         "scopeName": "source.sparql",
         "path": "./syntaxes/sparql.tmLanguage.json"
+      },
+      {
+        "language": "ofn",
+        "scopeName": "source.ofn",
+        "path": "./syntaxes/ofn.tmLanguage.json"
       }
     ],
     "configuration": {

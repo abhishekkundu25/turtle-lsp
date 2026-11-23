@@ -198,7 +198,7 @@ pub(crate) fn applies(
     base: Option<&str>,
 ) -> Result<(), Fallback> {
     match old.syntax {
-        Syntax::JsonLd | Syntax::RdfXml => return Err(Fallback::Syntax),
+        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional => return Err(Fallback::Syntax),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if old_external != external || old.document_base.as_deref() != base {

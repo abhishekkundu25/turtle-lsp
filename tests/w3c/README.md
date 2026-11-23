@@ -10,8 +10,20 @@ Copied without the generated reports so the conformance tests run offline.
 | `sparql-tests/sparql11/{aggregates,bind,construct,exists,functions,grouping,negation,property-path,subquery}` (SPARQL 1.1 query evaluation: `.rq`, `.ttl`, `.srx`, `.srj`, manifests and one empty `.nt`; 510 files, 275 KB) | https://github.com/w3c/rdf-tests (`sparql/sparql11/`) | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
 | `shacl/core/` (SHACL Core) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/core`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 | `shacl/sparql/` (SHACL-SPARQL) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/sparql`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
+| `owl2/` (OWL 2 Functional-Style Syntax: the 78 Functional texts of the approved OWL 2 test cases, one file each, and their `MANIFEST.tsv`) | https://www.w3.org/2009/11/owl-test/all.rdf (the W3C archive of the OWL 2 Test Case Repository) | `Last-Modified` 2009-11-18, sha256 `5383f1ddf4cf2f03703a2f886f41d4e5bc375633a1cfa94a03254fd89330f8bb` |
 
-Each directory keeps its upstream licence (`LICENSE.md`).
+Each directory keeps its upstream licence (`LICENSE.md`); `owl2/` is
+CC BY 3.0, with its authors named per file.
+
+## OWL 2 Functional-Style Syntax
+
+The parser is private to the crate, so its runner is a unit test
+(`w3c_owl2_functional_inputs_parse` in `src/ofn/tests.rs`). The archive
+has no syntax tests: every one of its tests is about entailment,
+consistency or profiles, and each text in it is a valid document. Of its
+489 tests, 83 have a Functional text; the 60 of them that are approved give
+the 78 files here (60 premises, 16 conclusions, 2 non-conclusions). The
+test passes when each parses with no error. Result: 78 of 78.
 
 ## RDF/XML 1.1
 

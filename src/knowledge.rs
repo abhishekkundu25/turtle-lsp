@@ -919,12 +919,13 @@ impl DocFacts {
         let declared: FxHashSet<Iri> = bindings.iter().map(|b| b.0.0).collect();
         let mut used: FxHashSet<Iri> = FxHashSet::default();
         // The prefix of an RDF/XML qualified name is an XML namespace's, not
-        // the project prefix of that name.
+        // the project prefix of that name. An OWL Functional document
+        // declares its own prefixes and takes none from the project.
         let uses: &[PrefixUse] = match a.parsed.syntax {
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
                 &a.parsed.prefix_uses
             }
-            Syntax::RdfXml => &[],
+            Syntax::RdfXml | Syntax::OwlFunctional => &[],
         };
         for u in uses {
             if u.resolved

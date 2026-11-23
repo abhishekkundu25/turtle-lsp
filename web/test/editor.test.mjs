@@ -167,6 +167,37 @@ test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML, wit
   }
 })
 
+test("an .ofn file opens as OWL Functional syntax, coloured, with the server's errors as markers and no formatter", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const ofn = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\n)\n"
+    await page.locator("#files-input").setInputFiles([{ name: "onto.ofn", mimeType: "text/plain", buffer: Buffer.from(ofn) }])
+    await item(page, "onto.ofn").waitFor()
+    assert.equal(await item(page, "onto.ofn").locator(".fi").textContent(), "OFN")
+    await openFile(page, "onto.ofn")
+    const uri = "file:///work/onto.ofn"
+    const language = await page.evaluate((u) => window.monaco.editor.getModel(window.monaco.Uri.parse(u)).getLanguageId(), uri)
+    assert.equal(language, "ofn")
+    assert.equal(await page.locator("#status-lang").textContent(), "OWL Functional")
+    const tokens = await page.evaluate(() => window.monaco.editor.tokenize("SubClassOf(:A <http://e/B>) # c", "ofn")[0].map((t) => t.type))
+    assert.ok(tokens.some((t) => t.startsWith("keyword")) && tokens.some((t) => t.startsWith("comment")), tokens.join(", "))
+    // The server's error, at its span: line 4, after "SubClassOf(:A ".
+    await page.waitForFunction(
+      (u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).some((m) => m.code === "ofn-syntax"),
+      uri,
+      { timeout: 10_000 }
+    )
+    const markers = await page.evaluate((u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).map((m) => [m.code, m.startLineNumber, m.startColumn, m.message]), uri)
+    assert.deepEqual(markers, [["ofn-syntax", 4, 15, "Undeclared prefix 'nope:'"]])
+    const formats = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction("editor.action.formatDocument").isSupported())
+    assert.equal(formats, false)
+    await settled(page)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a .jsonld file opens with JSON colouring, and the language server checks and explains it", async () => {
   const { page, errors, close } = await open()
   try {

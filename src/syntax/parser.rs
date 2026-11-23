@@ -99,10 +99,10 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// [`parse`], with relative IRIs resolved against `base` (the document's own
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
-/// For the Turtle family only. It never fails, but it does not read JSON-LD
-/// or RDF/XML, which have their own frontends: given [`Syntax::JsonLd`] or
-/// [`Syntax::RdfXml`] it returns no triples and one `syntax` error at
-/// offset 0.
+/// For the Turtle family only. It never fails, but it does not read JSON-LD,
+/// RDF/XML or OWL Functional syntax, which have their own frontends: given
+/// [`Syntax::JsonLd`], [`Syntax::RdfXml`] or [`Syntax::OwlFunctional`] it
+/// returns no triples and one `syntax` error at offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
@@ -131,11 +131,11 @@ impl Parsed {
 
 impl Syntax {
     /// The tokens [`parse_with_base`] reads `src` as, comments included:
-    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD and RDF/XML,
-    /// which have their own frontends.
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, RDF/XML and
+    /// OWL Functional syntax, which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
         match self {
-            Syntax::JsonLd | Syntax::RdfXml => return Vec::new(),
+            Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
         }
         let mut all = tokenize(src);
@@ -162,6 +162,7 @@ fn run(
     let frontend = match syntax {
         Syntax::JsonLd => Some("JSON-LD documents are parsed by jsonld::parse"),
         Syntax::RdfXml => Some("RDF/XML documents are parsed by rdfxml::parse"),
+        Syntax::OwlFunctional => Some("OWL Functional documents are parsed by ofn::parse"),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => None,
     };
     if let Some(message) = frontend {

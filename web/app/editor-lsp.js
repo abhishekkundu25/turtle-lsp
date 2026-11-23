@@ -11,11 +11,15 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 // Monaco's own JSON (its highlighting); the server knows a `.jsonld` name
 // is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with the server's
 // providers that read (connect): the server reads them as workspace RDF,
-// its syntax from the content.
+// its syntax from the content. `.ofn` is OWL Functional syntax (`ofn`,
+// registerSyntax), which the server checks for errors and never writes.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
-  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml" }[ext] ?? "turtle"
+  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml", ofn: "ofn" }[ext] ?? "turtle"
 }
+
+// The languages whose documents the server reads and never writes.
+export const READ_ONLY = ["xml", "ofn"]
 
 // Monaco's JSON support keeps only what the server does not do: colours,
 // brackets and selection. Its own checks, hovers and completion would
@@ -228,13 +232,13 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   const legend = capabilities.semanticTokensProvider?.legend ?? { tokenTypes: [], tokenModifiers: [] }
 
   // The server's features also serve JSON-LD files (Monaco's json language;
-  // only `.jsonld` files are ever opened in it) and RDF/XML files (Monaco's
-  // xml language; only `.owl` and `.rdf` files). Nothing writes RDF/XML: an
-  // xml model gets the features that read, without completion, rename,
-  // formatting, code actions, semantic tokens (Monaco's XML colours stay)
-  // and inlay hints.
-  for (const lang of [...LANGUAGES, "json", "xml"]) {
-    const writable = lang !== "xml"
+  // only `.jsonld` files are ever opened in it), RDF/XML files (Monaco's
+  // xml language; only `.owl` and `.rdf` files) and OWL Functional files
+  // (`ofn`). Nothing writes RDF/XML or OWL Functional syntax: such a model
+  // gets the features that read, without completion, rename, formatting,
+  // code actions, semantic tokens (Monaco's colours stay) and inlay hints.
+  for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
+    const writable = !READ_ONLY.includes(lang)
     monaco.languages.registerHoverProvider(lang, {
       async provideHover(model, position, token) {
         const h = await client.request("textDocument/hover", at(model, position), token)
@@ -454,4 +458,29 @@ export function registerSyntax(monaco) {
       wordPattern: /(-?\d*\.\d\w*)|([?$]\w+)|([\w-]*:[\w.%-]*[\w%-])|([\w-]+:?)/,
     })
   }
+  // OWL Functional syntax: comments, strings with `\"` and `\\` only, IRIs,
+  // language tags, node IDs, integers, prefixed names, and a word before `(`
+  // as a keyword.
+  monaco.languages.register({ id: "ofn" })
+  monaco.languages.setMonarchTokensProvider("ofn", {
+    defaultToken: "",
+    tokenizer: {
+      root: [
+        [/#.*$/, "comment"],
+        [/"([^"\\]|\\.)*"/, "string"],
+        [/<[^<>"{}|^`\\\s]*>/, "string.link"],
+        [/@[a-zA-Z]+(-[a-zA-Z0-9]+)*/, "annotation"],
+        [/\d+/, "number"],
+        [/_:[\w.-]+/, "type"],
+        [/([A-Za-z][\w.-]*)?:([\w%:-]([\w.%:-]*[\w%:-])?)?/, "type.identifier"],
+        [/[A-Za-z]+(?=\s*\()/, "keyword"],
+      ],
+    },
+  })
+  monaco.languages.setLanguageConfiguration("ofn", {
+    comments: { lineComment: "#" },
+    brackets: [["(", ")"]],
+    autoClosingPairs: [{ open: "(", close: ")" }, { open: '"', close: '"', notIn: ["string"] }, { open: "<", close: ">", notIn: ["string"] }],
+    wordPattern: /(\d+)|([\w-]*:[\w.%:-]*[\w%:-])|([\w-]+:?)/,
+  })
 }

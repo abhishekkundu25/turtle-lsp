@@ -382,6 +382,44 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   vim.api.nvim_buf_delete(other, { force = true })
 end)
 
+check("a .ofn buffer gets filetype ofn and the server's errors; nothing is written in it", function()
+  local file = owl_dir .. "/onto.ofn"
+  local text = {
+    "Prefix(:=<http://example.org/o#>)",
+    "Ontology(<http://example.org/o>",
+    "Declaration(Class(:A))",
+    "SubClassOf(:A nope:B)",
+    ")",
+  }
+  vim.fn.writefile(text, file)
+  local b, c = open(file)
+  assert(vim.bo[b].filetype == "ofn", "filetype " .. vim.bo[b].filetype)
+  local d = wait_diagnostics(b)
+  assert(#d == 1, "diagnostics: " .. vim.inspect(d))
+  assert(d[1].code == "ofn-syntax" and d[1].lnum == 3 and d[1].col == 14, vim.inspect(d[1]))
+  assert(d[1].message == "Undeclared prefix 'nope:'", d[1].message)
+  local edits = request(b, "textDocument/formatting", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    options = { tabSize = 2, insertSpaces = true },
+  })
+  assert(edits == nil or #edits == 0, "formatting edits in a .ofn: " .. vim.inspect(edits))
+  local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, ":A))"),
+    newName = "ex:Thing",
+  }, TIMEOUT)
+  local answer = res and res[c.id]
+  local message = answer and answer.err and answer.err.message or vim.inspect(answer)
+  assert(message:find("OWL Functional syntax document is not edited", 1, true), "rename in a .ofn: " .. message)
+  -- No hover yet: its content is not read.
+  local h = request(b, "textDocument/hover", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, ":A))"),
+  })
+  assert(h == nil, "hover in a .ofn: " .. vim.inspect(h))
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
 check("a Turtle buffer gets static formatting and rename with prepareRename", function()
   local ttl, tc = open(people)
   assert(tc:supports_method("textDocument/formatting", ttl), "no formatting in people.ttl")

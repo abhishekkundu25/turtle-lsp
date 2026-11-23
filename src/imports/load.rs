@@ -537,15 +537,19 @@ pub enum Format {
 }
 
 impl Format {
-    fn of_syntax(syntax: Syntax) -> Format {
-        match syntax {
+    /// The format of a document of `syntax`, or why it is not read: OWL
+    /// Functional syntax is checked in the workspace, but nothing reads its
+    /// axioms into an import.
+    fn of_syntax(syntax: Syntax) -> Result<Format, String> {
+        Ok(match syntax {
             Syntax::Turtle => Format::Turtle,
             Syntax::TriG => Format::TriG,
             Syntax::NTriples => Format::NTriples,
             Syntax::NQuads => Format::NQuads,
             Syntax::JsonLd => Format::JsonLd,
             Syntax::RdfXml => Format::RdfXml,
-        }
+            Syntax::OwlFunctional => return Sniffed::Functional.format(),
+        })
     }
 
     /// The syntax the analysis reads it in. (A fetched RDF/XML document is
@@ -580,7 +584,7 @@ impl Format {
 /// is not read.
 pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Result<(Format, bool), String> {
     match Syntax::from_extension(name) {
-        Some(syntax) => Ok((Format::of_syntax(syntax), false)),
+        Some(syntax) => Ok((Format::of_syntax(syntax)?, false)),
         None => sniff(bytes).map(|f| (f, true)),
     }
 }
@@ -921,6 +925,18 @@ mod tests {
         assert_eq!(of("", ttl), (Format::Turtle, true));
         assert!(format_of("/w/a.owl", b"Ontology(<http://e/>)").is_err());
         assert!(format_of("/w/a.ttl", b"Ontology(<http://e/>)").is_ok());
+        // A `.ofn` name is Functional whatever its text: not read, and the
+        // reason is the one a Functional `.owl` gives.
+        for text in [&b"Ontology(<http://e/>)"[..], ttl] {
+            assert_eq!(
+                format_of("/w/a.ofn", text),
+                Err(format!("it {}", Sniffed::Functional.unread().unwrap()))
+            );
+        }
+        assert_eq!(
+            format_of("/w/a.owl", b"Ontology(<http://e/>)"),
+            format_of("/w/a.OFN", b"")
+        );
         assert_eq!(format_of_type("application/trig"), Some(Format::TriG));
         assert_eq!(format_of_type("application/ld+json"), Some(Format::JsonLd));
         assert_eq!(

@@ -606,7 +606,7 @@ const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
 `
 const EXPECTED = [
   ["owlxml", 3, "unresolved-import", new RegExp(`vendor[\\\\/]owlxml\\.owl by .*catalog-v001\\.xml, which could not be loaded: it holds OWL/XML, ${UNREAD}$`)],
-  ["functional", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Functional syntax, ${UNREAD}$`)],
+  ["functional", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Functional syntax, whose axioms turtle-lsp does not read yet\\. In Protégé: File > Save as > RDF/XML or Turtle$`)],
   ["manchester", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Manchester syntax, ${UNREAD}$`)],
   ["frames", 3, "unresolved-import", /could not be loaded: read as Turtle, none of its triples is usable: each has an undeclared prefix \(first error: .+\)\. In Protégé: File > Save as > RDF\/XML or Turtle$/],
 ]

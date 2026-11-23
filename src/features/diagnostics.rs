@@ -351,6 +351,9 @@ impl Check {
                 true
             }
             Syntax::RdfXml => self.runs_on_rdfxml(),
+            // Its parse holds errors and nothing else (no triples, no
+            // references, no prefixes): only they are reported.
+            Syntax::OwlFunctional => matches!(self, Check::Syntax),
         }
     }
 
@@ -497,7 +500,8 @@ pub(crate) fn diagnostics_kept(
                 | Syntax::TriG
                 | Syntax::NTriples
                 | Syntax::NQuads
-                | Syntax::RdfXml => {}
+                | Syntax::RdfXml
+                | Syntax::OwlFunctional => {}
             },
             Check::ShaclLint => {
                 for f in crate::features::shacl_lint::lint(a, k) {
@@ -539,7 +543,12 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
     // JSON-LD's errors are not capped.
     let capped = match a.parsed.syntax {
         Syntax::JsonLd => false,
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => true,
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::RdfXml
+        | Syntax::OwlFunctional => true,
     };
     let cap = opts
         .max_syntax_errors
@@ -559,10 +568,21 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
         ));
     }
     if let Some(max) = cap {
+        // A Functional document's errors have their own code, which hides
+        // this one too.
+        let code = match a.parsed.syntax {
+            Syntax::OwlFunctional => crate::ofn::CODE,
+            Syntax::Turtle
+            | Syntax::TriG
+            | Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::JsonLd
+            | Syntax::RdfXml => "syntax",
+        };
         out.push(mk(
             Span::new(last_end, last_end),
             DiagnosticSeverity::ERROR,
-            "syntax",
+            code,
             format!("More than {max} syntax errors; the rest are not shown"),
         ));
     }
@@ -1316,10 +1336,22 @@ mod tests {
                 broken.as_str(),
                 &["xml-syntax", "syntax", "invalid-literal"][..],
             ),
-            ("Prefix(:=<http://example.org/o#>)", &["unsupported-syntax"]),
+            ("Prefix: : <http://example.org/o#>", &["unsupported-syntax"]),
         ] {
             let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
             assert_eq!(codes(&a), want, "{text}");
+        }
+        // A Functional `.owl` reaches its own frontend: its errors, and no
+        // `unsupported-syntax`.
+        let functional = "Prefix(:=<http://example.org/o#>)\nOntology(SubClassOf(:A nope:B))";
+        let a = Analysis::new(uri.into(), functional, Arc::default(), true);
+        assert_eq!(codes(&a), ["ofn-syntax"]);
+        for check in Check::ALL {
+            assert_eq!(
+                check.runs_on(Syntax::OwlFunctional),
+                check == Check::Syntax,
+                "{check:?}"
+            );
         }
         for check in Check::ALL {
             let on = matches!(
