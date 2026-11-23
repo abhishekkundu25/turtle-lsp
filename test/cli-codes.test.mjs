@@ -120,7 +120,7 @@ test("explain: the RDF/XML, OWL Functional and OWL/XML codes are known codes, on
     ["xml-syntax", /^xml-syntax: The XML is malformed/m],
     ["rdfxml-syntax", /^rdfxml-syntax: The XML is not valid RDF\/XML$/m],
     ["ofn-syntax", /^ofn-syntax: The OWL Functional syntax is malformed, or breaks a rule of the OWL 2 structural specification; a warning for a form read as OWL API reads it \(an rdf:PlainLiteral with no @\)$/m],
-    ["owx-syntax", /^owx-syntax: The OWL\/XML is malformed, or breaks a rule of the OWL 2 XML Serialization or the structural specification$/m],
+    ["owx-syntax", /^owx-syntax: The OWL\/XML is malformed, or breaks a rule of the OWL 2 XML Serialization or the structural specification; a warning for a relative IRI OWL API reads otherwise, or a form read as OWL API reads it \(an rdf:PlainLiteral with no @\)$/m],
     ["unsupported-syntax", /^unsupported-syntax: The file is in an OWL syntax that is not read \(Manchester\): an error when an import is read from it, else a warning$/m],
   ]) {
     const r = run(["explain", code])
