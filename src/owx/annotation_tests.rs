@@ -497,7 +497,8 @@ fn an_anonymous_individual_needs_an_nc_name_node_id() {
 // ---- IRI and AbbreviatedIRI elements ----
 
 /// An IRI element is its trimmed content: the reference is there; a
-/// relative one resolves against the base in scope.
+/// relative one resolves against the base in scope (with a warning where
+/// OWL API joins it to the `xml:base` otherwise).
 #[test]
 fn an_iri_element_is_its_trimmed_content() {
     let text = doc(&[
@@ -507,7 +508,15 @@ fn an_iri_element_is_its_trimmed_content() {
     ]
     .join("\n"));
     let p = read(&text, Some(URL));
-    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert_eq!(
+        errors(&text, &p),
+        [(
+            CODE,
+            "../v",
+            "Read as <http://example.org/v> (XML Base); OWL API reads <http://example.org/c/../v>"
+        )]
+    );
+    assert_eq!(p.errors[0].severity, crate::syntax::Severity::Warning);
     same_mapping(
         &p,
         &functional(&ofn(

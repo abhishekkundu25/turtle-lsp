@@ -654,7 +654,16 @@ read-only, as it reads OWL Functional syntax.
   graphs](https://www.w3.org/TR/owl2-mapping-to-rdf/), and an OWL/XML file
   gives the graph of the same ontology in Functional syntax. Relative IRIs
   resolve against the `xml:base` in scope (on the root or on any element),
-  else against the file's URL. IRIs written through DOCTYPE entities
+  else against the file's URL, as XML Base and RFC 3986 say; an empty `IRI`
+  or `Import` is that base. OWL API (ROBOT 1.9.11, OWL API 4.5.29) reads a
+  relative IRI under an `xml:base` otherwise: it joins it to the
+  `xml:base` as written, as strings. ROBOT writes such IRIs for terms below
+  an ontology IRI that ends in neither `/` nor `#`: under
+  `xml:base="http://example.org/lib"`, `IRI="/Book"` is
+  `http://example.org/Book` here and `http://example.org/lib/Book` in OWL
+  API, so the graph is not that of the Functional file ROBOT wrote it
+  from. Each IRI the two read differently gets an `owx-syntax` warning that
+  names both. IRIs written through DOCTYPE entities
   (`IRI="&rdfs;comment"`, as Protégé writes them) are read. A literal has
   the datatype of its `datatypeIRI` and the language of the `xml:lang` in
   scope (see the table below). An `AnonymousIndividual` is one blank node

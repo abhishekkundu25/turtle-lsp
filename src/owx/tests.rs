@@ -635,7 +635,23 @@ fn prefix_declarations_in_error() {
 #[test]
 fn iris_resolve_against_the_base_in_scope() {
     let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/one/\" ontologyIRI=\"o\">\n<Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n<Declaration><Class IRI=\"B\"/></Declaration>\n<Declaration xml:base=\"two/\"><Class IRI=\"C\"/></Declaration>\n<Declaration xml:base=\"two/\"><Class xml:base=\"../three/x\" IRI=\"#D\"/></Declaration>\n<Declaration><Class IRI=\"http://example.org/a/../E\"/></Declaration>\n</Ontology>";
-    let p = clean(text);
+    let p = read(text, Some(URL));
+    // OWL API reads a nested relative `xml:base` as written.
+    assert_eq!(
+        errors(text, &p),
+        [
+            (
+                CODE,
+                "C",
+                "Read as <http://example.org/one/two/C> (XML Base); OWL API reads <two/C>"
+            ),
+            (
+                CODE,
+                "#D",
+                "Read as <http://example.org/one/three/x#D> (XML Base); OWL API reads <../three/x#D>"
+            ),
+        ]
+    );
     let iri = "http://example.org/";
     assert_eq!(
         refs(text, &p),
@@ -1495,4 +1511,106 @@ fn an_error_quotes_a_long_name_cut() {
         run.message()
     );
     assert!(run.message().len() < 200);
+}
+
+/// OWL API (ROBOT 1.9.11) reads a relative `IRI`, `<IRI>`, `<Import>`,
+/// `datatypeIRI` or Prefix `IRI` as the nearest `xml:base`, as written,
+/// joined to it as strings. The reader keeps XML Base, and warns at each
+/// value where the two differ, naming both IRIs (ROBOT's readings, from
+/// its own output, are the second IRI of each message). Where they agree
+/// (`#A`, `?q` and the empty reference under a base with no fragment or
+/// query; `Glued` under a base whose path ends in `/`), and where OWL API
+/// does not join (`ontologyIRI`, `versionIRI`, `facet`, no `xml:base`),
+/// no warning.
+#[test]
+fn a_reference_owl_api_joins_to_the_base_otherwise_is_a_warning() {
+    let decl = |r: &str| format!("<Declaration><Class IRI=\"{r}\"/></Declaration>");
+    let body: Vec<String> = ["/Book", "Glued", "#Hash", "?q", "../up", "", "/a/b"]
+        .iter()
+        .map(|r| decl(r))
+        .collect();
+    let text = format!(
+        "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/lib\" ontologyIRI=\"/o\" versionIRI=\"v\">\n<Prefix name=\"p\" IRI=\"/pre/\"/>\n<Import>/imp</Import>\n{}\n<Declaration xml:base=\"sub/\"><Class IRI=\"Inner\"/></Declaration>\n<AnnotationAssertion><AnnotationProperty IRI=\"http://www.w3.org/2000/01/rdf-schema#label\"/><IRI>/Subj</IRI><Literal datatypeIRI=\"/dt\">x</Literal></AnnotationAssertion>\n<DatatypeDefinition><Datatype IRI=\"http://example.org/D\"/><DatatypeRestriction><Datatype IRI=\"http://www.w3.org/2001/XMLSchema#integer\"/><FacetRestriction facet=\"/f\"><Literal>1</Literal></FacetRestriction></DatatypeRestriction></DatatypeDefinition>\n</Ontology>",
+        body.join("\n")
+    );
+    let p = read(&text, Some(URL));
+    let ex = "http://example.org/";
+    let warning = |at: &'static str, ours: &str, theirs: &str| {
+        (
+            at,
+            format!("Read as <{ours}> (XML Base); OWL API reads <{theirs}>"),
+        )
+    };
+    let got: Vec<(&str, String)> = p
+        .errors
+        .iter()
+        .map(|e| {
+            assert_eq!(
+                (e.code, e.severity),
+                (CODE, crate::syntax::Severity::Warning),
+                "{e:?}"
+            );
+            (at(&text, e.span), e.message().to_string())
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            warning("/pre/", &format!("{ex}pre/"), &format!("{ex}lib/pre/")),
+            warning("/imp", &format!("{ex}imp"), &format!("{ex}lib/imp")),
+            warning("/Book", &format!("{ex}Book"), &format!("{ex}lib/Book")),
+            warning("Glued", &format!("{ex}Glued"), &format!("{ex}libGlued")),
+            warning("../up", &format!("{ex}up"), &format!("{ex}lib../up")),
+            warning("/a/b", &format!("{ex}a/b"), &format!("{ex}lib/a/b")),
+            warning("Inner", &format!("{ex}sub/Inner"), "sub/Inner"),
+            warning("/Subj", &format!("{ex}Subj"), &format!("{ex}lib/Subj")),
+            warning("/dt", &format!("{ex}dt"), &format!("{ex}lib/dt")),
+        ]
+    );
+    // The warnings break nothing: the header and every item map.
+    assert_eq!(p.statements.len(), 12);
+    // A base whose path ends in `/`: `Glued` and `#A` agree, `/Book` not.
+    let text = format!(
+        "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/lib/\">\n{}\n{}\n{}\n</Ontology>",
+        decl("Glued"),
+        decl("#A"),
+        decl("/Book")
+    );
+    let p = read(&text, Some(URL));
+    assert_eq!(
+        errors(&text, &p),
+        [(
+            CODE,
+            "/Book",
+            "Read as <http://example.org/Book> (XML Base); OWL API reads <http://example.org/lib//Book>"
+        )]
+    );
+    // No `xml:base`: the document's URL, no warning.
+    let text = format!(
+        "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">\n{}\n</Ontology>",
+        decl("Glued")
+    );
+    assert!(read(&text, Some(URL)).errors.is_empty());
+}
+
+/// A long `xml:base` named in many warnings costs bytes linear in the
+/// text: each IRI a warning names is cut in its middle.
+#[test]
+fn a_warning_names_a_long_base_cut() {
+    let base = format!("http://example.org/{}", "x".repeat(20_000));
+    let body = "<Declaration><Class IRI=\"/B\"/></Declaration>\n".repeat(2_000);
+    let text = format!(
+        "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"{base}\">\n{body}</Ontology>"
+    );
+    let p = read(&text, Some(URL));
+    assert_eq!(p.errors.len(), 2_000);
+    assert!(
+        p.errors.iter().all(|e| e.message().len() < 300),
+        "{}",
+        p.errors[0].message()
+    );
+    assert_eq!(
+        p.errors[0].message(),
+        "Read as <http://example.org/B> (XML Base); OWL API reads <http://example.org/xxxxxxxxxxx…xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/B>"
+    );
 }

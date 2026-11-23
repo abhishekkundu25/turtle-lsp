@@ -228,6 +228,25 @@ fn timing_relative_iris_under_a_long_base_read_in_linear_time() {
     }
 }
 
+/// Relative IRIs that OWL API reads otherwise, under an `xml:base` of
+/// 40,000 bytes whose path does not end in `/`, each get their warning in
+/// time linear in the text: 2,000 distinct ones, then four times both.
+/// Past a budget of the reader's size, a warning names no IRI.
+#[test]
+fn timing_relative_iris_owl_api_reads_otherwise_warn_in_linear_time() {
+    let make = |s: usize| {
+        let base = format!("http://example.org/{}", "a".repeat(40_000 * s));
+        let items: String = (0..2_000 * s)
+            .map(|k| format!("<Declaration><Class IRI=\"c{k}\"/></Declaration>\n"))
+            .collect();
+        (
+            format!("{OPEN} xml:base=\"{base}\">\n{items}{CLOSE}"),
+            2_000 * s,
+        )
+    };
+    linear("warnings under a long base", make, |n| n);
+}
+
 /// Abbreviated IRIs under a prefix IRI of 40,000 bytes are checked in time
 /// linear in the text, valid or not: 2,000 distinct abbreviated IRIs, then
 /// four times both. The mapping, which expands them, stops at its IRI

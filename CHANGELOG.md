@@ -54,7 +54,11 @@
   Functional syntax reads OWL/XML: hover, definition, references,
   highlights, the outline, workspace symbols, folding, the lints that need
   no edit, `check`, `query`, SHACL validation and reasoning. Relative IRIs
-  resolve against `xml:base` and the file's URL; IRIs written through
+  resolve against `xml:base` and the file's URL, as XML Base says; where
+  OWL API, which joins a relative IRI to the `xml:base` as strings, reads
+  another IRI (ROBOT writes `IRI="/Book"` under
+  `xml:base="http://example.org/lib"`), an `owx-syntax` warning names
+  both. IRIs written through
   DOCTYPE entities, as Protégé writes them, are read. Errors are at their
   exact spans: `xml-syntax` for the XML, `owx-syntax` for the rest (an
   unknown or misplaced element, a missing or unknown attribute, both or

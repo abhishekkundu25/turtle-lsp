@@ -17,7 +17,9 @@
 //! `xml:base`, resolved against the one outside it, else the document's
 //! URL), and must be an absolute IRI: the reader checks the reference, the
 //! mapper resolves it ([`crate::ofn::rdf::IriValue::Based`]). An empty
-//! value is the empty reference, the base itself. An
+//! value is the empty reference, the base itself. Where OWL API, which
+//! joins a relative reference to the nearest `xml:base` as strings, reads
+//! another IRI, a warning names both ([`Joined`]). An
 //! `abbreviatedIRI` is `prefix:local`, its prefix declared by a `Prefix`
 //! element of this document; no name is built in. The reader resolves only
 //! the bases and the prefix IRIs, and charges them to a budget of
@@ -168,12 +170,99 @@ enum Lang {
 }
 
 /// What an element with an `xml:base` or an `xml:lang` puts in scope, to
-/// its end: its depth, and the base and the language in scope inside it.
+/// its end: its depth, and the base and the language in scope inside it,
+/// and the nearest `xml:base` as OWL API reads it ([`Joined`]).
 #[derive(Clone, Copy)]
 struct Scope {
     depth: u32,
     base: Base,
     lang: Lang,
+    joined: Option<u32>,
+}
+
+/// An `xml:base` as OWL API (4.5.29, ROBOT 1.9.11) reads it: a relative
+/// `IRI`, `<IRI>`, `<Import>`, `datatypeIRI` or Prefix `IRI` (and SWRL's
+/// `IRI`s) is the nearest `xml:base` as written, the reference joined to
+/// it as strings; `ontologyIRI`, `versionIRI` and `facet` it does not
+/// resolve. Where that is not the resolution of XML Base, a warning.
+#[derive(Clone, Copy)]
+struct Joined {
+    /// The `xml:base` as written.
+    written: Str,
+    /// The base it resolved to, in [`Terms::bases`].
+    base: u32,
+    /// The two are one string.
+    same: bool,
+    shape: BaseShape,
+}
+
+/// What decides, for a relative reference, whether joining it to a base
+/// as strings gives its resolution (RFC 3986, section 5.2): the base's
+/// components.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BaseShape {
+    /// `scheme:` alone.
+    scheme_only: bool,
+    /// No path, query or fragment.
+    bare: bool,
+    query: bool,
+    fragment: bool,
+    /// The path ends in `/`, or is empty with no authority, and has no `.`
+    /// or `..` segment: a relative path resolves after it.
+    dir: bool,
+}
+
+impl BaseShape {
+    /// The shape of the absolute IRI `base`.
+    pub(super) fn of(base: &str) -> BaseShape {
+        let b = oxiri::Iri::parse_unchecked(base);
+        let path = b.path();
+        let (query, fragment) = (b.query().is_some(), b.fragment().is_some());
+        let authority = b.authority().is_some();
+        let bare = path.is_empty() && !query && !fragment;
+        BaseShape {
+            scheme_only: bare && !authority,
+            bare,
+            query,
+            fragment,
+            dir: (path.ends_with('/') || (path.is_empty() && !authority)) && !dotted(path),
+        }
+    }
+
+    /// Whether the relative reference `r` (valid) joined to the base as
+    /// strings is its resolution against it.
+    pub(super) fn joins_alike(self, r: &str) -> bool {
+        let r = oxiri::IriRef::parse_unchecked(r);
+        let path = r.path();
+        if r.authority().is_some() {
+            return self.scheme_only && !dotted(path);
+        }
+        if path.is_empty() {
+            return !self.fragment && (r.query().is_none() || !self.query);
+        }
+        if path.starts_with('/') {
+            return self.bare && !dotted(path);
+        }
+        !self.query && !self.fragment && self.dir && !dotted(path)
+    }
+}
+
+/// Whether `path` has a `.` or `..` segment, which resolving removes.
+fn dotted(path: &str) -> bool {
+    path.split('/').any(|s| s == "." || s == "..")
+}
+
+/// `s` as a warning names an IRI: its first 30 and last 40 characters
+/// when it is longer, where a base and a reference meet.
+fn cut(s: &str) -> Cow<'_, str> {
+    const HEAD: usize = 30;
+    const TAIL: usize = 40;
+    let n = s.chars().count();
+    if n <= HEAD + TAIL + 1 {
+        return Cow::Borrowed(s);
+    }
+    let at = |k: usize| s.char_indices().nth(k).map_or(s.len(), |(i, _)| i);
+    Cow::Owned(format!("{}…{}", &s[..at(HEAD)], &s[at(n - TAIL)..]))
 }
 
 /// A declared prefix: its IRI's place in [`Terms::prefixes`], and what its
@@ -350,6 +439,11 @@ struct Reader<'a> {
     resolved: usize,
     budget: usize,
     over: bool,
+    /// The `xml:base`s as OWL API reads them.
+    joined: Vec<Joined>,
+    /// The bytes of the IRIs the warnings name; past [`Reader::budget`],
+    /// a warning names none.
+    warned: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -384,6 +478,8 @@ impl<'a> Reader<'a> {
             resolved: 0,
             budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
             over: false,
+            joined: Vec::new(),
+            warned: 0,
         }
     }
 
@@ -416,9 +512,18 @@ impl<'a> Reader<'a> {
 
     fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
         self.reported += 1;
+        self.report(span, message, Severity::Error);
+    }
+
+    /// A warning: it breaks no item.
+    fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        self.report(span, message, Severity::Warning);
+    }
+
+    fn report(&mut self, span: Span, message: impl Into<Cow<'static, str>>, severity: Severity) {
         if self.errors.len() < MAX_ERRORS {
             self.errors
-                .push(SyntaxError::new(span, message, Severity::Error, CODE));
+                .push(SyntaxError::new(span, message, severity, CODE));
         } else if self.dropped.is_none() {
             self.dropped = Some(span);
         }
@@ -695,16 +800,79 @@ impl<'a> Reader<'a> {
         if base.is_none() && lang.is_none() {
             return;
         }
-        let base = match base {
-            Some(a) => self.base_of(a),
-            None => self.base(),
+        let (base, joined) = match base {
+            Some(a) => {
+                let base = self.base_of(a);
+                (base, self.joined_of(a, base))
+            }
+            None => (self.base(), self.joined()),
         };
         let lang = match lang {
             Some(a) => self.lang_of(a),
             None => self.lang(),
         };
         let depth = self.depth;
-        self.scopes.push(Scope { depth, base, lang });
+        self.scopes.push(Scope {
+            depth,
+            base,
+            lang,
+            joined,
+        });
+    }
+
+    /// The nearest `xml:base` as OWL API reads it, if one is in scope.
+    fn joined(&self) -> Option<u32> {
+        self.scopes.last().and_then(|s| s.joined)
+    }
+
+    /// The `xml:base` attribute `a`, which put `base` in scope, as OWL API
+    /// reads it.
+    fn joined_of(&mut self, a: &Attr<'a>, base: Base) -> Option<u32> {
+        let Base::At(b) = base else {
+            return None;
+        };
+        let w = Written::of(&a.value);
+        let written = self.keep(&w).ok()?;
+        let resolved = self.terms.str(self.text, self.terms.bases[b as usize]);
+        self.joined.push(Joined {
+            written,
+            base: b,
+            same: resolved == w.text,
+            shape: BaseShape::of(resolved),
+        });
+        Some(self.joined.len() as u32 - 1)
+    }
+
+    /// A warning at `w`, whose value is `value`, where OWL API reads it
+    /// otherwise, joined to the `xml:base` `joined` as strings.
+    fn joins(&mut self, w: &Written<'a>, value: Value, joined: Option<u32>) {
+        let (Some(j), Value::Based { .. }) = (joined, value) else {
+            return;
+        };
+        let reference: &str = &w.text;
+        let j = self.joined[j as usize];
+        if has_scheme(reference) || (j.same && j.shape.joins_alike(reference)) {
+            return;
+        }
+        let base = self.terms.str(self.text, self.terms.bases[j.base as usize]);
+        let written = self.terms.str(self.text, j.written);
+        let cost = base.len() + written.len() + 2 * reference.len();
+        if self.warned + cost > self.budget {
+            self.warned = self.budget;
+            let message = "Read as XML Base resolves it; OWL API joins it to the xml:base as strings, to another IRI";
+            return self.warning(w.span, message);
+        }
+        self.warned += cost;
+        let mut ours = String::new();
+        oxiri::Iri::parse_unchecked(base)
+            .resolve_into_unchecked(&oxiri::IriRef::parse_unchecked(reference), &mut ours);
+        let theirs = format!("{written}{reference}");
+        let message = format!(
+            "Read as <{}> (XML Base); OWL API reads <{}>",
+            cut(&ours),
+            cut(&theirs)
+        );
+        self.warning(w.span, message);
     }
 
     /// The language `xml:lang` attribute `a` puts in scope: a language tag
@@ -929,6 +1097,7 @@ impl<'a> Reader<'a> {
             (Some(a), None) => {
                 let w = self.collapsed(&a.value);
                 let value = self.any_uri(&w, self.base())?;
+                self.joins(&w, value, self.joined());
                 (w, value)
             }
             (None, Some(a)) => {
@@ -1256,6 +1425,7 @@ impl<'a> Reader<'a> {
         if let Some(a) = datatype {
             let w = self.collapsed(&a.value);
             let value = self.any_uri(&w, self.base())?;
+            self.joins(&w, value, self.joined());
             self.iri_node(&w, value);
         }
         let mut parts: Vec<(Span, Cow<'a, str>)> = Vec::new();
@@ -1370,7 +1540,7 @@ impl<'a> Reader<'a> {
     fn iri_element(&mut self, abbreviated: bool, tag: &Tag<'a>) -> R {
         self.attrs(tag, [])?;
         // The element's own, out of scope once its end is read.
-        let base = self.base();
+        let (base, joined) = (self.base(), self.joined());
         let (w, value) = if abbreviated {
             let Some(w) = self.content(tag)? else {
                 let message = format!(
@@ -1384,6 +1554,7 @@ impl<'a> Reader<'a> {
         } else {
             let w = self.uri_content(tag)?;
             let value = self.any_uri(&w, base)?;
+            self.joins(&w, value, joined);
             (w, value)
         };
         self.iri_node(&w, value);
@@ -1572,9 +1743,10 @@ impl<'a> Reader<'a> {
         let r = (|| {
             self.attrs(tag, [])?;
             // The element's own, out of scope once its end is read.
-            let base = self.base();
+            let (base, joined) = (self.base(), self.joined());
             let w = self.uri_content(tag)?;
             let value = self.any_uri(&w, base)?;
+            self.joins(&w, value, joined);
             self.iri_node(&w, value);
             Ok(())
         })();
@@ -1613,6 +1785,7 @@ impl<'a> Reader<'a> {
         }
         let w = self.collapsed(&iri.value);
         let value = self.any_uri(&w, self.base()).ok()?;
+        self.joins(&w, value, self.joined());
         let resolved = match value {
             Value::Full(s) => s,
             Value::Based { base, reference } => {
@@ -1757,5 +1930,84 @@ fn context(ns: &str) -> &'static str {
             }
         }
         _ => "a:",
+    }
+}
+
+#[cfg(test)]
+mod joins {
+    use super::BaseShape;
+
+    /// Whether joining a reference to a base as strings gives its
+    /// resolution, decided from the base's shape and the reference alone,
+    /// is what resolving and joining give, over bases and references of
+    /// every shape.
+    #[test]
+    fn the_shape_of_a_base_decides_as_resolving_does() {
+        let bases = [
+            "http://example.org/lib",
+            "http://example.org/lib/",
+            "http://example.org",
+            "http://example.org/",
+            "http://example.org/lib#f",
+            "http://example.org/lib/#f",
+            "http://example.org/a/lib?x=1",
+            "http://example.org/lib/?x",
+            "http://example.org/a/./b/",
+            "http://example.org/a/../",
+            "http://example.org/a/..",
+            "http://example.org/.",
+            "urn:",
+            "urn:x",
+            "urn:a/",
+            "http:",
+            "file:///w/",
+            "file:///w/o.owx",
+            "tag:example.org,2026:",
+        ];
+        let references = [
+            "",
+            "#a",
+            "?q",
+            "?q#f",
+            "/B",
+            "/a/../b",
+            "/./b",
+            "//other.org/x",
+            "//other.org",
+            "//other.org/a/../b",
+            "Glued",
+            "a/b",
+            "./x",
+            "../x",
+            "x/.",
+            "x/..",
+            ".",
+            "..",
+            "a?q",
+            "a#f",
+            "%41",
+            ";p",
+            "a//b",
+            "a/.b",
+            "..x",
+            "/",
+            "//",
+        ];
+        for b in bases {
+            let shape = BaseShape::of(b);
+            for r in references {
+                let mut resolved = String::new();
+                oxiri::Iri::parse(b)
+                    .unwrap()
+                    .resolve_into(&oxiri::IriRef::parse(r).unwrap(), &mut resolved)
+                    .unwrap();
+                let joined = format!("{b}{r}");
+                assert_eq!(
+                    shape.joins_alike(r),
+                    joined == resolved,
+                    "<{b}> and <{r}>: resolved <{resolved}>, joined <{joined}>"
+                );
+            }
+        }
     }
 }

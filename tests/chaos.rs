@@ -4049,14 +4049,16 @@ fn owl_xml_converts(text: &str) {
             return;
         }
     };
-    assert_eq!(stop.is_some(), !p.errors.is_empty(), "{stop:?}");
+    // A warning is no error: it stops nothing.
+    let error = p.errors.iter().any(|e| e.severity == Severity::Error);
+    assert_eq!(stop.is_some(), error, "{stop:?}");
     let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
     assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
     assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
     let want: Vec<&turtle_lsp::syntax::Triple> = p
         .triples
         .iter()
-        .filter(|t| p.errors.is_empty() || writable_triple(t))
+        .filter(|t| !error || writable_triple(t))
         .collect();
     assert_eq!(want.len(), back.triples.len(), "converted:\n{nt}");
     let mut labels = (HashMap::new(), HashMap::new());
@@ -4957,10 +4959,18 @@ fn corpora_are_sorted_and_cover_every_input_family() {
     }
     // The documents written above (after the empty text and the empty
     // root, before the one with errors) read whole, so their mutations
-    // start from triples; the one with errors reads in part.
+    // start from triples; the one with errors reads in part. A relative
+    // `Import` under `xml:base` that OWL API reads otherwise is a warning,
+    // which breaks nothing.
     for text in &owx[2..6] {
         let p = parse_doc(text, Syntax::OwlXml, None, &PrefixMap::default());
-        assert!(p.errors.is_empty(), "{:?}\n{text}", p.errors);
+        assert!(
+            p.errors.iter().all(|e| e.severity == Severity::Warning
+                && e.code == "owx-syntax"
+                && e.message().contains("; OWL API reads <")),
+            "{:?}\n{text}",
+            p.errors
+        );
         assert!(p.triples.len() >= 4, "{text}");
     }
     let p = parse_doc(&owx[6], Syntax::OwlXml, None, &PrefixMap::default());

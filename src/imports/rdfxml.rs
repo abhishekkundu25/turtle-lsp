@@ -39,9 +39,13 @@ pub fn owl_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<S
 }
 
 /// The triples of `parsed`, the parse of `text`, as N-Triples text, and its
-/// first error.
+/// first error (a warning is none).
 fn ntriples(text: &str, parsed: Parsed) -> Result<(String, Option<String>), String> {
-    let stop = parsed.errors.first().map(|e| stopped_at(text, e));
+    let first_error = parsed
+        .errors
+        .iter()
+        .find(|e| e.severity == crate::syntax::Severity::Error);
+    let stop = first_error.map(|e| stopped_at(text, e));
     if parsed.triples.is_empty()
         && let Some(stop) = stop
     {
@@ -49,7 +53,7 @@ fn ntriples(text: &str, parsed: Parsed) -> Result<(String, Option<String>), Stri
     }
     let mut out = String::new();
     // Only an error can leave a term that does not parse.
-    let check = !parsed.errors.is_empty();
+    let check = first_error.is_some();
     for t in &parsed.triples {
         use std::fmt::Write;
         if check && !(is_iri(t.p) && writable(&t.s) && writable(&t.o)) {

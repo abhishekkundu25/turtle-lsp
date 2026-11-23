@@ -741,12 +741,18 @@ pub(super) fn parse(
         false,
         format.syntax(),
     );
+    // A warning is no error: the import is read whole past it.
+    let first_error = a
+        .parsed
+        .errors
+        .iter()
+        .find(|e| e.severity == crate::syntax::Severity::Error);
     if matches!(format, Format::RdfXml | Format::Functional | Format::OwlXml) {
         // Read on past its errors; the first says where it went wrong.
-        truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
+        truncated = first_error.map(|e| stopped_at(&text, e));
     }
     if a.parsed.triples.is_empty()
-        && let Some(e) = a.parsed.errors.first()
+        && let Some(e) = first_error
     {
         return Err(truncated.unwrap_or_else(|| e.message().to_string()));
     }
@@ -918,6 +924,22 @@ mod tests {
         assert_eq!(cached.truncated, o.truncated);
         assert_eq!(cached.imports, o.imports);
         assert_eq!(cached.analysis.parsed.triples.len(), 3);
+    }
+
+    /// A warning is no error: an OWL/XML import whose only diagnostic is a
+    /// warning (a reference OWL API joins to the `xml:base` otherwise) is
+    /// read whole, fresh and from the cache.
+    #[test]
+    fn an_import_with_a_warning_only_is_not_truncated() {
+        let base = "file:///w/o.owx";
+        let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/lib\" ontologyIRI=\"http://example.org/lib\">\n<Declaration><Class IRI=\"/B\"/></Declaration>\n</Ontology>\n";
+        let o = parse(text.as_bytes(), Format::OwlXml, base, false).unwrap();
+        assert_eq!(o.analysis.parsed.errors.len(), 1);
+        assert_eq!(o.analysis.parsed.triples.len(), 2);
+        assert_eq!(o.truncated, None);
+        let (nt, why) = owl_xml_to_ntriples(text.as_bytes(), base).unwrap();
+        assert_eq!(why, None);
+        assert_eq!(nt.lines().count(), 2);
     }
 
     /// The content type and the text, as a fetch weighs them: a Functional
