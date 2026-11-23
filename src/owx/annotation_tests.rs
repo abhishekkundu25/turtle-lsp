@@ -437,13 +437,17 @@ fn an_anonymous_individual_is_one_blank_node_per_node_id() {
     assert_ne!(blanks[0], blanks[1]);
 }
 
-/// A missing `nodeID`, and one that is no `NCName`, are errors.
+/// A missing `nodeID`, and one that is no `NCName` and no `_:` and an
+/// `NCName` (as OWL API writes it, [`super::rule_tests`]), are errors.
 #[test]
 fn an_anonymous_individual_needs_an_nc_name_node_id() {
     let text = doc(&[
         "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual/></ClassAssertion>",
         "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"a:b\"/></ClassAssertion>",
         "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"1x\"/></ClassAssertion>",
+        "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"_:1x\"/></ClassAssertion>",
+        "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"_:\"/></ClassAssertion>",
+        "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"_:ok\"/></ClassAssertion>",
         "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"x\"><Class abbreviatedIRI=\":A\"/></AnonymousIndividual></ClassAssertion>",
         "<ClassAssertion><Class abbreviatedIRI=\":A\"/><AnonymousIndividual nodeID=\"ok\"/></ClassAssertion>",
     ]
@@ -460,12 +464,22 @@ fn an_anonymous_individual_needs_an_nc_name_node_id() {
             (
                 CODE,
                 "a:b",
-                "'a:b' is no nodeID: a nodeID is an NCName (a name without ':')"
+                "'a:b' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName"
             ),
             (
                 CODE,
                 "1x",
-                "'1x' is no nodeID: a nodeID is an NCName (a name without ':')"
+                "'1x' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName"
+            ),
+            (
+                CODE,
+                "_:1x",
+                "'_:1x' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName"
+            ),
+            (
+                CODE,
+                "_:",
+                "'_:' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName"
             ),
             (
                 CODE,
@@ -474,7 +488,10 @@ fn an_anonymous_individual_needs_an_nc_name_node_id() {
             ),
         ]
     );
-    same_mapping(&p, &functional(&ofn("ClassAssertion(:A _:ok)")));
+    same_mapping(
+        &p,
+        &functional(&ofn("ClassAssertion(:A _:ok)\nClassAssertion(:A _:ok2)")),
+    );
 }
 
 // ---- IRI and AbbreviatedIRI elements ----

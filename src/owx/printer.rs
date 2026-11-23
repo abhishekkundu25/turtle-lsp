@@ -6,7 +6,9 @@
 //! of its keyword, and each IRI the element its slot's category names
 //! ([`Cat::entity`]): an entity element, or `IRI` where the category names
 //! none. A cardinality is the `cardinality` attribute, a facet and its
-//! value a `FacetRestriction`, and a key list its properties, flat.
+//! value a `FacetRestriction`, and a key list its properties, flat. A SWRL
+//! rule is written as OWL API writes it: a variable `<Variable IRI="…"/>`,
+//! a built-in's IRI the `IRI` attribute of its `BuiltInAtom`.
 //!
 //! It is no feature and no oracle: one hand wrote it and the reader. The
 //! tests below read the printed text back to the same tree shape and the
@@ -127,9 +129,14 @@ impl<'a> Printer<'a> {
             self.entity(e, &iri);
             return;
         }
+        if k == Keyword::Variable {
+            let iri = self.iri(kids[0]);
+            let _ = write!(self.out, "<Variable IRI=\"{}\"/>", attr(&iri));
+            return;
+        }
         let _ = write!(self.out, "<{}", k.as_str());
         let mut rest = &kids[..];
-        let slots = signature(k);
+        let mut slots = signature(k);
         if let Some((Cat::Integer, _)) = slots.first() {
             let _ = write!(
                 self.out,
@@ -137,6 +144,9 @@ impl<'a> Printer<'a> {
                 self.at(doc.nodes[rest[0]].span)
             );
             rest = &rest[1..];
+        } else if k == Keyword::BuiltInAtom {
+            let _ = write!(self.out, " IRI=\"{}\"", attr(&self.iri(rest[0])));
+            (rest, slots) = (&rest[1..], &slots[1..]);
         }
         self.out.push('>');
         for &(cat, rep) in slots {
@@ -295,27 +305,9 @@ fn content(s: &str) -> String {
 mod tests {
     use super::print;
     use crate::ofn::signature;
-    use crate::ofn::tree::{Document, NodeKind};
+    use crate::ofn::tree::Document;
     use crate::owx::reader;
-    use crate::owx::tests::{functional, same_mapping};
-
-    /// A node's kind without what the syntax spells differently (where a
-    /// literal's string ends, how an IRI is written), and the index past
-    /// its subtree.
-    fn shape(doc: &Document) -> Vec<(String, u32)> {
-        doc.nodes
-            .iter()
-            .map(|n| {
-                let kind = match n.kind {
-                    NodeKind::Construct(k) => k.as_str().to_string(),
-                    NodeKind::Iri { .. } => "IRI".into(),
-                    NodeKind::Literal { .. } => "Literal".into(),
-                    kind => format!("{kind:?}"),
-                };
-                (kind, n.next)
-            })
-            .collect()
-    }
+    use crate::owx::tests::{functional, same_mapping, shape};
 
     /// The Functional text `fs`, printed as OWL/XML, reads with no error
     /// to a tree of the same shape that fills its signatures, and to the
@@ -367,6 +359,16 @@ mod tests {
         }
         assert!(faults.is_empty(), "{}", faults.join("\n"));
         assert_eq!((same, names.len()), (78, 78));
+    }
+
+    /// A Functional text with a SWRL rule of each atom kind, printed as
+    /// OWL API writes rules, reads back to its tree's shape and its graph.
+    #[test]
+    fn a_text_with_rules_reads_the_same_as_owl_xml() {
+        let fs = include_str!("../../tests/owx/forms.ofn");
+        let xml = round_trip(fs).unwrap_or_else(|why| panic!("{why}"));
+        assert!(xml.contains("<BuiltInAtom IRI=\"http://www.w3.org/2003/11/swrlb#greaterThan\">"));
+        assert!(xml.contains("<Variable IRI=\"http://example.org/var#x\"/>"));
     }
 
     /// The global elements of the schema (the Recommendation, section 3.4),

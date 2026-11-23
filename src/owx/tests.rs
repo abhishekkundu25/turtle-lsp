@@ -9,6 +9,7 @@
 use super::source::OwlXml;
 use super::{CODE, parse, reader};
 use crate::ofn::signature;
+use crate::ofn::tree::{Document, NodeKind};
 use crate::syntax::{Form, Iri, Node, Parsed, Role, Span};
 
 pub(super) const URL: &str = "file:///w/o.owx";
@@ -106,6 +107,24 @@ pub(super) fn same_mapping(ours: &Parsed, theirs: &Parsed) {
             .collect()
     };
     assert_eq!(subjects(ours), subjects(theirs));
+}
+
+/// A node's kind without what the syntax spells differently (where a
+/// literal's string ends, how an IRI is written), and the index past its
+/// subtree: two trees of one shape map alike.
+pub(super) fn shape(doc: &Document) -> Vec<(String, u32)> {
+    doc.nodes
+        .iter()
+        .map(|n| {
+            let kind = match n.kind {
+                NodeKind::Construct(k) => k.as_str().to_string(),
+                NodeKind::Iri { .. } => "IRI".into(),
+                NodeKind::Literal { .. } => "Literal".into(),
+                kind => format!("{kind:?}"),
+            };
+            (kind, n.next)
+        })
+        .collect()
 }
 
 use Role::*;

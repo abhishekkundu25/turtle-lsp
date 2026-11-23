@@ -29,10 +29,12 @@
 //! are one list in text order, `xml-syntax` and `owx-syntax`, at most
 //! [`MAX_ERRORS`], the last then saying so.
 //!
-//! Not read yet, an error that breaks the item: literals, anonymous
-//! individuals, `IRI` and `AbbreviatedIRI` elements (so annotations), and
-//! the constructs with a cardinality, facets, keys or data properties
-//! before a range.
+//! What OWL API writes beyond the Recommendation (the departures the
+//! module `owx` lists) is read in the same walk: the SWRL elements are
+//! keywords like the others; a `Variable` is read as an entity element is,
+//! a construct with the IRI of its `IRI` or `abbreviatedIRI`; a
+//! `BuiltInAtom`'s IRI comes from the same attributes, as a `cardinality`
+//! from its own; a `nodeID` may be `_:` and an `NCName`.
 
 use super::CODE;
 use crate::ofn::rdf::{IRI_BYTES_PER_BYTE, MIN_IRI_BYTES};
@@ -196,36 +198,16 @@ enum Element {
     Leaf(Leaf),
 }
 
-/// The element named `local` in the OWL namespace. The SWRL keywords, which
-/// OWL API writes in Functional syntax, are not in the Recommendation.
+/// The element named `local` in the OWL namespace: a keyword, the SWRL
+/// ones among them, or a leaf.
 fn element(local: &str) -> Option<Element> {
-    use Keyword as K;
     let leaf = match local {
         "IRI" => Leaf::Iri,
         "AbbreviatedIRI" => Leaf::AbbreviatedIri,
         "AnonymousIndividual" => Leaf::AnonymousIndividual,
         "Literal" => Leaf::Literal,
         "FacetRestriction" => Leaf::FacetRestriction,
-        _ => {
-            return Keyword::of(local)
-                .filter(|k| {
-                    !matches!(
-                        k,
-                        K::DLSafeRule
-                            | K::Body
-                            | K::Head
-                            | K::ClassAtom
-                            | K::DataRangeAtom
-                            | K::ObjectPropertyAtom
-                            | K::DataPropertyAtom
-                            | K::BuiltInAtom
-                            | K::SameIndividualAtom
-                            | K::DifferentIndividualsAtom
-                            | K::Variable
-                    )
-                })
-                .map(Element::Keyword);
-        }
+        _ => return Keyword::of(local).map(Element::Keyword),
     };
     Some(Element::Leaf(leaf))
 }
@@ -233,7 +215,7 @@ fn element(local: &str) -> Option<Element> {
 /// Whether a slot of `cat` takes the element `leaf`.
 fn takes(cat: Cat, leaf: Leaf) -> bool {
     match leaf {
-        Leaf::Literal => matches!(cat, Cat::Literal | Cat::AnnotationValue),
+        Leaf::Literal => matches!(cat, Cat::Literal | Cat::AnnotationValue | Cat::DArg),
         Leaf::AnonymousIndividual => matches!(
             cat,
             Cat::Individual | Cat::AnnotationSubject | Cat::AnnotationValue
@@ -252,7 +234,8 @@ fn takes(cat: Cat, leaf: Leaf) -> bool {
 /// least one `DataProperty`, then a data range), the facets are at least
 /// one `FacetRestriction`, and a key list is any number of properties,
 /// under a group node. A `cardinality` is no child: the first slot, read
-/// from the attribute.
+/// from the attribute; nor is the IRI of a `BuiltInAtom`, read from its
+/// `IRI` or `abbreviatedIRI`.
 fn element_slots(k: Keyword) -> impl Iterator<Item = (Slot, Slot)> {
     signature(k).iter().flat_map(|&slot| {
         let (first, second) = match slot.0 {
@@ -296,6 +279,8 @@ fn is_non_negative_integer(s: &str) -> bool {
 fn expected(cat: Cat) -> &'static str {
     match cat {
         Cat::Iri(Some(e)) => e.name(),
+        Cat::Body => "<Body>",
+        Cat::Head => "<Head>",
         _ => cat.name(),
     }
 }
@@ -961,8 +946,8 @@ impl<'a> Reader<'a> {
     }
 
     fn construct_body(&mut self, k: Keyword, tag: &Tag<'a>) -> R {
-        if Entity::of(k).is_some() {
-            // Inside `Declaration`: the entity and its IRI.
+        if Entity::of(k).is_some() || k == Keyword::Variable {
+            // An entity inside `Declaration`, or a SWRL variable: its IRI.
             self.entity_iri(tag)?;
             return self.empty(tag);
         }
@@ -988,6 +973,9 @@ impl<'a> Reader<'a> {
         let mut part = parts.next();
         if let Some(((Cat::Integer, _), _)) = part {
             self.cardinality(tag)?;
+            part = parts.next();
+        } else if k == Keyword::BuiltInAtom {
+            self.entity_iri(tag)?;
             part = parts.next();
         } else {
             self.attrs(tag, [])?;
@@ -1261,7 +1249,8 @@ impl<'a> Reader<'a> {
     }
 
     /// `AnonymousIndividual`: a node-id node at its `nodeID` value, an
-    /// `NCName`.
+    /// `NCName`, or `_:` and an `NCName` as OWL API writes it, the whole
+    /// value its label (`x` and `_:x` are two nodes).
     fn anonymous(&mut self, tag: &Tag<'a>) -> R {
         let [node_id] = self.attrs(tag, ["nodeID"])?;
         let Some(a) = node_id else {
@@ -1269,9 +1258,9 @@ impl<'a> Reader<'a> {
             return self.stop(tag.name.span, message);
         };
         let w = Written::of(&a.value);
-        if !xml::is_nc_name(&w.text) {
+        if !xml::is_nc_name(w.text.strip_prefix("_:").unwrap_or(&w.text)) {
             let message = format!(
-                "'{}' is no nodeID: a nodeID is an NCName (a name without ':')",
+                "'{}' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName",
                 shown(&w.text)
             );
             return self.stop(w.span, message);

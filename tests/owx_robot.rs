@@ -24,6 +24,7 @@ fn analysis(uri: &str, text: &str) -> Analysis {
 }
 
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+const SWRL_VARIABLE: &str = "http://www.w3.org/2003/11/swrl#Variable";
 
 /// The classes of IRIs a declaration types them with.
 const ENTITY_TYPES: [&str; 6] = [
@@ -34,9 +35,6 @@ const ENTITY_TYPES: [&str; 6] = [
     "http://www.w3.org/2002/07/owl#NamedIndividual",
     "http://www.w3.org/2000/01/rdf-schema#Datatype",
 ];
-
-/// The error the reader gives for a SWRL rule until it reads `DLSafeRule`.
-const RULE_ERROR: &str = "<DLSafeRule> is no element of OWL/XML";
 
 /// Whether the item that gave `t` starts with `word` in `text`: the
 /// keyword of a Functional item, the start tag of an OWL/XML one.
@@ -56,8 +54,7 @@ fn iri(n: &Node) -> Option<&str> {
 /// The OBO files `tools/corpus/fetch-ofn.sh` downloads, with
 /// `OWX_ROBOT=1` (after `tools/corpus/robot-owx.sh`): the OWL/XML ROBOT
 /// writes for each reads with no error, and its graph is the graph of the
-/// Functional source, but for what OWL API changes on the way and what the
-/// reader does not read yet, each counted:
+/// Functional source, but for what OWL API changes on the way, counted:
 /// - a declaration OWL API adds for each entity the source uses without
 ///   declaring it (Table 1 gives an entity alone no triple). The smallest
 ///   input: `Ontology(<http://example.org/o>
@@ -68,10 +65,20 @@ fn iri(n: &Node) -> Option<&str> {
 ///   `X rdf:type C` (C an entity type, X an IRI the Functional graph names)
 ///   comes from a `Declaration` element, and the Functional graph does not
 ///   have it; it is taken out of the OWL/XML graph.
-/// - a SWRL rule (`DLSafeRule`), which the reader does not read until
-///   ticket 15: each is one error of its own, and its triples are taken
-///   out of the Functional graph (ticket 15 removes this allowance).
+/// - a SWRL variable whose IRI is in `urn:swrl#` is written in
+///   `urn:swrl:var#`: `DLSafeRule(Body(ClassAtom(ex:A
+///   Variable(<urn:swrl#x>))) Head(ClassAtom(ex:A
+///   Variable(<http://example.org/v#y>))))` comes back with `<Variable
+///   IRI="urn:swrl:var#x"/>` and `<Variable
+///   IRI="http://example.org/v#y"/>` (ROBOT 1.9.11's Functional and Turtle
+///   outputs keep `urn:swrl#x`). The OWL/XML is read as written; in the
+///   Functional graph, each IRI typed `swrl:Variable` in `urn:swrl#` is
+///   renamed so. `hp-pato_import.owl` has 19 such variables, and writes
+///   `x`, `y`, `z` and `p` in both namespaces, so its OWL/XML graph has
+///   four `swrl:Variable` triples fewer, one per variable merged.
 ///
+/// The SWRL rules (`DLSafeRule`, in `ro-edit.owl` and
+/// `hp-pato_import.owl`) are read and compared with the rest, counted.
 /// What remains is compared whole: the two graphs are isomorphic.
 ///
 /// OWL API also sorts the operands of an n-ary axiom: `DisjointClasses(ex:C
@@ -116,36 +123,19 @@ fn owx_robot_oracle() {
         let took_owx = start.elapsed();
         assert_eq!(b.parsed.syntax, Syntax::OwlXml, "{name}.owx");
 
-        // The rules: one error each in the OWL/XML, their triples out of the
-        // Functional graph.
-        let rules = a
-            .parsed
-            .statements
-            .iter()
-            .filter(|s| ofn[s.span.start as usize..].starts_with("DLSafeRule"))
-            .count();
-        let other: Vec<_> = b
-            .parsed
-            .errors
-            .iter()
-            .filter(|e| e.code != "owx-syntax" || e.message() != RULE_ERROR)
-            .collect();
         assert!(
-            other.is_empty(),
+            b.parsed.errors.is_empty(),
             "{name}.owx: {:?}",
-            &other[..other.len().min(5)]
+            &b.parsed.errors[..b.parsed.errors.len().min(5)]
         );
-        assert_eq!(
-            b.parsed.errors.len(),
-            rules,
-            "{name}.owx: one error per rule"
-        );
-        let functional: Vec<&Triple> = a
-            .parsed
-            .triples
-            .iter()
-            .filter(|t| !from_item(&a.parsed, &ofn, t, "DLSafeRule"))
-            .collect();
+        let rules = |p: &Parsed, text: &str, word: &str| {
+            p.statements
+                .iter()
+                .filter(|s| text[s.span.start as usize..].starts_with(word))
+                .count()
+        };
+        let rules_ofn = rules(&a.parsed, &ofn, "DLSafeRule");
+        assert_eq!(rules(&b.parsed, &owx, "<DLSafeRule"), rules_ofn, "{name}");
 
         // The declarations OWL API adds, out of the OWL/XML graph.
         let named: HashSet<&str> = a
@@ -175,18 +165,45 @@ fn owx_robot_oracle() {
         let (added, xml): (Vec<&Triple>, Vec<&Triple>) =
             b.parsed.triples.iter().partition(|t| added(t));
 
+        // The variables OWL API moves to `urn:swrl:var#`, renamed in the
+        // Functional graph.
+        let moved: HashSet<&str> = a
+            .parsed
+            .triples
+            .iter()
+            .filter(|t| t.p.as_str() == RDF_TYPE && iri(&t.o) == Some(SWRL_VARIABLE))
+            .filter_map(|t| iri(&t.s))
+            .filter(|s| s.starts_with("urn:swrl#"))
+            .collect();
+        let moved_to = |n: &Node| {
+            let i = iri(n).filter(|i| moved.contains(i))?;
+            let to = format!("urn:swrl:var#{}", &i["urn:swrl#".len()..]);
+            Some(oxrdf::NamedNode::new_unchecked(to))
+        };
+        let functional = oracle::canonical(a.parsed.triples.iter().map(|t| {
+            let mut q = oracle::quad(t);
+            if let Some(s) = moved_to(&t.s) {
+                q.subject = s.into();
+            }
+            if let Some(o) = moved_to(&t.o) {
+                q.object = o.into();
+            }
+            q
+        }));
+
         let d = oracle::difference(
-            &oracle::ours(functional.iter().copied()),
+            &functional,
             "Functional",
             &oracle::ours(xml.iter().copied()),
             "OWL/XML",
             20,
         );
         eprintln!(
-            "{name}: Functional {} triples in {took_ofn:?}, OWL/XML {} triples in {took_owx:?}; as OWL API writes otherwise: {} declarations added; not read yet: {rules} SWRL rules",
+            "{name}: Functional {} triples in {took_ofn:?}, OWL/XML {} triples in {took_owx:?}; as OWL API writes otherwise: {} declarations added, {} SWRL variables moved to urn:swrl:var#; {rules_ofn} SWRL rules",
             a.parsed.triples.len(),
             b.parsed.triples.len(),
             added.len(),
+            moved.len(),
         );
         assert!(d.is_none(), "{name}: {}", d.unwrap());
     }

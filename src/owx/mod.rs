@@ -10,6 +10,35 @@
 //! caller that names the syntax gets it. [`CODE`] is the code of the
 //! errors the reader will report, and the one the editor's note on a
 //! capped list of them carries.
+//!
+//! Where it takes what the Recommendation does not settle, as OWL API (and
+//! so ROBOT and Protégé) writes it, each held by a test on the output of
+//! ROBOT 1.9.11 (OWL API 4.5.29): `tests/owx/forms.robot-1.9.11.owx` and
+//! the rules of `rule_tests`:
+//! - SWRL rules, for which the schema has no element: `DLSafeRule`, its
+//!   `Annotation`s, `Body` and `Head` (each may be empty, `<Body/>`), and
+//!   the atoms `ClassAtom`, `DataRangeAtom`, `ObjectPropertyAtom`,
+//!   `DataPropertyAtom`, `BuiltInAtom`, `SameIndividualAtom` and
+//!   `DifferentIndividualsAtom`, with the operands of their Functional
+//!   forms as child elements, but that a built-in's IRI is the `IRI` or
+//!   `abbreviatedIRI` of its `BuiltInAtom`. A variable is `<Variable
+//!   IRI="…"/>` or `<Variable abbreviatedIRI="…"/>`, an individual argument
+//!   a variable or a `NamedIndividual`, a data argument a variable or a
+//!   `Literal`. A rule reads to the tree the Functional grammar builds for
+//!   it, so it maps to the same SWRL triples. Not read, as no ROBOT output
+//!   shows it: an `AnonymousIndividual` as an argument (OWL API does not
+//!   read one in Functional syntax).
+//! - A `nodeID` is an `NCName`, or `_:` and an `NCName` as OWL API writes
+//!   it (`_:genid2147483648`). The whole value is the label: `x` and `_:x`
+//!   are two individuals.
+//! - Literals, where the Recommendation does not say how `datatypeIRI` and
+//!   `xml:lang` combine: ROBOT writes `<Literal>` with neither for a string
+//!   (`xsd:string`, and `"…@"^^rdf:PlainLiteral`), `xml:lang` and no
+//!   `datatypeIRI` for a language string (`"…@tag"^^rdf:PlainLiteral`
+//!   too), and `datatypeIRI` for any other datatype, as the reader takes
+//!   them. It never writes `datatypeIRI` for `rdf:PlainLiteral`, so that
+//!   form is read as in Functional syntax, and without an `@` or an
+//!   `xml:lang` it is an error.
 
 #[cfg(test)]
 mod annotation_tests;
@@ -18,6 +47,8 @@ mod axiom_tests;
 #[cfg(test)]
 mod printer;
 mod reader;
+#[cfg(test)]
+mod rule_tests;
 mod source;
 #[cfg(test)]
 mod tests;
