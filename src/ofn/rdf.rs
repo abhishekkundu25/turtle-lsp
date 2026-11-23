@@ -112,10 +112,11 @@
 use super::tree::{Document, Keyword as K, NodeKind};
 use super::{CODE, MAX_ERRORS};
 use crate::syntax::{
-    BlankId, Form, Iri, Node, Parsed, RDF, Ref, Role, Severity, Span, Statement, Syntax,
-    SyntaxError, Triple, XSD,
+    BlankId, Form, Iri, Node, Parsed, PrefixDecl, RDF, Ref, Role, Severity, Span, Statement,
+    Syntax, SyntaxError, Triple, XSD,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 /// The IRIs a parse makes total at most this many bytes per byte of text,
@@ -252,13 +253,82 @@ vocab!(
     variable = SWRL "Variable",
 );
 
+/// What only the producer of a tree knows, which the mapping asks it: how
+/// node `i` of the tree spells its term, where a construct's keyword is,
+/// and whose parse it is. Spans are offsets of the producer's text. The
+/// answers depend on the tree and the node only, never on what was asked
+/// before. A source never interns: the mapper expands, memoises and
+/// interns each IRI value, under its budget.
+pub(crate) trait Source<'a> {
+    /// The syntax of the parse.
+    const SYNTAX: Syntax;
+    /// The code of the errors the mapping makes (a limit, an
+    /// `rdf:PlainLiteral` outside its lexical space).
+    const CODE: &'static str;
+    /// The length of the text, which the budgets are per byte of.
+    fn len(&self) -> usize;
+    /// The key under which the value of IRI node `i` is memoised: in one
+    /// document, equal keys have equal values.
+    fn key(&self, doc: &Document, i: usize) -> Key<'a>;
+    /// The value of IRI node `i`.
+    fn value(&self, doc: &Document, i: usize) -> IriValue<'a>;
+    /// How the text at IRI node `i` spells its IRI.
+    fn form(&self, doc: &Document, i: usize) -> Form;
+    /// The label of anonymous individual `i`: in one document, one label is
+    /// one blank node.
+    fn label(&self, doc: &Document, i: usize) -> &'a str;
+    /// Literal `i`. Its datatype, if it has one, is its child.
+    fn literal(&self, doc: &Document, i: usize) -> Literal<'a>;
+    /// The digits of integer `i`.
+    fn integer(&self, doc: &Document, i: usize) -> &'a str;
+    /// The keyword of construct `i`, where the triples its rule makes are.
+    fn keyword(&self, doc: &Document, i: usize) -> Span;
+    /// The keyword of the ontology at `ontology` ([`Document::ontology`]).
+    fn ontology_keyword(&self, ontology: Span) -> Span;
+}
+
+/// The value of an IRI node, as its producer has it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IriValue<'a> {
+    /// A full IRI.
+    Full(&'a str),
+    /// A prefix IRI, and the local part that follows it.
+    Prefixed { prefix: &'a str, local: &'a str },
+}
+
+/// The key of an IRI value: its text as written, and the scope it is
+/// written in, where one text means another IRI in another scope (a prefix
+/// name bound again).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Key<'a> {
+    pub(crate) scope: u32,
+    pub(crate) written: &'a str,
+}
+
+/// A literal, as its producer has it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Literal<'a> {
+    /// Its lexical form, its escapes read.
+    pub(crate) lexical: Cow<'a, str>,
+    /// Its language tag as written, if it has one and no datatype.
+    pub(crate) lang: Option<&'a str>,
+    /// Its string, where an error about its lexical form is.
+    pub(crate) string: Span,
+}
+
 /// The shared parse of `doc`, the grammar's reading of `text`: its
 /// triples, references, statements and prefixes, and its errors. `base`
 /// is the document's URL.
 pub(crate) fn map(text: &str, doc: Document, base: Option<&str>) -> Parsed {
-    let mut m = Mapper::new(text, &doc);
+    map_with(&Functional::new(text, &doc.prefixes), doc, base)
+}
+
+/// The shared parse of `doc`, its terms as `source` gives them: its
+/// triples, references, statements and prefixes, and its errors. `base`
+/// is the document's URL.
+pub(crate) fn map_with<'a, S: Source<'a>>(source: &S, doc: Document, base: Option<&str>) -> Parsed {
+    let mut m = Mapper::new(source, &doc);
     m.declarations();
-    m.reset_prefixes();
     m.document();
     let Mapper {
         triples,
@@ -274,7 +344,7 @@ pub(crate) fn map(text: &str, doc: Document, base: Option<&str>) -> Parsed {
     invalid.truncate(MAX_ERRORS.saturating_sub(doc.errors.len()));
     let errors = merge(doc.errors, invalid);
     Parsed {
-        syntax: Syntax::OwlFunctional,
+        syntax: S::SYNTAX,
         prefixes: doc.prefixes,
         document_base: base.map(str::to_string),
         statements,
@@ -303,13 +373,7 @@ fn merge(a: Vec<SyntaxError>, b: Vec<SyntaxError>) -> Vec<SyntaxError> {
     out
 }
 
-/// A prefix name's binding, as the grammar keeps it.
-#[derive(Clone, Copy)]
-struct Bound<'a> {
-    iri: &'a str,
-    /// Declared by the document (a Table 2 name is bound before).
-    declared: bool,
-}
+// ---- the Functional source ----
 
 /// The prefix names of Table 2, which every document has.
 const STANDARD: [(&str, &str); 4] = [
@@ -318,6 +382,187 @@ const STANDARD: [(&str, &str); 4] = [
     ("xsd", "http://www.w3.org/2001/XMLSchema#"),
     ("owl", "http://www.w3.org/2002/07/owl#"),
 ];
+
+/// A Functional text, the source of the tree the grammar reads from it:
+/// every term is its text at its node's span.
+struct Functional<'a> {
+    text: &'a str,
+    /// Each prefix name's bindings.
+    bound: FxHashMap<&'a str, Bound<'a>>,
+    /// The starts of the declarations that bind a name of Table 2 to
+    /// another IRI than its own, in text order: past each, the text of an
+    /// abbreviated IRI may mean another IRI.
+    rebound: Vec<u32>,
+}
+
+/// A prefix name's bindings. A declaration binds a name from where it is
+/// written, as the grammar read it; a name of Table 2 is bound before its
+/// declaration too, and a second declaration of a name has no effect.
+#[derive(Default)]
+struct Bound<'a> {
+    /// Its IRI in Table 2, if it is one of its names.
+    standard: Option<&'a str>,
+    /// The start of its declaration, and the IRI it binds.
+    declared: Option<(u32, &'a str)>,
+}
+
+impl<'a> Functional<'a> {
+    fn new(text: &'a str, prefixes: &[PrefixDecl]) -> Functional<'a> {
+        let mut bound: FxHashMap<&str, Bound> = STANDARD
+            .iter()
+            .map(|&(name, iri)| {
+                let b = Bound {
+                    standard: Some(iri),
+                    declared: None,
+                };
+                (name, b)
+            })
+            .collect();
+        let mut rebound = Vec::new();
+        let at = |span: Span| &text[span.start as usize..span.end as usize];
+        for d in prefixes {
+            let name = at(d.name_span);
+            let name = &name[..name.len() - 1];
+            let iri = at(d.iri_span);
+            let iri = &iri[1..iri.len() - 1];
+            let b = bound.entry(name).or_default();
+            if b.declared.is_none() {
+                b.declared = Some((d.span.start, iri));
+                if b.standard.is_some_and(|s| s != iri) {
+                    rebound.push(d.span.start);
+                }
+            }
+        }
+        Functional {
+            text,
+            bound,
+            rebound,
+        }
+    }
+
+    fn at(&self, span: Span) -> &'a str {
+        &self.text[span.start as usize..span.end as usize]
+    }
+
+    /// The node of IRI `i`, and its prefix name's length if abbreviated.
+    fn iri_node(doc: &Document, i: usize) -> (Span, Option<u32>) {
+        let n = doc.nodes[i];
+        let NodeKind::Iri { prefix_len } = n.kind else {
+            unreachable!("not an IRI: {:?}", n.kind)
+        };
+        (n.span, prefix_len)
+    }
+}
+
+impl<'a> Source<'a> for Functional<'a> {
+    const SYNTAX: Syntax = Syntax::OwlFunctional;
+    const CODE: &'static str = CODE;
+
+    fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// The IRI as written; an abbreviated one in the scope of the
+    /// rebindings before it.
+    fn key(&self, doc: &Document, i: usize) -> Key<'a> {
+        let (span, prefix_len) = Self::iri_node(doc, i);
+        let scope = match prefix_len {
+            None => 0,
+            Some(_) => self.rebound.partition_point(|&at| at < span.start) as u32,
+        };
+        Key {
+            scope,
+            written: self.at(span),
+        }
+    }
+
+    /// `<…>` without its brackets, or `pfx:local` with the IRI `pfx:` is
+    /// bound to where it is written.
+    fn value(&self, doc: &Document, i: usize) -> IriValue<'a> {
+        let (span, prefix_len) = Self::iri_node(doc, i);
+        let written = self.at(span);
+        let Some(len) = prefix_len else {
+            return IriValue::Full(&written[1..written.len() - 1]);
+        };
+        let len = len as usize;
+        // The grammar checked that the prefix is bound.
+        let prefix = self
+            .bound
+            .get(&written[..len])
+            .map_or("", |b| match b.declared {
+                Some((from, iri)) if from < span.start => iri,
+                _ => b.standard.unwrap_or(""),
+            });
+        IriValue::Prefixed {
+            prefix,
+            local: &written[len + 1..],
+        }
+    }
+
+    fn form(&self, doc: &Document, i: usize) -> Form {
+        match Self::iri_node(doc, i).1 {
+            None => Form::Iri,
+            Some(prefix_len) => Form::PName { prefix_len },
+        }
+    }
+
+    fn label(&self, doc: &Document, i: usize) -> &'a str {
+        self.at(doc.nodes[i].span)
+    }
+
+    /// `"…"`, `"…"@tag` or `"…"^^datatype`: the lexical form between the
+    /// quotes, a tag after the last `@` past them.
+    fn literal(&self, doc: &Document, i: usize) -> Literal<'a> {
+        let n = doc.nodes[i];
+        let NodeKind::Literal { string_end } = n.kind else {
+            unreachable!("not a literal: {:?}", n.kind)
+        };
+        let raw = &self.text[n.span.start as usize + 1..string_end as usize - 1];
+        let lexical = if raw.contains('\\') {
+            // The lexer let through `\"` and `\\` only.
+            let mut out = String::with_capacity(raw.len());
+            let mut chars = raw.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    c => out.push(c),
+                }
+            }
+            out.into()
+        } else {
+            raw.into()
+        };
+        let lang = if n.next as usize > i + 1 {
+            None
+        } else {
+            let after = &self.text[string_end as usize..n.span.end as usize];
+            after.rfind('@').map(|at| &after[at + 1..])
+        };
+        Literal {
+            lexical,
+            lang,
+            string: Span::new(n.span.start, string_end),
+        }
+    }
+
+    fn integer(&self, doc: &Document, i: usize) -> &'a str {
+        self.at(doc.nodes[i].span)
+    }
+
+    /// The construct's start, as long as its keyword.
+    fn keyword(&self, doc: &Document, i: usize) -> Span {
+        let n = doc.nodes[i];
+        let len = match n.kind {
+            NodeKind::Construct(k) => k.as_str().len() as u32,
+            _ => n.span.end - n.span.start,
+        };
+        Span::new(n.span.start, (n.span.start + len).min(n.span.end))
+    }
+
+    fn ontology_keyword(&self, ontology: Span) -> Span {
+        Span::new(ontology.start, ontology.start + "Ontology".len() as u32)
+    }
+}
 
 /// A triple an axiom says, with where its predicate and object are written.
 struct Said {
@@ -333,16 +578,12 @@ struct Over;
 
 type M<T = ()> = Result<T, Over>;
 
-struct Mapper<'a> {
-    text: &'a str,
-    doc: &'a Document,
+struct Mapper<'d, 'a, S> {
+    source: &'d S,
+    doc: &'d Document,
     v: &'static Vocab,
-    /// The prefix bindings in effect where the mapping is, and the next
-    /// declaration of [`Document::prefixes`] to apply.
-    bound: FxHashMap<&'a str, Bound<'a>>,
-    next_prefix: usize,
-    /// Each IRI as written, expanded, under the bindings in effect.
-    memo: FxHashMap<&'a str, Iri>,
+    /// Each IRI made, by its key.
+    memo: FxHashMap<Key<'a>, Iri>,
     buf: String,
     /// The IRIs this parse made, and their bytes.
     made: FxHashSet<Iri>,
@@ -373,22 +614,21 @@ struct Mapper<'a> {
     variables: FxHashSet<Iri>,
 }
 
-impl<'a> Mapper<'a> {
-    fn new(text: &'a str, doc: &'a Document) -> Mapper<'a> {
-        let mut m = Mapper {
-            text,
+impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
+    fn new(source: &'d S, doc: &'d Document) -> Mapper<'d, 'a, S> {
+        let len = source.len();
+        Mapper {
+            source,
             doc,
             v: vocab(),
-            bound: FxHashMap::default(),
-            next_prefix: 0,
             memo: FxHashMap::default(),
             buf: String::new(),
             made: FxHashSet::default(),
             iri_bytes: 0,
-            iri_budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
-            triple_budget: text.len().saturating_mul(TRIPLES_PER_BYTE) + MIN_TRIPLES,
+            iri_budget: len.saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
+            triple_budget: len.saturating_mul(TRIPLES_PER_BYTE) + MIN_TRIPLES,
             literal_bytes: 0,
-            literal_budget: text.len().saturating_mul(LITERAL_BYTES_PER_BYTE) + MIN_LITERAL_BYTES,
+            literal_budget: len.saturating_mul(LITERAL_BYTES_PER_BYTE) + MIN_LITERAL_BYTES,
             limit: None,
             invalid: Vec::new(),
             blanks: FxHashMap::default(),
@@ -400,31 +640,10 @@ impl<'a> Mapper<'a> {
             declared: FxHashSet::default(),
             defined: FxHashSet::default(),
             variables: FxHashSet::default(),
-        };
-        m.reset_prefixes();
-        m
-    }
-
-    fn reset_prefixes(&mut self) {
-        self.bound = STANDARD
-            .iter()
-            .map(|&(name, iri)| {
-                let b = Bound {
-                    iri,
-                    declared: false,
-                };
-                (name, b)
-            })
-            .collect();
-        self.next_prefix = 0;
-        self.memo.clear();
+        }
     }
 
     // ---- the tree ----
-
-    fn at(&self, span: Span) -> &'a str {
-        &self.text[span.start as usize..span.end as usize]
-    }
 
     fn children(&self, i: usize) -> Vec<usize> {
         self.doc.children(i).collect()
@@ -439,77 +658,40 @@ impl<'a> Mapper<'a> {
 
     /// The keyword of construct `i`, where the triples its rule makes are.
     fn keyword_span(&self, i: usize) -> Span {
-        let n = self.doc.nodes[i];
-        let len = match n.kind {
-            NodeKind::Construct(k) => k.as_str().len() as u32,
-            _ => n.span.end - n.span.start,
-        };
-        Span::new(n.span.start, (n.span.start + len).min(n.span.end))
+        self.source.keyword(self.doc, i)
     }
 
     fn span(&self, i: usize) -> Span {
         self.doc.nodes[i].span
     }
 
-    /// Apply the `Prefix` declarations written before `offset`, as the
-    /// grammar did when it read on to there.
-    fn prefixes_before(&mut self, offset: u32) {
-        while let Some(d) = self.doc.prefixes.get(self.next_prefix) {
-            if d.span.start >= offset {
-                break;
-            }
-            self.next_prefix += 1;
-            let name = self.at(d.name_span);
-            let name = &name[..name.len() - 1];
-            let iri = self.at(d.iri_span);
-            let iri = &iri[1..iri.len() - 1];
-            let new = Bound {
-                iri,
-                declared: true,
-            };
-            match self.bound.get(name).copied() {
-                Some(before) if !before.declared => {
-                    if before.iri != iri {
-                        self.memo.clear();
-                    }
-                    self.bound.insert(name, new);
-                }
-                Some(_) => {}
-                None => {
-                    self.bound.insert(name, new);
-                }
-            }
-        }
+    /// The datatype node of literal `i`, if it has one.
+    fn datatype_of(&self, i: usize) -> Option<usize> {
+        (self.doc.nodes[i].next as usize > i + 1).then_some(i + 1)
     }
 
     // ---- terms ----
 
-    /// The IRI of node `i`, an IRI as written.
+    /// The IRI of node `i`, made from its value once per key.
     fn iri(&mut self, i: usize) -> M<Iri> {
-        let n = self.doc.nodes[i];
-        let written = self.at(n.span);
-        if let Some(&iri) = self.memo.get(written) {
+        let key = self.source.key(self.doc, i);
+        if let Some(&iri) = self.memo.get(&key) {
             return Ok(iri);
         }
-        let NodeKind::Iri { prefix_len } = n.kind else {
-            unreachable!("not an IRI: {:?}", n.kind)
-        };
-        let iri = match prefix_len {
-            None => self.intern(&written[1..written.len() - 1], n.span)?,
-            Some(len) => {
-                let len = len as usize;
-                // The grammar checked that the prefix is bound.
-                let ns = self.bound.get(&written[..len]).map_or("", |b| b.iri);
+        let span = self.span(i);
+        let iri = match self.source.value(self.doc, i) {
+            IriValue::Full(iri) => self.intern(iri, span)?,
+            IriValue::Prefixed { prefix, local } => {
                 let mut buf = std::mem::take(&mut self.buf);
                 buf.clear();
-                buf.push_str(ns);
-                buf.push_str(&written[len + 1..]);
-                let iri = self.intern(&buf, n.span);
+                buf.push_str(prefix);
+                buf.push_str(local);
+                let iri = self.intern(&buf, span);
                 self.buf = buf;
                 iri?
             }
         };
-        self.memo.insert(written, iri);
+        self.memo.insert(key, iri);
         Ok(iri)
     }
 
@@ -536,7 +718,7 @@ impl<'a> Mapper<'a> {
 
     fn over<T>(&mut self, span: Span, message: String) -> M<T> {
         if self.limit.is_none() {
-            self.limit = Some(SyntaxError::new(span, message, Severity::Error, CODE));
+            self.limit = Some(SyntaxError::new(span, message, Severity::Error, S::CODE));
         }
         Err(Over)
     }
@@ -554,7 +736,7 @@ impl<'a> Mapper<'a> {
         match n.kind {
             NodeKind::Iri { .. } => Ok(Node::Iri(self.iri(i)?)),
             NodeKind::NodeId => {
-                let label = self.at(n.span);
+                let label = self.source.label(self.doc, i);
                 if let Some(&b) = self.blanks.get(label) {
                     return Ok(Node::Blank(b));
                 }
@@ -564,9 +746,9 @@ impl<'a> Mapper<'a> {
                 self.blanks.insert(label, b);
                 Ok(Node::Blank(b))
             }
-            NodeKind::Literal { string_end } => self.literal(i, string_end),
+            NodeKind::Literal { .. } => self.literal(i),
             NodeKind::Integer => Ok(Node::Literal {
-                value: self.at(n.span).into(),
+                value: self.source.integer(self.doc, i).into(),
                 datatype: self.v.non_negative_integer,
                 lang: None,
                 dir: None,
@@ -578,13 +760,13 @@ impl<'a> Mapper<'a> {
 
     /// `"…"`, `"…"@tag` or `"…"^^datatype` (Table 1: a plain literal is
     /// `"abc"` or `"abc"@tag`, any other its own literal).
-    fn literal(&mut self, i: usize, string_end: u32) -> M<Node> {
-        let n = self.doc.nodes[i];
-        let value: Box<str> = self.lexical(i, string_end).into();
+    fn literal(&mut self, i: usize) -> M<Node> {
+        let Literal { lexical, lang, .. } = self.source.literal(self.doc, i);
+        let value: Box<str> = lexical.into();
         let v = self.v;
-        if n.next as usize > i + 1 {
-            let datatype = self.iri(i + 1)?;
-            self.roles.insert(i as u32 + 1, Role::Datatype);
+        if let Some(d) = self.datatype_of(i) {
+            let datatype = self.iri(d)?;
+            self.roles.insert(d as u32, Role::Datatype);
             if datatype == v.plain_literal {
                 // Its `@` was checked before the item was mapped
                 // ([`Mapper::invalid_literal`]).
@@ -598,9 +780,8 @@ impl<'a> Mapper<'a> {
                 dir: None,
             });
         }
-        let after = &self.text[string_end as usize..n.span.end as usize];
-        match after.rfind('@') {
-            Some(at) => Ok(lang_literal(v, value, &after[at + 1..])),
+        match lang {
+            Some(tag) => Ok(lang_literal(v, value, tag)),
             None => Ok(Node::Literal {
                 value,
                 datatype: v.string,
@@ -610,25 +791,6 @@ impl<'a> Mapper<'a> {
         }
     }
 
-    /// The lexical form of the literal at node `i`, its escapes read.
-    fn lexical(&self, i: usize, string_end: u32) -> std::borrow::Cow<'a, str> {
-        let start = self.doc.nodes[i].span.start as usize + 1;
-        let raw = &self.text[start..string_end as usize - 1];
-        if !raw.contains('\\') {
-            return raw.into();
-        }
-        // The lexer let through `\"` and `\\` only.
-        let mut out = String::with_capacity(raw.len());
-        let mut chars = raw.chars();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => out.extend(chars.next()),
-                c => out.push(c),
-            }
-        }
-        out.into()
-    }
-
     /// The error of the first `rdf:PlainLiteral` in item `item` that is not
     /// of the form `"abc@langTag"`, at its quoted string (see the module
     /// doc). Checked before the item is mapped, so an item with one gives
@@ -636,15 +798,19 @@ impl<'a> Mapper<'a> {
     fn invalid_literal(&mut self, item: usize) -> M<Option<SyntaxError>> {
         let end = self.doc.nodes[item].next as usize;
         for j in item..end {
-            let n = self.doc.nodes[j];
-            let NodeKind::Literal { string_end } = n.kind else {
-                continue;
-            };
-            if n.next as usize <= j + 1 || self.iri(j + 1)? != self.v.plain_literal {
+            if !matches!(self.doc.nodes[j].kind, NodeKind::Literal { .. }) {
                 continue;
             }
-            let value = self.lexical(j, string_end);
-            let message = match value.rsplit_once('@') {
+            let Some(d) = self.datatype_of(j) else {
+                continue;
+            };
+            if self.iri(d)? != self.v.plain_literal {
+                continue;
+            }
+            let Literal {
+                lexical, string, ..
+            } = self.source.literal(self.doc, j);
+            let message = match lexical.rsplit_once('@') {
                 None => "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string(),
                 Some((_, "")) => continue,
                 Some((_, tag)) => match oxilangtag::LanguageTag::parse(tag) {
@@ -655,8 +821,12 @@ impl<'a> Mapper<'a> {
                     ),
                 },
             };
-            let span = Span::new(n.span.start, string_end);
-            return Ok(Some(SyntaxError::new(span, message, Severity::Error, CODE)));
+            return Ok(Some(SyntaxError::new(
+                string,
+                message,
+                Severity::Error,
+                S::CODE,
+            )));
         }
         Ok(None)
     }
@@ -986,7 +1156,6 @@ impl<'a> Mapper<'a> {
             if self.keyword_of(i) != Some(K::Declaration) {
                 continue;
             }
-            self.prefixes_before(self.span(i).start);
             // An annotation of the declaration may make it give nothing.
             match self.invalid_literal(i) {
                 Ok(None) => {}
@@ -1033,7 +1202,6 @@ impl<'a> Mapper<'a> {
             if matches!(k, Some(K::Import | K::Annotation)) && subject.is_none() {
                 continue;
             }
-            self.prefixes_before(self.span(i).start);
             match self.invalid_literal(i) {
                 Ok(None) => {}
                 Ok(Some(e)) => {
@@ -1099,7 +1267,7 @@ impl<'a> Mapper<'a> {
     /// and ontology annotations.
     fn header(&mut self, ontology: Span) -> M<Node> {
         let v = self.v;
-        let kw = Span::new(ontology.start, ontology.start + "Ontology".len() as u32);
+        let kw = self.source.ontology_keyword(ontology);
         let last = self.doc.version_iri.or(self.doc.ontology_iri);
         let end = last.map_or(kw.end, |i| self.span(i).end);
         self.statements.push(Statement {
@@ -1110,7 +1278,6 @@ impl<'a> Mapper<'a> {
         self.roles.clear();
         let s = match self.doc.ontology_iri {
             Some(i) => {
-                self.prefixes_before(self.span(i).start);
                 let iri = self.iri(i)?;
                 self.roles.insert(i as u32, Role::Subject);
                 self.statements.last_mut().unwrap().subject = Some((iri, self.span(i)));
@@ -1137,18 +1304,14 @@ impl<'a> Mapper<'a> {
         let end = self.doc.nodes[i].next as usize;
         for j in i..end {
             let n = self.doc.nodes[j];
-            let NodeKind::Iri { prefix_len } = n.kind else {
+            if !matches!(n.kind, NodeKind::Iri { .. }) {
                 continue;
-            };
-            let written = self.at(n.span);
-            let Some(&iri) = self.memo.get(written) else {
+            }
+            let Some(&iri) = self.memo.get(&self.source.key(self.doc, j)) else {
                 continue;
             };
             let role = self.roles.get(&(j as u32)).copied().unwrap_or(Role::Object);
-            let form = match prefix_len {
-                None => Form::Iri,
-                Some(prefix_len) => Form::PName { prefix_len },
-            };
+            let form = self.source.form(self.doc, j);
             self.refs.push(Ref {
                 span: n.span,
                 iri,
@@ -1424,7 +1587,7 @@ impl<'a> Mapper<'a> {
             other => unreachable!("{other:?} is no axiom"),
         }
         Ok(subject.map(|n| {
-            let iri = self.memo[self.at(self.span(n))];
+            let iri = self.memo[&self.source.key(self.doc, n)];
             (n, iri, declaration)
         }))
     }

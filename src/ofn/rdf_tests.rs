@@ -5,6 +5,7 @@
 //! limits. The oracles (the W3C test ontologies that have an RDF/XML text
 //! too, and ROBOT on real files) are in `tests/ofn_oracle.rs`.
 
+use super::tree::{Document, Keyword as K, NodeKind};
 use super::*;
 use crate::syntax::{Form, Iri, Node, Role, Span};
 use oxrdf::graph::CanonicalizationAlgorithm;
@@ -758,6 +759,41 @@ fn a_prefix_binds_where_it_is_declared() {
     );
 }
 
+/// The declarations pass and the mapping each read a prefix as bound where
+/// the IRI is written: the IRIs before a later binding keep the one before,
+/// in both passes.
+#[test]
+fn a_prefix_binds_where_it_is_declared_in_both_passes() {
+    let text = format!(
+        "{HEAD}Ontology(<http://example.org/o>\nClassAssertion(owl:Thing :a)\nPrefix(owl:=<http://example.org/owl#>)\nDeclaration(Class(owl:Thing))\n)"
+    );
+    let p = parse(&text, None);
+    assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+    let w3c = Iri::intern("http://www.w3.org/2002/07/owl#Thing");
+    let ours = Iri::intern("http://example.org/owl#Thing");
+    let shown: Vec<_> = p.triples[1..]
+        .iter()
+        .map(|t| (t.s.clone(), t.o.clone()))
+        .collect();
+    let class = Node::Iri(Iri::intern("http://www.w3.org/2002/07/owl#Class"));
+    let a = Node::Iri(Iri::intern("http://example.org/o#a"));
+    assert_eq!(
+        shown,
+        [(a, Node::Iri(w3c)), (Node::Iri(ours), class)],
+        "{:?}",
+        p.triples
+    );
+    // The declared IRI is the new one: defined at its declaration; the
+    // W3C one is an object.
+    let refs: Vec<_> = p
+        .refs
+        .iter()
+        .filter(|r| r.iri == w3c || r.iri == ours)
+        .map(|r| (r.iri, r.role))
+        .collect();
+    assert_eq!(refs, [(w3c, Role::Object), (ours, Role::Subject)]);
+}
+
 /// The limits: IRIs of many bytes for few bytes of text, and the triples
 /// of an annotated n-ary axiom, which repeat its annotations per pair.
 /// Past one, one error says so and the items from there on give nothing.
@@ -868,4 +904,335 @@ fn a_misplaced_import_or_annotation_gives_nothing() {
         ["Ontology(<http://example.org/o>", "Declaration(Class(:A))"]
     );
     assert_eq!(p.triples.len(), 2);
+}
+
+// ---- a second source ----
+
+/// What the test source answers for a node of a hand-built tree.
+enum Answer<'a> {
+    Iri {
+        key: &'a str,
+        value: rdf::IriValue<'a>,
+        form: Form,
+    },
+    Label(&'a str),
+    Literal {
+        lexical: &'a str,
+        lang: Option<&'a str>,
+    },
+    Integer(&'a str),
+    Construct,
+}
+
+/// A node of a hand-built tree, its answer and its children.
+struct Hand<'a> {
+    kind: NodeKind,
+    answer: Answer<'a>,
+    children: Vec<Hand<'a>>,
+}
+
+/// A source that answers from a table, over a text that spells nothing.
+struct Table<'a> {
+    text: String,
+    answers: Vec<Answer<'a>>,
+}
+
+impl<'a> rdf::Source<'a> for Table<'a> {
+    const SYNTAX: Syntax = Syntax::RdfXml;
+    const CODE: &'static str = "test-syntax";
+
+    fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    fn key(&self, _: &Document, i: usize) -> rdf::Key<'a> {
+        match self.answers[i] {
+            Answer::Iri { key, .. } => rdf::Key {
+                scope: 0,
+                written: key,
+            },
+            _ => panic!("node {i} is no IRI"),
+        }
+    }
+
+    fn value(&self, _: &Document, i: usize) -> rdf::IriValue<'a> {
+        match self.answers[i] {
+            Answer::Iri { value, .. } => value,
+            _ => panic!("node {i} is no IRI"),
+        }
+    }
+
+    fn form(&self, _: &Document, i: usize) -> Form {
+        match self.answers[i] {
+            Answer::Iri { form, .. } => form,
+            _ => panic!("node {i} is no IRI"),
+        }
+    }
+
+    fn label(&self, _: &Document, i: usize) -> &'a str {
+        match self.answers[i] {
+            Answer::Label(label) => label,
+            _ => panic!("node {i} is no anonymous individual"),
+        }
+    }
+
+    fn literal(&self, doc: &Document, i: usize) -> rdf::Literal<'a> {
+        match self.answers[i] {
+            Answer::Literal { lexical, lang } => rdf::Literal {
+                lexical: lexical.into(),
+                lang,
+                string: doc.nodes[i].span,
+            },
+            _ => panic!("node {i} is no literal"),
+        }
+    }
+
+    fn integer(&self, _: &Document, i: usize) -> &'a str {
+        match self.answers[i] {
+            Answer::Integer(digits) => digits,
+            _ => panic!("node {i} is no integer"),
+        }
+    }
+
+    fn keyword(&self, doc: &Document, i: usize) -> Span {
+        assert!(matches!(self.answers[i], Answer::Construct), "node {i}");
+        let start = doc.nodes[i].span.start;
+        Span::new(start, start + 1)
+    }
+
+    fn ontology_keyword(&self, ontology: Span) -> Span {
+        Span::new(ontology.start, ontology.start)
+    }
+}
+
+/// The namespaces of [`HEAD`] and of Table 2, for [`pname`].
+const NAMESPACES: [(&str, &str); 5] = [
+    ("", "http://example.org/o#"),
+    ("ex", "http://example.org/"),
+    ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
+    ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
+    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+];
+
+// The kinds keep no spelling the mapper could read: a slice at `u32::MAX`
+// panics.
+const NO_PREFIX_LEN: NodeKind = NodeKind::Iri {
+    prefix_len: Some(u32::MAX),
+};
+const NO_STRING_END: NodeKind = NodeKind::Literal {
+    string_end: u32::MAX,
+};
+
+fn construct(k: K, children: Vec<Hand<'_>>) -> Hand<'_> {
+    Hand {
+        kind: NodeKind::Construct(k),
+        answer: Answer::Construct,
+        children,
+    }
+}
+
+fn leaf(kind: NodeKind, answer: Answer<'_>) -> Hand<'_> {
+    Hand {
+        kind,
+        answer,
+        children: Vec::new(),
+    }
+}
+
+fn full(iri: &str) -> Hand<'_> {
+    let value = rdf::IriValue::Full(iri);
+    let answer = Answer::Iri {
+        key: iri,
+        value,
+        form: Form::Iri,
+    };
+    leaf(NodeKind::Iri { prefix_len: None }, answer)
+}
+
+/// `pfx:local`, with a prefix of [`NAMESPACES`].
+fn pname(written: &'static str) -> Hand<'static> {
+    let (name, local) = written.split_once(':').unwrap();
+    let prefix = NAMESPACES.iter().find(|(n, _)| *n == name).unwrap().1;
+    let value = rdf::IriValue::Prefixed { prefix, local };
+    let form = Form::PName {
+        prefix_len: name.len() as u32,
+    };
+    let answer = Answer::Iri {
+        key: written,
+        value,
+        form,
+    };
+    leaf(NO_PREFIX_LEN, answer)
+}
+
+fn literal<'a>(lexical: &'a str, lang: Option<&'a str>, datatype: Option<Hand<'a>>) -> Hand<'a> {
+    Hand {
+        kind: NO_STRING_END,
+        answer: Answer::Literal { lexical, lang },
+        children: datatype.into_iter().collect(),
+    }
+}
+
+/// The ontology `iri` with `items`, as a tree with a source: node `i` at
+/// offset `i` of a text of dashes, a construct over its descendants.
+fn hand_built<'a>(iri: Hand<'a>, items: Vec<Hand<'a>>) -> (Document, Table<'a>) {
+    fn push<'a>(h: Hand<'a>, nodes: &mut Vec<tree::Node>, answers: &mut Vec<Answer<'a>>) {
+        let i = nodes.len();
+        nodes.push(tree::Node {
+            kind: h.kind,
+            span: Span::new(0, 0),
+            next: 0,
+        });
+        answers.push(h.answer);
+        for c in h.children {
+            push(c, nodes, answers);
+        }
+        let next = nodes.len() as u32;
+        nodes[i].span = Span::new(i as u32, next);
+        nodes[i].next = next;
+    }
+    let (mut nodes, mut answers) = (Vec::new(), Vec::new());
+    for h in std::iter::once(iri).chain(items) {
+        push(h, &mut nodes, &mut answers);
+    }
+    let text = "-".repeat(nodes.len());
+    let doc = Document {
+        ontology: Some(Span::new(0, text.len() as u32)),
+        ontology_iri: Some(0),
+        nodes,
+        ..Document::default()
+    };
+    (doc, Table { text, answers })
+}
+
+/// A tree a second producer built, its terms not spelled in its text, maps
+/// through its source as its Functional text does, with the source's
+/// syntax and code; only the spans differ.
+#[test]
+fn a_tree_whose_terms_are_not_in_its_text_maps_like_its_functional_text() {
+    let functional = in_ontology(
+        "Declaration(Class(:A))\nSubClassOf(Annotation(rdfs:label \"apple\"@en) Annotation(ex:n \"1\"^^xsd:integer) :A ObjectMinCardinality(2 ex:p ex:B))\nClassAssertion(:A _:x)\nObjectPropertyAssertion(ex:p _:x :a)\nAnnotationAssertion(rdfs:comment :A \"Bonn\"^^rdf:PlainLiteral)",
+    );
+    let anon = || leaf(NodeKind::NodeId, Answer::Label("x"));
+    let (doc, source) = hand_built(
+        full("http://example.org/o"),
+        vec![
+            construct(K::Declaration, vec![construct(K::Class, vec![pname(":A")])]),
+            construct(
+                K::SubClassOf,
+                vec![
+                    construct(
+                        K::Annotation,
+                        vec![pname("rdfs:label"), literal("apple", Some("en"), None)],
+                    ),
+                    construct(
+                        K::Annotation,
+                        vec![
+                            pname("ex:n"),
+                            literal("1", None, Some(pname("xsd:integer"))),
+                        ],
+                    ),
+                    pname(":A"),
+                    construct(
+                        K::ObjectMinCardinality,
+                        vec![
+                            leaf(NodeKind::Integer, Answer::Integer("2")),
+                            pname("ex:p"),
+                            pname("ex:B"),
+                        ],
+                    ),
+                ],
+            ),
+            construct(K::ClassAssertion, vec![pname(":A"), anon()]),
+            construct(
+                K::ObjectPropertyAssertion,
+                vec![pname("ex:p"), anon(), pname(":a")],
+            ),
+            construct(
+                K::AnnotationAssertion,
+                vec![
+                    pname("rdfs:comment"),
+                    pname(":A"),
+                    literal("Bonn", None, Some(pname("rdf:PlainLiteral"))),
+                ],
+            ),
+        ],
+    );
+    let theirs = parse(&functional, None);
+    let ours = rdf::map_with(&source, doc, None);
+    assert_eq!(
+        difference(&graph_of(&ours), &graph_of(&theirs), "Functional"),
+        None
+    );
+    assert_eq!(theirs.triples.len(), 15, "{:?}", theirs.triples);
+    // The references, with their roles and the source's forms.
+    let refs = |p: &Parsed| -> Vec<_> { p.refs.iter().map(|r| (r.iri, r.role, r.form)).collect() };
+    assert_eq!(refs(&ours), refs(&theirs));
+    let subjects = |p: &Parsed| -> Vec<_> {
+        p.statements
+            .iter()
+            .map(|s| s.subject.map(|(iri, _)| iri))
+            .collect()
+    };
+    assert_eq!(subjects(&ours), subjects(&theirs));
+    // The mapping's one error, the invalid `rdf:PlainLiteral`, under each
+    // source's code; the parse is the source's syntax.
+    let errors = |p: &Parsed| -> Vec<_> {
+        p.errors
+            .iter()
+            .map(|e| (e.message().to_string(), e.code))
+            .collect()
+    };
+    let message = "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string();
+    assert_eq!(errors(&theirs), [(message.clone(), CODE)]);
+    assert_eq!(errors(&ours), [(message, "test-syntax")]);
+    assert_eq!(ours.errors[0].span, Span::new(27, 29));
+    assert_eq!(
+        (ours.syntax, theirs.syntax),
+        (Syntax::RdfXml, Syntax::OwlFunctional)
+    );
+}
+
+/// A source's IRIs count against the IRI budget at their full length, the
+/// prefix IRI too: past it, one error under the source's code at the IRI,
+/// and the items from there on give nothing.
+#[test]
+fn a_source_s_iris_are_charged_to_the_iri_budget() {
+    let long = format!("http://example.org/{}#", "x".repeat(60_000));
+    let names: Vec<String> = (0..40).map(|i| format!("l:C{i}")).collect();
+    let mut items = vec![construct(K::SubClassOf, vec![pname(":A"), pname(":B")])];
+    for name in &names {
+        let local = &name[2..];
+        let value = rdf::IriValue::Prefixed {
+            prefix: &long,
+            local,
+        };
+        let answer = Answer::Iri {
+            key: name,
+            value,
+            form: Form::PName { prefix_len: 1 },
+        };
+        items.push(construct(
+            K::ClassAssertion,
+            vec![leaf(NO_PREFIX_LEN, answer), pname(":a")],
+        ));
+    }
+    let (doc, source) = hand_built(full("http://example.org/o"), items);
+    assert!(source.text.len() < 200, "{}", source.text.len());
+    let class_iris: Vec<Span> = doc.top().skip(2).map(|i| doc.nodes[i + 1].span).collect();
+    let p = rdf::map_with(&source, doc, None);
+    let limit: Vec<_> = p
+        .errors
+        .iter()
+        .filter(|e| e.message().contains("bytes per byte"))
+        .collect();
+    assert_eq!(limit.len(), 1, "{:?}", p.errors);
+    assert_eq!(p.errors.len(), 1);
+    assert_eq!(limit[0].code, "test-syntax");
+    // The header, the `SubClassOf` and the assertions whose IRIs fit in
+    // the floor of 1 MiB, 17 of about 60,020 bytes each.
+    let mapped = p.statements.len();
+    assert_eq!(mapped, 2 + 17);
+    assert_eq!(limit[0].span, class_iris[17]);
+    assert!(p.triples.iter().all(|t| (t.statement as usize) < mapped));
 }
