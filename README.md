@@ -712,6 +712,17 @@ read-only, as it reads OWL Functional syntax.
   | `rdf:PlainLiteral` | none | as in Functional syntax: `text@tag` is `"text"@tag`, `text@` is `"text"`; without an `@`, `"text"` (`xsd:string`), the content whole, as OWL API reads it, with an `owx-syntax` warning |
   | any other | any | `"text"^^datatype`; the language is not used |
 
+  Two forms ROBOT does not write read otherwise in OWL API (ROBOT 1.9.11):
+  an `xml:lang` on an element above the `Literal` (the root, an axiom)
+  applies to the literals below it, as XML 1.0 (section 2.12) says, so
+  `<Ontology xml:lang="fr">` over `<Literal>chat</Literal>` gives
+  `"chat"@fr`, where OWL API ignores the inherited tag and gives
+  `"chat"`; and an `rdf:PlainLiteral` with an `@` in its text is split at
+  the last `@`, as the W3C mapping's Table 1 says, so
+  `write to someone@example` is `"write to someone"@example` and
+  `mail ab@example.org` is an error (`example.org` is no language tag),
+  where OWL API keeps the content whole as a plain string.
+
 - **Imports**: an `owl:imports` of an OWL/XML ontology resolves as any
   other (in the workspace, through a catalog, a `file:` IRI, the cache or
   the web), and an OWL/XML file's own `Import`s are followed, in the
