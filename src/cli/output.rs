@@ -464,8 +464,12 @@ pub(crate) const CODES: &[(&str, &str)] = &[
         "The OWL Functional syntax is malformed, or breaks a rule of the OWL 2 structural specification",
     ),
     (
+        "owx-syntax",
+        "The OWL/XML is malformed, or breaks a rule of the OWL 2 XML Serialization or the structural specification",
+    ),
+    (
         "unsupported-syntax",
-        "The file is in an OWL syntax that is not read (OWL/XML or Manchester): an error when an import is read from it, else a warning",
+        "The file is in an OWL syntax that is not read (Manchester): an error when an import is read from it, else a warning",
     ),
     (
         "shacl-violation",

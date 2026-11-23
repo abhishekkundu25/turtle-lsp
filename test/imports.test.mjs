@@ -621,31 +621,38 @@ test("imports in TriG and JSON-LD are read in their own syntax, whatever their I
 // imports resolve in the workspace, with no catalog; truncated.owl's error
 // is its own (an import with an error from outside the workspace warns:
 // see the fetched RDF/XML below). functional.owl, in OWL Functional syntax,
-// is read: its import resolves.
+// is read: its import resolves. owlxml.owl, in OWL/XML, is read as a
+// workspace file and states its ontology IRI, so its import resolves in the
+// workspace too, with no loader.
 const UNREAD = "which turtle-lsp does not read\\. In Protégé: File > Save as > RDF/XML or Turtle"
 const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix t: <http://example.org/onto/truncated#> .
 @prefix q: <http://example.org/onto/quoted#> .
 @prefix fn: <http://example.org/onto/functional#> .
+@prefix ox: <http://example.org/onto/owlxml#> .
 <http://example.org/app> a owl:Ontology ;
     owl:imports <http://example.org/onto/owlxml>, <http://example.org/onto/functional>,
         <http://example.org/onto/manchester>, <http://example.org/onto/frames>,
         <http://example.org/onto/truncated>, <http://example.org/onto/quoted> .
-<http://example.org/app#x> a t:Dog, t:Cat, t:Cow, q:Bird, fn:Dog .
+<http://example.org/app#x> a t:Dog, t:Cat, t:Cow, q:Bird, fn:Dog, ox:Dog .
 `
 const EXPECTED = [
-  ["owlxml", 3, "unresolved-import", new RegExp(`vendor[\\\\/]owlxml\\.owl by .*catalog-v001\\.xml, which could not be loaded: it holds OWL/XML, ${UNREAD}$`)],
   ["manchester", 3, "unresolved-import", new RegExp(`could not be loaded: it holds OWL Manchester syntax, ${UNREAD}$`)],
   ["frames", 3, "unresolved-import", /could not be loaded: read as Turtle, none of its triples is usable: each has an undeclared prefix \(first error: .+\)\. In Protégé: File > Save as > RDF\/XML or Turtle$/],
 ]
 
-test("an import in an OWL syntax is named and not read, but for OWL Functional syntax, which is; a workspace .owl with an XML error is read but for what the error breaks", async () => {
+// The Manchester file the catalog maps an import to, and a copy nothing
+// imports: the severity of each one's unsupported-syntax.
+const UNREAD_FILES = [["vendor/manchester.owl", 1], ["copy-manchester.owl", 2]]
+
+test("an import in an OWL syntax is named and not read, but for OWL Functional syntax and OWL/XML, which are; a workspace .owl with an XML error is read but for what the error breaks", async () => {
   const root = tempDir("formats")
   fs.cpSync(path.join(fixtures, "imports"), root, { recursive: true })
   const ws = path.join(root, "ws")
   const file = path.join(ws, "app.ttl")
   fs.writeFileSync(file, FORMATS)
   fs.copyFileSync(path.join(ws, "vendor", "owlxml.owl"), path.join(ws, "copy.owl"))
+  fs.copyFileSync(path.join(ws, "vendor", "manchester.owl"), path.join(ws, "copy-manchester.owl"))
   const uri = uriOf(file)
   const s = await start(ws, path.join(root, "cache"))
   try {
@@ -680,33 +687,58 @@ test("an import in an OWL syntax is named and not read, but for OWL Functional s
       assert.equal(d.severity, severity, name)
       assert.match(d.message, message, name)
     }
-    assert.ok(!diags.some((d) => d.range.start.line === positionOf(FORMATS, "<http://example.org/onto/functional>", 0).line && d.message.includes("functional")), JSON.stringify(diags))
+    for (const name of ["functional", "owlxml"]) {
+      const at = positionOf(FORMATS, `<http://example.org/onto/${name}>`, 0)
+      assert.ok(!diags.some((d) => d.range.start.line === at.line && d.message.includes(name)), JSON.stringify(diags))
+    }
+    // The OWL/XML one: its class is described where it is declared, in the
+    // file and in its copy, both workspace files.
+    const oxDog = positionOf(FORMATS, "ox:Dog", 3)
+    await hoverUntil(s, uri, oxDog, "owl:Class")
+    const oxDef = await s.request("textDocument/definition", { textDocument: { uri }, position: oxDog })
+    assert.deepEqual(
+      oxDef.map((l) => [l.uri.replace(/.*\/ws\//, ""), l.range.start]).sort(),
+      [["copy.owl", { line: 13, character: 20 }], ["vendor/owlxml.owl", { line: 13, character: 20 }]],
+    )
     // The class after the error is read as a property of the one the error
     // leaves open, so it has no label; the import itself is described in
     // the workspace, so it gets no warning.
     assert.doesNotMatch(await hoverText(s, uri, positionOf(FORMATS, "t:Cow", 3)), /Truncated cow/)
     assert.ok(!diags.some((d) => d.code === "import-truncated"), JSON.stringify(diags))
-    // The OWL/XML file an import is read from: an error; a copy nothing
+    // The Manchester file an import is read from: an error; a copy nothing
     // imports: a warning.
-    for (const [name, severity] of [["vendor/owlxml.owl", 1], ["copy.owl", 2]]) {
+    for (const [name, severity] of UNREAD_FILES) {
       const owl = path.join(ws, name)
       const doc = uriOf(owl)
       s.open(doc, fs.readFileSync(owl, "utf8"))
       const unsupported = (d) => d.find((x) => x.code === "unsupported-syntax")
       const d = unsupported(await diagnosticsUntil(s, doc, (d) => unsupported(d)?.severity === severity))
-      assert.match(d.message, /holds OWL\/XML/, name)
+      assert.match(d.message, /holds OWL Manchester syntax/, name)
+    }
+    // The OWL/XML file and its copy are read, clean: nothing to report.
+    for (const name of ["vendor/owlxml.owl", "copy.owl"]) {
+      const owl = path.join(ws, name)
+      const doc = uriOf(owl)
+      s.open(doc, fs.readFileSync(owl, "utf8"))
+      assert.deepEqual(await s.diagnosticsFor(doc), [], name)
     }
   } finally {
     await s.stop()
   }
 
-  // The same for the closed files, in workspace diagnostics.
+  // The same for the closed files, in workspace diagnostics: nothing is
+  // published for the OWL/XML ones.
   const w = await start(ws, path.join(root, "cache"), { diagnostics: { workspace: true } })
   try {
-    for (const [name, severity] of [["vendor/owlxml.owl", 1], ["copy.owl", 2]]) {
+    for (const [name, severity] of UNREAD_FILES) {
       const doc = uriOf(path.join(ws, name))
       const unsupported = (d) => d.find((x) => x.code === "unsupported-syntax")
       await diagnosticsUntil(w, doc, (d) => unsupported(d)?.severity === severity)
+    }
+    for (const name of ["vendor/owlxml.owl", "copy.owl"]) {
+      const doc = uriOf(path.join(ws, name))
+      const found = w.publications.filter((p) => p.uri === doc && p.diagnostics.length > 0)
+      assert.deepEqual(found, [], name)
     }
   } finally {
     await w.stop()

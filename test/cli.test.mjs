@@ -787,6 +787,22 @@ SubClassOf(:A)
 Declaration(Class(:A))
 )
 `
+const OWL_XML = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/x">
+    <Prefix name="" IRI="http://example.org/x#"/>
+    <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+</Ontology>
+`
+// An undeclared prefix (owx-syntax, 4:68), then an end tag that closes
+// nothing, which leaves <Declaration> open (xml-syntax, 6:6 and 6:48).
+const BROKEN_OWL_XML = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/x">
+    <Prefix name="" IRI="http://example.org/x#"/>
+    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>
+    <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+    <Declaration><Class abbreviatedIRI=":C"/></Class>
+</Ontology>
+`
 const MANCHESTER = `Prefix: : <http://example.org/m#>
 Ontology: <http://example.org/m>
 Class: A
@@ -852,6 +868,48 @@ test("check: a Functional .ofn or .owl is checked for errors (ofn-syntax, exit 1
   assert.equal(j.summary.errors, 2)
 })
 
+test("check: an OWL/XML .owx or .owl is checked for errors (owx-syntax and xml-syntax, exit 1), with the exit codes of any syntax; a clean one has none (exit 0)", (t) => {
+  const ws = workspace(t, { "onto.owx": OWL_XML, "upper.OWX": OWL_XML, "owlxml.owl": OWL_XML, "broken.owx": BROKEN_OWL_XML, "broken-owlxml.owl": BROKEN_OWL_XML, "data.ttl": "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c .\n" })
+  const r = run(ws, ["check"])
+  assert.equal(r.code, 1, r.out + r.err)
+  assert.deepEqual(firstTwo(r), [
+    "broken-owlxml.owl:4:68: error[owx-syntax]",
+    "broken-owlxml.owl:6:6: error[xml-syntax]",
+    "broken-owlxml.owl:6:48: error[xml-syntax]",
+    "broken.owx:4:68: error[owx-syntax]",
+    "broken.owx:6:6: error[xml-syntax]",
+    "broken.owx:6:48: error[xml-syntax]",
+  ])
+  assert.match(r.out, /^broken\.owx:4:68: error\[owx-syntax\] Undeclared prefix 'nope:'/m)
+  assert.match(r.out, /^broken\.owx:6:48: error\[xml-syntax\] <\/Class> closes no open element$/m)
+  assert.doesNotMatch(r.out + r.err, /unsupported-syntax|not an RDF or SPARQL file/)
+  assert.match(r.err, /6 errors, 0 warnings in 2 files/)
+  // Named files: the clean ones pass, the broken ones fail.
+  const clean = run(ws, ["check", "onto.owx", "upper.OWX", "owlxml.owl"])
+  assert.equal(clean.code, 0, clean.out + clean.err)
+  assert.equal(clean.out, "")
+  assert.equal(run(ws, ["check", "broken.owx"]).code, 1)
+  // Each code is selected and ignored like any other.
+  assert.equal(run(ws, ["check", "--ignore", "owx-syntax"]).code, 1)
+  assert.equal(run(ws, ["check", "--ignore", "owx-syntax,xml-syntax"]).code, 0)
+  assert.equal(run(ws, ["check", "--exit-zero", "broken.owx"]).code, 0)
+  const selected = run(ws, ["check", "--select", "owx-syntax", "broken.owx"])
+  assert.equal(selected.code, 1)
+  assert.deepEqual(firstTwo(selected), ["broken.owx:4:68: error[owx-syntax]"])
+  // As JSON: each problem's code, severity and position.
+  const j = JSON.parse(run(ws, ["check", "--format", "json", "broken.owx"]).out)
+  assert.deepEqual(j.files.map((f) => f.path), ["broken.owx"])
+  assert.deepEqual(
+    j.files[0].diagnostics.map((d) => [d.code, d.severity, d.range.start, d.fixes]),
+    [
+      ["owx-syntax", "error", { line: 4, column: 68 }, []],
+      ["xml-syntax", "error", { line: 6, column: 6 }, []],
+      ["xml-syntax", "error", { line: 6, column: 48 }, []],
+    ],
+  )
+  assert.equal(j.summary.errors, 3)
+})
+
 test("check: an unsupported-syntax .owl that a workspace file imports is an error (exit 1), through a catalog or a file: IRI", (t) => {
   const catalog = `<?xml version="1.0"?>
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
@@ -913,12 +971,12 @@ f:a a f:A .
   assert.doesNotMatch(viaFile.out, /unsupported-syntax|unresolved-import/)
 })
 
-test("format: RDF/XML and Functional files in a folder are passed over without a word (exit 0); a named one is not formatted: RDF/XML, OWL Functional syntax (exit 2); an .owl that holds Turtle is Turtle", (t) => {
-  const ws = workspace(t, { "onto.owl": OWL, "broken.rdf": BROKEN_OWL, "functional.owl": FUNCTIONAL, "onto.ofn": FUNCTIONAL, "broken.ofn": BROKEN_FUNCTIONAL, "a.ttl": UNFORMATTED })
+test("format: RDF/XML, Functional and OWL/XML files in a folder are passed over without a word (exit 0); a named one is not formatted: RDF/XML, OWL Functional syntax, OWL/XML (exit 2); an .owl that holds Turtle is Turtle", (t) => {
+  const ws = workspace(t, { "onto.owl": OWL, "broken.rdf": BROKEN_OWL, "functional.owl": FUNCTIONAL, "onto.ofn": FUNCTIONAL, "broken.ofn": BROKEN_FUNCTIONAL, "onto.owx": OWL_XML, "broken.owx": BROKEN_OWL_XML, "owlxml.owl": OWL_XML, "a.ttl": UNFORMATTED })
   for (const args of [["format", "--check"], ["format", "--diff"]]) {
     const r = run(ws, args)
     assert.equal(r.code, 1, args.join(" "))
-    assert.doesNotMatch(r.out + r.err, /owl|rdf|ofn/, args.join(" "))
+    assert.doesNotMatch(r.out + r.err, /owl|owx|rdf|ofn/i, args.join(" "))
   }
   const j = run(ws, ["format", "--check", "--format", "json"])
   const v = JSON.parse(j.out)
@@ -940,6 +998,12 @@ test("format: RDF/XML and Functional files in a folder are passed over without a
   assert.equal(functional.err, "broken.ofn: not formatted: OWL Functional syntax\nfunctional.owl: not formatted: OWL Functional syntax\nonto.ofn: not formatted: OWL Functional syntax\n")
   assert.equal(read(ws, "onto.ofn"), FUNCTIONAL)
   assert.equal(read(ws, "broken.ofn"), BROKEN_FUNCTIONAL)
+  const owlXml = run(ws, ["format", "onto.owx", "owlxml.owl", "broken.owx"])
+  assert.equal(owlXml.code, 2)
+  assert.equal(owlXml.err, "broken.owx: not formatted: OWL/XML\nonto.owx: not formatted: OWL/XML\nowlxml.owl: not formatted: OWL/XML\n")
+  assert.equal(read(ws, "onto.owx"), OWL_XML)
+  assert.equal(read(ws, "owlxml.owl"), OWL_XML)
+  assert.equal(read(ws, "broken.owx"), BROKEN_OWL_XML)
   // The content decides: Turtle under an .owl name is formatted as Turtle.
   fs.writeFileSync(path.join(ws, "turtle.owl"), UNFORMATTED)
   const turtle = run(ws, ["format", "--check"])

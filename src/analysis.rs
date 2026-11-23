@@ -993,6 +993,24 @@ mod tests {
         assert_eq!(iris(&c)[0], "untitled:Untitled-1#me");
     }
 
+    /// A `.owx` name, in any letter case, and a `.owl` name whose text is
+    /// OWL/XML are read by the OWL/XML frontend: its errors, its triples.
+    #[test]
+    fn an_analysis_of_an_owl_xml_document_comes_from_its_frontend() {
+        let text = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n  <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>Apple</Literal></AnnotationAssertion>\n</Ontology>\n";
+        for uri in ["file:///w/o.owx", "file:///w/o.owl", "file:///w/O.OWX"] {
+            let a = doc(uri, text);
+            assert_eq!(a.parsed.syntax, Syntax::OwlXml, "{uri}");
+            assert_eq!(a.parsed, crate::owx::parse(text, Some(uri)), "{uri}");
+            let codes: Vec<_> = a.parsed.errors.iter().map(|e| e.code).collect();
+            assert_eq!(codes, [crate::owx::CODE], "{uri}");
+            let at = |s: Span| &text[s.start as usize..s.end as usize];
+            assert_eq!(at(a.parsed.errors[0].span), "nope:B", "{uri}");
+            assert!(a.defs.contains_key("http://example.org/o#A"), "{uri}");
+            assert_eq!(a.label("http://example.org/o#A"), Some("Apple"), "{uri}");
+        }
+    }
+
     #[test]
     fn every_line_based_and_trig_syntax_reads_the_uri_as_base() {
         let trig = doc("file:///w/a.trig", "<g> { <#me> <p> <o> }\n");

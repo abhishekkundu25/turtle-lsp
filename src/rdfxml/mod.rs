@@ -39,14 +39,18 @@ const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 const FUNCTIONAL: &str =
     "holds OWL Functional syntax, which turtle-lsp reads as such, not as RDF/XML";
 
+/// What an OWL/XML text given as RDF/XML is said to hold.
+const OWL_XML: &str = "holds OWL/XML, which turtle-lsp reads as such, not as RDF/XML";
+
 /// Parse an RDF/XML document into the shared parse model. `base` is the
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     let unread = match Sniffed::of(text) {
-        // Read by its own frontend, never given here but by a caller that
-        // names the syntax.
+        // Read by their own frontends, never given here but by a caller
+        // that names the syntax.
         Sniffed::Functional => Some(FUNCTIONAL.to_string()),
+        Sniffed::OwlXml => Some(OWL_XML.to_string()),
         other => other.unread(),
     };
     let Some(unread) = unread else {
@@ -104,17 +108,24 @@ mod tests {
                 "{}",
                 e.message()
             );
-            // The words the import loader uses; Functional syntax is read
-            // there.
-            match Sniffed::of(text).unread() {
-                Some(unread) => {
+            // The words the import loader uses for a syntax that is not
+            // read; the OWL syntaxes that are read are named as such.
+            match name {
+                "OWL Functional syntax" => {
+                    assert_eq!(e.message(), format!("The document {FUNCTIONAL}"));
+                }
+                "OWL/XML" => assert_eq!(
+                    e.message(),
+                    "The document holds OWL/XML, which turtle-lsp reads as such, not as RDF/XML"
+                ),
+                _ => {
+                    let unread = Sniffed::of(text).unread().unwrap();
                     assert_eq!(e.message(), format!("The document {unread}"));
                     assert!(
                         e.message()
                             .ends_with("In Protégé: File > Save as > RDF/XML or Turtle")
                     );
                 }
-                None => assert_eq!(e.message(), format!("The document {FUNCTIONAL}")),
             }
         }
     }

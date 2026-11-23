@@ -113,16 +113,27 @@ test("help lists codes and explain; each prints its usage", () => {
   }
 })
 
-test("explain: the RDF/XML and OWL Functional codes are known codes, on by default", () => {
+test("explain: the RDF/XML, OWL Functional and OWL/XML codes are known codes, on by default, in codes, explain and --format json", () => {
+  const listed = run(["codes"]).lines
+  const codes = JSON.parse(run(["codes", "--format", "json"]).out).codes
   for (const [code, description] of [
     ["xml-syntax", /^xml-syntax: The XML is malformed/m],
     ["rdfxml-syntax", /^rdfxml-syntax: The XML is not valid RDF\/XML$/m],
     ["ofn-syntax", /^ofn-syntax: The OWL Functional syntax is malformed, or breaks a rule of the OWL 2 structural specification$/m],
-    ["unsupported-syntax", /^unsupported-syntax: The file is in an OWL syntax that is not read \(OWL\/XML or Manchester\): an error when an import is read from it, else a warning$/m],
+    ["owx-syntax", /^owx-syntax: The OWL\/XML is malformed, or breaks a rule of the OWL 2 XML Serialization or the structural specification$/m],
+    ["unsupported-syntax", /^unsupported-syntax: The file is in an OWL syntax that is not read \(Manchester\): an error when an import is read from it, else a warning$/m],
   ]) {
     const r = run(["explain", code])
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, description)
     assert.match(r.out, /^Default: on$/m)
+    assert.match(listed.find((l) => l.startsWith(`${code} `)) ?? "", /^\S+\s+on\s/, code)
+    const entry = codes.find((c) => c.code === code)
+    assert.equal(entry?.default, "on", code)
+    const j = run(["explain", code, "--format", "json"])
+    assert.equal(j.code, 0, j.err)
+    const { enable, disable, ...rest } = JSON.parse(j.out)
+    assert.deepEqual(rest, entry, code)
+    assert.match(disable, /lint\.ignore/, code)
   }
 })
