@@ -58,8 +58,9 @@
 //! an `Ontology`).
 //!
 //! Limits: constructs nest at most [`grammar::MAX_NESTING`] deep (deeper is
-//! an error, never a deep stack), and at most [`MAX_ERRORS`] errors are
-//! reported, the last saying so. Time is linear in the text.
+//! an error, never a deep stack), and at most [`MAX_ERRORS`] errors and
+//! warnings are reported, then one more error that says so. Time is
+//! linear in the text.
 
 mod grammar;
 mod lexer;

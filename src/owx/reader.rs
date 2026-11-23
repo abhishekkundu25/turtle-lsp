@@ -30,7 +30,7 @@
 //! fault count moves while it is read (from its start tag to its end tag),
 //! when its end is implied, or when it uses a base in error. The errors
 //! are one list in text order, `xml-syntax` and `owx-syntax`, at most
-//! [`MAX_ERRORS`], the last then saying so.
+//! [`MAX_ERRORS`] with the warnings, then one more that says so.
 //!
 //! What OWL API writes beyond the Recommendation (the departures the
 //! module `owx` lists) is read in the same walk: the SWRL elements are

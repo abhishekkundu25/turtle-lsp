@@ -223,9 +223,10 @@ errors. The editor and the browser toolbox show the first 1,000 of a
 Turtle-family document and one error that says there are more
 (`features::diagnostics::MAX_SYNTAX_ERRORS`); `check` reports all of them.
 An OWL Functional or OWL/XML document has a limit of its own, in its
-frontend: at most 10,000 errors (`ofn::MAX_ERRORS`, which `owx` takes too;
-of them at most 100 from the XML scanner), the last saying so, for the
-editor and `check` alike; the editor's cap applies within them.
+frontend: at most 10,000 errors and warnings (`ofn::MAX_ERRORS`, which
+`owx` takes too; of them at most 100 from the XML scanner), then one more
+error that says so, for the editor and `check` alike; the editor's cap
+applies within them.
 
 Every `Workspace` method that changes what the workspace holds (a document
 opened, edited, saved or closed, files changed on disk, the settings'

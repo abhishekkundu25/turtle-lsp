@@ -621,7 +621,8 @@ as Functional syntax, read-only, as it reads RDF/XML.
   browser editor its own colouring; each gets the features above. A
   Functional `.owl` keeps the editor's XML language.
 - **Limits**: constructs nest at most 256 deep (deeper is an error), a
-  document reports at most 10,000 errors, and the mapping stops (with an
+  document reports at most 10,000 errors and warnings, then one more error
+  that says the rest are not reported, and the mapping stops (with an
   error) past 16 bytes of IRIs, 2 triples or 16 bytes of literals per byte
   of text (an annotated n-ary axiom repeats its annotations for each pair).
 
@@ -767,7 +768,8 @@ read-only, as it reads OWL Functional syntax.
 - **Limits**: the XML scanner's, as in RDF/XML (elements nest at most 256
   deep; at most 256 DOCTYPE entities, whose expansions total at most
   64 KB; entity expansion bounded per byte of text); at most 100
-  `xml-syntax` errors and 10,000 errors in all, the last saying so; the
+  `xml-syntax` errors, and 10,000 errors and warnings in all, then one
+  more error that says the rest are not reported; the
   mapping's budgets of Functional syntax; and a budget of the same size
   (16 bytes per byte of text) for the bases and prefix IRIs the reader
   resolves. Time is linear in the text, however
