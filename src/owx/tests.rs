@@ -636,21 +636,16 @@ fn prefix_declarations_in_error() {
 fn iris_resolve_against_the_base_in_scope() {
     let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/one/\" ontologyIRI=\"o\">\n<Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n<Declaration><Class IRI=\"B\"/></Declaration>\n<Declaration xml:base=\"two/\"><Class IRI=\"C\"/></Declaration>\n<Declaration xml:base=\"two/\"><Class xml:base=\"../three/x\" IRI=\"#D\"/></Declaration>\n<Declaration><Class IRI=\"http://example.org/a/../E\"/></Declaration>\n</Ontology>";
     let p = read(text, Some(URL));
-    // OWL API reads a nested relative `xml:base` as written.
+    // OWL API reads a nested relative `xml:base` as written. It refuses
+    // an `xml:base` on an entity element itself ("Attribute not found:
+    // IRI", ROBOT 1.9.11), so `#D` gets no warning naming its reading.
     assert_eq!(
         errors(text, &p),
-        [
-            (
-                CODE,
-                "C",
-                "Read as <http://example.org/one/two/C> (XML Base); OWL API reads <two/C>"
-            ),
-            (
-                CODE,
-                "#D",
-                "Read as <http://example.org/one/three/x#D> (XML Base); OWL API reads <../three/x#D>"
-            ),
-        ]
+        [(
+            CODE,
+            "C",
+            "Read as <http://example.org/one/two/C> (XML Base); OWL API reads <two/C>"
+        )]
     );
     let iri = "http://example.org/";
     assert_eq!(

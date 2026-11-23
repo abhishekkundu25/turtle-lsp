@@ -185,7 +185,8 @@ struct Scope {
 /// `IRI`, `<IRI>`, `<Import>`, `datatypeIRI` or Prefix `IRI` (and SWRL's
 /// `IRI`s) is the nearest `xml:base` as written, the reference joined to
 /// it as strings; `ontologyIRI`, `versionIRI` and `facet` it does not
-/// resolve. Where that is not the resolution of XML Base, a warning.
+/// resolve, and an `xml:base` on an entity element itself it refuses.
+/// Where the joined IRI is not the resolution of XML Base, a warning.
 #[derive(Clone, Copy)]
 struct Joined {
     /// The `xml:base` as written.
@@ -1113,7 +1114,15 @@ impl<'a> Reader<'a> {
             (Some(a), None) => {
                 let w = self.collapsed(&a.value);
                 let value = self.any_uri(&w, self.base())?;
-                self.joins(&w, value, self.joined());
+                // OWL API refuses an `xml:base` on an entity element
+                // itself: it reads no IRI there to name.
+                let own_base = tag
+                    .attrs
+                    .iter()
+                    .any(|a| a.name.ns() == Some(xml::XML_NS) && a.name.local() == "base");
+                if !own_base {
+                    self.joins(&w, value, self.joined());
+                }
                 (w, value)
             }
             (None, Some(a)) => {
