@@ -99,9 +99,9 @@ test("one set of limits: admit leaves out unknown extensions, big files and what
   assert.equal(admit(entries, { onlyKnown: false }).take.length, 4, "with any extension, only the big one is left out")
   assert.match(limitsNote(), /10 MB.*at most 1000/)
   assert.ok(KNOWN.test("x.TTL") && !KNOWN.test("x.md"))
-  for (const name of ["onto.owl", "data.rdf", "ONTO.OWL", "onto.ofn", "ONTO.OFN"]) assert.ok(KNOWN.test(name), name)
-  for (const name of ["data.xml", "onto.owx", "onto.omn"]) assert.ok(!KNOWN.test(name), name)
-  assert.match(limitsNote(), /RDF\/XML \(\.owl, \.rdf\), OWL Functional \(\.ofn\)/)
+  for (const name of ["onto.owl", "data.rdf", "ONTO.OWL", "onto.ofn", "ONTO.OFN", "onto.owx", "ONTO.OWX"]) assert.ok(KNOWN.test(name), name)
+  for (const name of ["data.xml", "onto.omn"]) assert.ok(!KNOWN.test(name), name)
+  assert.match(limitsNote(), /RDF\/XML \(\.owl, \.rdf\), OWL Functional \(\.ofn\), OWL\/XML \(\.owx\)/)
   assert.deepEqual(picked([{ name: "a.ttl" }, { name: "b.ttl", webkitRelativePath: "dir/b.ttl" }]).map((e) => e.path), ["a.ttl", "dir/b.ttl"])
 })
 
@@ -110,11 +110,11 @@ test("the toolbox's file picker accepts exactly the extensions a folder contribu
   const accept = html.match(/id="picker"[^>]*accept="([^"]*)"/)[1].split(",")
   const listed = KNOWN.source.match(/\(([^)]*)\)/)[1].split("|").map((e) => `.${e}`)
   assert.deepEqual(accept, listed)
-  assert.ok(accept.includes(".owl") && accept.includes(".rdf") && accept.includes(".ofn"), accept.join(","))
+  assert.ok(accept.includes(".owl") && accept.includes(".rdf") && accept.includes(".ofn") && accept.includes(".owx"), accept.join(","))
 })
 
-test("the RDF Editor opens .owl and .rdf files as Monaco's XML and .ofn files as OWL Functional syntax, which the server's providers that read serve", () => {
-  for (const name of ["onto.owl", "dir/data.RDF"]) assert.equal(languageOf(name), "xml", name)
+test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn files as OWL Functional syntax, which the server's providers that read serve", () => {
+  for (const name of ["onto.owl", "dir/data.RDF", "a.owx", "dir/O.OWX"]) assert.equal(languageOf(name), "xml", name)
   for (const name of ["onto.ofn", "dir/O.OFN"]) assert.equal(languageOf(name), "ofn", name)
   assert.deepEqual(READ_ONLY, ["xml", "ofn"])
   assert.equal(languageOf("carol.jsonld"), "json")
@@ -123,6 +123,8 @@ test("the RDF Editor opens .owl and .rdf files as Monaco's XML and .ofn files as
   const editor = fs.readFileSync(path.join(app, "editor.js"), "utf8")
   assert.match(editor, /const ICON = \{[^}]*\bxml: "XML", ofn: "OFN"/)
   assert.match(editor, /xml: "RDF\/XML", ofn: "OWL Functional" \}\[languageOf\(file\)\]/)
+  // An .owx file is XML to Monaco; the status bar names it OWL/XML.
+  assert.match(editor, /\/\\\.owx\$\/i\.test\(file\) \? "OWL\/XML" : \{/)
   // connect() registers the server's features on its languages, JSON, XML
   // and OWL Functional syntax; on the last two, only those that read.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")

@@ -380,8 +380,9 @@ function renderStatus() {
   $("status-shacl").textContent = s
   $("status-labels").textContent = settings.labelsText()
   // The language and the cursor of the file shown; none while the graph is.
+  // An `.owx` file is XML to Monaco and OWL/XML by its name.
   const file = shownFile()
-  $("status-lang").textContent = file ? { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD", xml: "RDF/XML", ofn: "OWL Functional" }[languageOf(file)] : ""
+  $("status-lang").textContent = !file ? "" : /\.owx$/i.test(file) ? "OWL/XML" : { turtle: "Turtle", trig: "TriG", ntriples: "N-Triples", nquads: "N-Quads", sparql: "SPARQL", json: "JSON-LD", xml: "RDF/XML", ofn: "OWL Functional" }[languageOf(file)]
   const pos = file && editor.getPosition()
   $("status-pos").textContent = pos ? `Ln ${pos.lineNumber}, Col ${pos.column}` : ""
 }
