@@ -26,7 +26,7 @@ pub(crate) enum Target {
 pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     // An XML namespace prefix is no Turtle prefix: in RDF/XML every
     // reference is its IRI, whatever part of it the cursor is on. So in an
-    // OWL Functional document, which records no prefix uses.
+    // OWL Functional or OWL/XML document, which records no prefix uses.
     match a.parsed.syntax {
         Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
             let r = a.ref_at(offset)?;
@@ -595,7 +595,7 @@ pub(crate) fn renamed_iri_at(
     new_name: &str,
 ) -> Result<String, String> {
     let prefixes = jsonld::prefixes_at(a, offset);
-    // An RDF/XML or OWL Functional document is never renamed in
+    // An RDF/XML, OWL Functional or OWL/XML document is never renamed in
     // ([`rename`] refuses); the new name is read as in Turtle.
     let bare_iri = match a.parsed.syntax {
         Syntax::JsonLd => true,
@@ -731,7 +731,7 @@ pub(crate) fn rename_term(
 }
 
 /// Whether `a` is a document that is not edited ([`super::writes`]: RDF/XML,
-/// OWL Functional syntax) whose triples name `iri`, as subject,
+/// OWL Functional syntax, OWL/XML) whose triples name `iri`, as subject,
 /// predicate, object or datatype, or inside a triple term. Its references
 /// do not say it all: an entity reference stands for everything read from
 /// it, and a production implies vocabulary no name is written for.

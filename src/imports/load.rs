@@ -8,14 +8,17 @@
 //! extension of the URL it was finally fetched from, else from what it starts
 //! with. The format never comes from the import IRI.
 //!
-//! A local RDF/XML or OWL Functional file is analysed by its frontend over
-//! its own text, so locations point into the file. A fetched one is
-//! converted to N-Triples ([`rdf_xml_to_ntriples`],
-//! [`functional_to_ntriples`]), and that text is what is cached and
-//! analysed. A text in OWL Functional syntax is read as such whatever its
-//! name or content type says (servers send `.owl` files as
-//! `application/rdf+xml` or `text/plain`, whatever their syntax); one in
-//! OWL/XML or Manchester syntax is refused.
+//! A local RDF/XML, OWL Functional or OWL/XML file is analysed by its
+//! frontend over its own text, so locations point into the file. A fetched
+//! one is converted to N-Triples ([`rdf_xml_to_ntriples`],
+//! [`functional_to_ntriples`], [`owl_xml_to_ntriples`]), and that text is
+//! what is cached and analysed. A text in OWL Functional syntax or OWL/XML
+//! is read as such whatever its name or content type says (servers send
+//! `.owl` files as `application/rdf+xml`, `application/xml` or
+//! `text/plain`, whatever their syntax), and between the two XML formats
+//! the text decides, so RDF/XML under a `.owx` name or the type
+//! `application/owl+xml` is read as RDF/XML. One in Manchester syntax is
+//! refused.
 
 use super::catalog::{Catalog, Target};
 use super::rdfxml::stopped_at;
@@ -275,8 +278,10 @@ pub(super) fn load(
 // ---- the web ----
 
 /// What a web import is asked for: its content types, best first. OWL
-/// Functional syntax, which is read too, last: a server with an RDF form
-/// of the same ontology sends that.
+/// Functional syntax and OWL/XML, which are read too, last: a server with
+/// an RDF form of the same ontology sends that. `application/owl+xml` is
+/// the type the OWL/XML Recommendation names (section 6); IANA does not
+/// list it.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8, text/owl-functional;q=0.7, application/owl+xml;q=0.7";
 
@@ -619,7 +624,7 @@ pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Result<(Format, bool), Stri
 }
 
 /// The format to read a document in, from its first bytes ([`Sniffed`]), or
-/// why it is not read.
+/// why it is not read (Manchester).
 pub fn sniff(bytes: &[u8]) -> Result<Format, String> {
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(SNIFF_BYTES)]);
     Sniffed::of(&head).format()

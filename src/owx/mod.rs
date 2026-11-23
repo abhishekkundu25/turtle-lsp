@@ -3,13 +3,23 @@
 //! Functional syntax that every feature treats as it treats Functional
 //! syntax, read-only.
 //!
-//! It has no reader yet: [`parse`] gives the RDF/XML frontend's answer for
-//! the text (for an OWL/XML text, no triples and one `unsupported-syntax`
-//! error that names the syntax) under [`Syntax::OwlXml`]. Nothing leads a
-//! document here yet (no extension, language id or content), so only a
-//! caller that names the syntax gets it. [`CODE`] is the code of the
-//! errors the reader will report, and the one the editor's note on a
-//! capped list of them carries.
+//! A `.owx` name leads here, and so does a `.owl` or `.rdf` text that
+//! sniffs as OWL/XML ([`Syntax::of`]), and an import in OWL/XML. The stages:
+//! - [`crate::rdfxml::xml`], the XML scanner of the RDF/XML frontend, with
+//!   its spans, namespaces and limits on nesting and entities;
+//! - [`reader`]: the Recommendation's schema and prose, checked in one walk
+//!   driven by the signature table ([`crate::ofn::signature`]), into the
+//!   tree the Functional grammar builds ([`crate::ofn::tree::Document`]);
+//! - [`source`]: what the mapping asks of each node (its IRI value, its
+//!   reference form, its literal), answered from the text and the reader's
+//!   terms;
+//! - the mapping of Functional syntax ([`crate::ofn::rdf::map_with`]), into
+//!   the shared [`Parsed`], so no feature has OWL/XML-specific code.
+//!
+//! It names only `syntax`, `ofn` and `rdfxml::xml` (the `boundaries` test
+//! in `src/lib.rs`). [`CODE`] is the code of every error but the scanner's
+//! (`xml-syntax`), and the one the editor's note on a capped list carries.
+//! An item with an error gives nothing; the rest is read.
 //!
 //! Where it takes what the Recommendation does not settle, as OWL API (and
 //! so ROBOT and Protégé) writes it, each held by a test on the output of

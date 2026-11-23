@@ -1,7 +1,13 @@
-//! The mapping of a Functional document to RDF: the operator T of OWL 2
-//! Web Ontology Language Mapping to RDF Graphs (Second Edition, W3C
+//! The mapping of an OWL 2 document to RDF: the operator T of OWL 2 Web
+//! Ontology Language Mapping to RDF Graphs (Second Edition, W3C
 //! Recommendation 11 December 2012, section 2), over the [`Document`] the
-//! grammar builds, into the shared [`Parsed`].
+//! Functional grammar or the OWL/XML reader builds, into the shared
+//! [`Parsed`]. The mapper asks a [`Source`], one per producer, for what
+//! only the producer knows: each IRI's value (a full IRI, a prefix IRI and
+//! a local part, or a base and a reference to resolve) and its reference
+//! form, a literal's parts, an anonymous individual's label, where a
+//! keyword is, and the syntax and code of the parse. It expands, resolves,
+//! memoises and interns each IRI itself, under its budget.
 //!
 //! Each row of Table 1 is one arm of [`Mapper::term`] (class expressions,
 //! property expressions, data ranges, literals) or [`Mapper::axiom`] (the
@@ -29,9 +35,10 @@
 //! - a literal `"abc@en"^^rdf:PlainLiteral` is `"abc"@en` and
 //!   `"abc@"^^rdf:PlainLiteral` is `"abc"` (Table 1), the tag split at the
 //!   last `@`; a language tag is lowercased, as [`Node::Literal`] keeps it.
-//!   Any other `rdf:PlainLiteral` (no `@`, or a tag that is not a BCP 47
-//!   language tag) is an error at its quoted string, and its item gives
-//!   nothing: Table 1 has no row for it, and the datatype's definition
+//!   An `rdf:PlainLiteral` whose source gives it a language too (OWL/XML's
+//!   `xml:lang` in scope) is `"text"@tag`, its text whole. Any other
+//!   `rdf:PlainLiteral` (no `@`, or a tag that is not a BCP 47 language
+//!   tag) is an error at its string, and its item gives nothing: Table 1 has no row for it, and the datatype's definition
 //!   leaves it out of the lexical space ("An rdf:PlainLiteral lexical form
 //!   is a string of the form "abc@langTag" where "abc" is an arbitrary
 //!   (possibly empty) string, and "langTag" is either the empty string or
@@ -86,12 +93,17 @@
 //!   makes it; `o_span` at the construct or term the object comes from;
 //!   the triples of a list at its item;
 //! - a [`Statement`] per mapped item (an import, an ontology annotation,
-//!   an axiom), from its keyword to its `)`, and one for the header, from
-//!   `Ontology` to the ontology IRI or version IRI written (its keyword
-//!   when it has no IRI). A statement's subject is set where the item
+//!   an axiom), over its node (from its keyword to its `)`; an OWL/XML
+//!   element), and one for the header, from the start of the ontology to
+//!   the later of the ontology IRI and the version IRI written (OWL/XML
+//!   may write the version IRI first), or to its keyword when it has no
+//!   IRI. A statement's subject is set where the item
 //!   defines its IRI (see below);
-//! - a [`Ref`] per IRI written in a mapped item, at its exact text:
-//!   [`Form::Iri`] for `<…>`, [`Form::PName`] for `pfx:local`. The role:
+//! - a [`Ref`] per IRI written in a mapped item, at its exact text, in
+//!   the form its source gives: in Functional syntax [`Form::Iri`] for
+//!   `<…>` and [`Form::PName`] for `pfx:local`; in OWL/XML the same for an
+//!   `IRI` and an `abbreviatedIRI`, and [`Form::Anchor`] where an entity or
+//!   character reference spells it. The role:
 //!   [`Role::Predicate`] where the IRI is a triple's predicate,
 //!   [`Role::Datatype`] for a literal's datatype, [`Role::Subject`] where
 //!   it is defined, [`Role::About`] where an item's main triple has it as
@@ -103,11 +115,12 @@
 //!   `AnnotationAssertion( … :A … )`, `ClassAssertion( … :a )`); the
 //!   ontology IRI, at the header. Definitions are where go-to-definition
 //!   leads and what makes a term described in the workspace;
-//! - the `Prefix( … )` declarations, as
-//!   [`PrefixDecl`](crate::syntax::PrefixDecl)s: a Functional
+//! - the prefix declarations (`Prefix( … )`, OWL/XML's `Prefix`
+//!   elements), as [`PrefixDecl`](crate::syntax::PrefixDecl)s: an OWL
 //!   document's prefixes hold for the whole document, as Turtle's do;
 //! - no tokens, comments or prefix uses (nothing edits the document, and
-//!   an undeclared prefix is an `ofn-syntax` error).
+//!   an undeclared prefix is an error of its producer, `ofn-syntax` or
+//!   `owx-syntax`).
 
 use super::tree::{Document, Keyword as K, NodeKind};
 use super::{CODE, MAX_ERRORS};
@@ -280,7 +293,7 @@ pub(crate) trait Source<'a> {
     fn label(&self, doc: &Document, i: usize) -> &'a str;
     /// Literal `i`. Its datatype, if it has one, is its child.
     fn literal(&self, doc: &Document, i: usize) -> Literal<'a>;
-    /// The digits of integer `i`.
+    /// The text of integer `i`: its digits, and in OWL/XML perhaps a sign.
     fn integer(&self, doc: &Document, i: usize) -> &'a str;
     /// The keyword of construct `i`, where the triples its rule makes are.
     fn keyword(&self, doc: &Document, i: usize) -> Span;

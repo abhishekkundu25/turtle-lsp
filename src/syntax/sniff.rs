@@ -1,7 +1,8 @@
 //! What a text is written in, from how it starts: the RDF syntaxes
-//! turtle-lsp reads, OWL Functional syntax, whose axioms it maps to RDF,
-//! and the OWL syntaxes it names but does not read. The import loader,
-//! `Syntax::of_content` and the RDF/XML frontend ask.
+//! turtle-lsp reads, OWL Functional syntax and OWL/XML, whose axioms it
+//! maps to RDF, and OWL Manchester syntax, which it names but does not
+//! read. The import loader, `Syntax::of_content` and the RDF/XML frontend
+//! ask.
 
 /// How far a sniff looks: past an XML declaration, comments and a DOCTYPE
 /// with entities to the root element.
@@ -72,11 +73,11 @@ impl Sniffed {
         }
     }
 
-    /// What a text in an OWL syntax that is not read holds and how to make
-    /// RDF of it, as the end of a sentence ("holds OWL Manchester syntax,
-    /// which turtle-lsp does not read. In Protégé: …"); `None` for the
-    /// syntaxes it reads: the RDF syntaxes, OWL Functional syntax and
-    /// OWL/XML.
+    /// What a text in OWL Manchester syntax, the one OWL syntax that is not
+    /// read, holds and how to make RDF of it, as the end of a sentence
+    /// ("holds OWL Manchester syntax, which turtle-lsp does not read. In
+    /// Protégé: …"); `None` for the syntaxes it reads: the RDF syntaxes,
+    /// OWL Functional syntax and OWL/XML.
     pub(crate) fn unread(self) -> Option<String> {
         match self {
             Sniffed::Turtle

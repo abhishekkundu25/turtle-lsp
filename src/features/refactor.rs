@@ -26,8 +26,8 @@ pub fn code_actions(
     lazy: bool,
 ) -> Vec<CodeActionOrCommand> {
     // Every refactoring here reads or writes prefixes, which N-Triples and
-    // N-Quads lack and JSON-LD keeps in its context; RDF/XML and OWL
-    // Functional syntax are not edited.
+    // N-Quads lack and JSON-LD keeps in its context; RDF/XML, OWL
+    // Functional syntax and OWL/XML are not edited.
     match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG => {}
         Syntax::NTriples

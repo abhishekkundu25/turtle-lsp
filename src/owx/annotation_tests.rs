@@ -801,76 +801,81 @@ fn annotations_in_error() {
 
 // ---- across features ----
 
-/// On one small document: hover on a class shows the label from its
-/// `AnnotationAssertion`; a deprecated class is reported at its use and
-/// not at its own axioms; the outline names each term once.
-#[test]
-fn the_features_read_labels_and_deprecation() {
-    use crate::analysis::{Analysis, Encoding};
-    use crate::features::{diagnostics, hover, symbols};
-    use crate::knowledge::{Knowledge, Source};
-    use lsp_types::HoverContents;
-    use std::sync::Arc;
-    let text = doc(&[
-        "<Declaration><Class abbreviatedIRI=\":Old\"/></Declaration>",
-        "<Declaration><Class abbreviatedIRI=\":New\"/></Declaration>",
-        "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"owl:deprecated\"/><AbbreviatedIRI>:Old</AbbreviatedIRI><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#boolean\">true</Literal></AnnotationAssertion>",
-        "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:Old</AbbreviatedIRI><Literal xml:lang=\"en\">old thing</Literal></AnnotationAssertion>",
-        "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:New</AbbreviatedIRI><Literal>new thing</Literal></AnnotationAssertion>",
-        "<SubClassOf><Class abbreviatedIRI=\":Old\"/><Class abbreviatedIRI=\":Thing\"/></SubClassOf>",
-        "<SubClassOf><Class abbreviatedIRI=\":New\"/><Class abbreviatedIRI=\":Old\"/></SubClassOf>",
-    ]
-    .join("\n"));
-    // The tree fills its signatures.
-    clean(&text);
-    let a = Arc::new(Analysis::with_syntax(
-        URL.into(),
-        &text,
-        Arc::default(),
-        true,
-        crate::syntax::Syntax::OwlXml,
-    ));
-    let mut k = Knowledge::default();
-    k.set(URL, Source::Open, a.clone());
-    let enc = Encoding::Utf8;
-    // Hover on `:New` in the last axiom.
-    let use_at = text.rfind("\":New\"").unwrap() + 2;
-    let h = hover::hover(&a, &k, enc, a.position(enc, use_at as u32)).unwrap();
-    let HoverContents::Markup(m) = &h.contents else {
-        panic!("{h:?}")
-    };
-    assert!(m.value.contains("new thing"), "{}", m.value);
-    // Deprecated at its use only, in the last axiom.
-    let d = diagnostics::diagnostics_with(&a, &k, enc, &Default::default());
-    let found: Vec<_> = d
-        .iter()
-        .map(|d| match &d.code {
-            Some(lsp_types::NumberOrString::String(c)) => (c.as_str(), d.range.start),
-            _ => ("", d.range.start),
-        })
-        .collect();
-    let old = text.rfind("\":Old\"").unwrap() + 1;
-    assert_eq!(
-        found,
-        [("deprecated-term", a.position(enc, old as u32))],
-        "{d:?}"
-    );
-    // The outline names each term once.
-    let outline = symbols::document_symbols(&a, enc);
-    let mut names: Vec<String> = Vec::new();
-    fn walk(s: &[lsp_types::DocumentSymbol], out: &mut Vec<String>) {
-        for s in s {
-            out.push(s.name.clone());
-            walk(s.children.as_deref().unwrap_or_default(), out);
+#[cfg(test)]
+mod across_features {
+    use super::*;
+
+    /// On one small document: hover on a class shows the label from its
+    /// `AnnotationAssertion`; a deprecated class is reported at its use and
+    /// not at its own axioms; the outline names each term once.
+    #[test]
+    fn the_features_read_labels_and_deprecation() {
+        use crate::analysis::{Analysis, Encoding};
+        use crate::features::{diagnostics, hover, symbols};
+        use crate::knowledge::{Knowledge, Source};
+        use lsp_types::HoverContents;
+        use std::sync::Arc;
+        let text = doc(&[
+            "<Declaration><Class abbreviatedIRI=\":Old\"/></Declaration>",
+            "<Declaration><Class abbreviatedIRI=\":New\"/></Declaration>",
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"owl:deprecated\"/><AbbreviatedIRI>:Old</AbbreviatedIRI><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#boolean\">true</Literal></AnnotationAssertion>",
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:Old</AbbreviatedIRI><Literal xml:lang=\"en\">old thing</Literal></AnnotationAssertion>",
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:New</AbbreviatedIRI><Literal>new thing</Literal></AnnotationAssertion>",
+            "<SubClassOf><Class abbreviatedIRI=\":Old\"/><Class abbreviatedIRI=\":Thing\"/></SubClassOf>",
+            "<SubClassOf><Class abbreviatedIRI=\":New\"/><Class abbreviatedIRI=\":Old\"/></SubClassOf>",
+        ]
+        .join("\n"));
+        // The tree fills its signatures.
+        clean(&text);
+        let a = Arc::new(Analysis::with_syntax(
+            URL.into(),
+            &text,
+            Arc::default(),
+            true,
+            crate::syntax::Syntax::OwlXml,
+        ));
+        let mut k = Knowledge::default();
+        k.set(URL, Source::Open, a.clone());
+        let enc = Encoding::Utf8;
+        // Hover on `:New` in the last axiom.
+        let use_at = text.rfind("\":New\"").unwrap() + 2;
+        let h = hover::hover(&a, &k, enc, a.position(enc, use_at as u32)).unwrap();
+        let HoverContents::Markup(m) = &h.contents else {
+            panic!("{h:?}")
+        };
+        assert!(m.value.contains("new thing"), "{}", m.value);
+        // Deprecated at its use only, in the last axiom.
+        let d = diagnostics::diagnostics_with(&a, &k, enc, &Default::default());
+        let found: Vec<_> = d
+            .iter()
+            .map(|d| match &d.code {
+                Some(lsp_types::NumberOrString::String(c)) => (c.as_str(), d.range.start),
+                _ => ("", d.range.start),
+            })
+            .collect();
+        let old = text.rfind("\":Old\"").unwrap() + 1;
+        assert_eq!(
+            found,
+            [("deprecated-term", a.position(enc, old as u32))],
+            "{d:?}"
+        );
+        // The outline names each term once.
+        let outline = symbols::document_symbols(&a, enc);
+        let mut names: Vec<String> = Vec::new();
+        fn walk(s: &[lsp_types::DocumentSymbol], out: &mut Vec<String>) {
+            for s in s {
+                out.push(s.name.clone());
+                walk(s.children.as_deref().unwrap_or_default(), out);
+            }
         }
+        walk(&outline, &mut names);
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("Old")), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("New")), "{names:?}");
     }
-    walk(&outline, &mut names);
-    let mut sorted = names.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(sorted.len(), names.len(), "{names:?}");
-    assert!(names.iter().any(|n| n.contains("Old")), "{names:?}");
-    assert!(names.iter().any(|n| n.contains("New")), "{names:?}");
 }
 
 /// A literal's object span and the reference at a datatype's value hold

@@ -2,9 +2,9 @@
 //! structural specification) over [`super::lexer`], into a [`Document`].
 //!
 //! Each construct is `Keyword(` its arguments `)`, and each keyword has one
-//! signature ([`signature`]): a list of argument slots, each a category
-//! (class expression, data range, individual, …) taken once, at most once,
-//! or at least n times. The descent is bounded ([`MAX_NESTING`]); past it
+//! signature in the table the OWL/XML reader reads too ([`signature`]): a
+//! list of argument slots, each a category (class expression, data range,
+//! individual, …) taken once, at most once, or at least n times. The descent is bounded ([`MAX_NESTING`]); past it
 //! the axiom is an error. After an error the axiom is abandoned and the
 //! parse goes on after it ([`Parser::recover`]): at the `)` that closes it,
 //! or at the next axiom keyword followed by `(` when it is not closed, so

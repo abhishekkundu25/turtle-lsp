@@ -132,8 +132,8 @@ impl Parsed {
 
 impl Syntax {
     /// The tokens [`parse_with_base`] reads `src` as, comments included:
-    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, RDF/XML and
-    /// OWL Functional syntax, which have their own frontends.
+    /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, RDF/XML, OWL
+    /// Functional syntax and OWL/XML, which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
         match self {
             Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {

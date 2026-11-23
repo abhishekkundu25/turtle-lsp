@@ -1,7 +1,7 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
 //! Takes real Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with
-//! embedded SPARQL among them), JSON-LD, RDF/XML and OWL Functional
+//! embedded SPARQL among them), JSON-LD, RDF/XML, OWL Functional and OWL/XML
 //! documents and SPARQL queries and updates, mutates them thousands of times (cuts, unbalanced brackets, stray
 //! quotes, multi-byte characters, CRLF and lone CR, truncation, repeated
 //! brackets, huge tokens) and runs the parser and every editor feature on each
@@ -19,7 +19,8 @@
 //! then exits the process.
 //!
 //! The mutations rarely build a 10,000-level nest or a megabyte token, so
-//! `pathological_inputs_are_survived` writes those down, each on a 2 MiB
+//! the `pathological_*` tests write those down (for OWL/XML also entity
+//! ladders, long values and bases, annotated n-ary axioms), each on a 2 MiB
 //! thread, the smallest stack a host gives its threads.
 
 use lsp_types::{
@@ -1448,7 +1449,7 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
 }
 
 /// `text` parsed with its own frontend: JSON-LD with no remote contexts,
-/// RDF/XML and OWL Functional syntax (through an analysis, against `base` or
+/// RDF/XML, OWL Functional syntax and OWL/XML (through an analysis, against `base` or
 /// the document's URL), the Turtle family with `prefixes` from outside.
 fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
     match syntax {
@@ -1467,7 +1468,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     let p = parse_doc(text, syntax, None, &PrefixMap::default());
     spans_are_inside(text, &p);
     // RDF/XML's blank nodes are numbered, not named at random: a second read
-    // gives the same parse. So does OWL Functional syntax's.
+    // gives the same parse. So do OWL Functional syntax's and OWL/XML's.
     if matches!(
         syntax,
         Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
@@ -1589,7 +1590,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // nothing to format when empty.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    // RDF/XML and OWL Functional syntax are never formatted.
+    // RDF/XML, OWL Functional syntax and OWL/XML are never formatted.
     let refused = match syntax {
         Syntax::JsonLd => {
             a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()

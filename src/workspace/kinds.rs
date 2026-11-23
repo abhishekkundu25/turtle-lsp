@@ -22,7 +22,8 @@ pub(crate) enum FileKind {
     /// A SPARQL query or update.
     Sparql,
     /// RDF whose syntax its content gives (`.owl`, `.rdf`): RDF/XML, or
-    /// Turtle or JSON-LD under that name (`Syntax::of`). A workspace file,
+    /// Turtle, JSON-LD, OWL Functional syntax or OWL/XML under that name
+    /// (`Syntax::of`). A workspace file,
     /// read and never written, and an `owl:imports` target through a
     /// catalog.
     Ontology,
@@ -122,8 +123,8 @@ impl Row {
 }
 
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`,
-/// `.jsonld`, `.owl`, `.rdf` or `.ofn` (OWL Functional syntax, its axioms
-/// read as RDF), in any letter case.
+/// `.jsonld`, `.owl`, `.rdf`, `.ofn` (OWL Functional syntax) or `.owx`
+/// (OWL/XML), the axioms of the last two read as RDF, in any letter case.
 pub(crate) fn is_rdf_file(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),

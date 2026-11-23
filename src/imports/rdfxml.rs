@@ -1,9 +1,9 @@
-//! RDF/XML and OWL Functional syntax as N-Triples text, for the cache of a
-//! fetched import (a cache file holds Turtle). The RDF/XML frontend
-//! ([`crate::rdfxml`]) reads RDF/XML, with its limits on what the XML may
-//! ask for, and the Functional frontend ([`crate::ofn`]) maps Functional
-//! syntax to RDF; a local import is analysed by its frontend directly, over
-//! the file's own text.
+//! RDF/XML, OWL Functional syntax and OWL/XML as N-Triples text, for the
+//! cache of a fetched import (a cache file holds Turtle). The RDF/XML
+//! frontend ([`crate::rdfxml`]) reads RDF/XML, with its limits on what the
+//! XML may ask for, and the Functional and OWL/XML frontends
+//! ([`crate::ofn`], [`crate::owx`]) map their axioms to RDF; a local import
+//! is analysed by its frontend directly, over the file's own text.
 
 use crate::rdf::dataset::node_term;
 use crate::syntax::{Iri, Node, Parsed, SyntaxError};

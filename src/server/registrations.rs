@@ -1,9 +1,10 @@
 //! The features that write a document or offer text to type: formatting,
 //! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) are
 //! read-only, and their editor keeps its own XML language, so the editor
-//! should not offer these features there. Nor in OWL Functional files
-//! (`.ofn`, the `ofn` language of VS Code and Neovim), which are read-only
-//! too: [`LANGUAGES`] leaves `ofn` out.
+//! should not offer these features there. Nor in OWL/XML files (`.owx`),
+//! which editors keep in their XML language too, nor in OWL Functional
+//! files (`.ofn`, the `ofn` language of VS Code and Neovim), which are
+//! read-only too: [`LANGUAGES`] leaves `xml` and `ofn` out.
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
@@ -12,7 +13,7 @@
 //! `initializationOptions` ([`OPT_IN`]): each of the four features that the
 //! client can register dynamically (`dynamicRegistration`) is then left out
 //! of the result and registered once the client is initialized, for
-//! [`selector`], which leaves RDF/XML and OWL Functional files out. VS Code opts in, so that it
+//! [`selector`], which leaves RDF/XML, OWL/XML and OWL Functional files out. VS Code opts in, so that it
 //! lists no turtle-lsp formatter for XML files. The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does

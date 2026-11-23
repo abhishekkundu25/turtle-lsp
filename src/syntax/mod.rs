@@ -1,8 +1,8 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
 //! editor feature reads one parse. JSON-LD and RDF/XML have their own
-//! frontends, which build the same [`Parsed`], and so has OWL Functional
-//! syntax; this module calls none of them.
+//! frontends, which build the same [`Parsed`], and so have OWL Functional
+//! syntax and OWL/XML; this module calls none of them.
 //! [`sniff`] tells from a text's start which syntax it is in.
 
 mod iri;
@@ -26,9 +26,9 @@ pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 /// The language a document is written in. One parser reads the first four:
 /// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
-/// with an optional graph label before each line's `.`. JSON-LD, RDF/XML
-/// and OWL Functional syntax have their own frontends, which build the same
-/// [`Parsed`].
+/// with an optional graph label before each line's `.`. JSON-LD, RDF/XML,
+/// OWL Functional syntax and OWL/XML have their own frontends, which build
+/// the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
@@ -48,10 +48,11 @@ pub enum Syntax {
     /// its axioms to RDF triples by the W3C mapping. Nothing edits it, as
     /// RDF/XML: it has no tokens, no formatting and no statement splice.
     OwlFunctional,
-    /// The OWL 2 XML Serialization: a notational variant of OWL Functional
-    /// syntax, read as Functional syntax is and never edited: no tokens, no
-    /// formatting and no statement splice. No extension, language id or
-    /// content leads here yet, so only a caller that names it gets it.
+    /// The OWL 2 XML Serialization (OWL/XML: `.owx`, or a `.owl` or `.rdf`
+    /// text whose root is OWL/XML's `Ontology`): a notational variant of OWL
+    /// Functional syntax, read as Functional syntax is and never edited: no
+    /// tokens, no formatting and no statement splice. No language id names
+    /// it: editors keep it in their XML language.
     OwlXml,
 }
 
@@ -71,7 +72,8 @@ impl Syntax {
     }
 
     /// From the extension of a path or URI, in any letter case (`Data.TTL` is
-    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`, `.ofn`.
+    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`, `.ofn`,
+    /// `.owx`. Not `.xml`: an ordinary XML file is no RDF.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
         let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
@@ -89,7 +91,7 @@ impl Syntax {
 
     /// Whether a path or URI names a file whose syntax its content gives:
     /// `.owl` or `.rdf`, in any letter case. Such a name is RDF/XML, or
-    /// Turtle, JSON-LD or OWL Functional syntax written under it
+    /// Turtle, JSON-LD, OWL Functional syntax or OWL/XML written under it
     /// ([`Syntax::of_content`]).
     pub fn by_content(path: &str) -> bool {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -99,10 +101,10 @@ impl Syntax {
     }
 
     /// The syntax of a text whose name does not fix one, from how it
-    /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too), JSON-LD or OWL
-    /// Functional syntax when it is that, else RDF/XML. A text in an OWL
-    /// syntax that is not read (OWL/XML, Manchester) is RDF/XML here too:
-    /// the RDF/XML frontend names it in an `unsupported-syntax` error. A text of white
+    /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too), JSON-LD, OWL
+    /// Functional syntax or OWL/XML when it is that, else RDF/XML. A text in
+    /// OWL Manchester syntax, which is not read, is RDF/XML here too: the
+    /// RDF/XML frontend names it in an `unsupported-syntax` error. A text of white
     /// space only (or nothing) is RDF/XML, as its `.owl` or `.rdf` name
     /// says: it gets no Turtle completion or formatting until Turtle is
     /// written in it.
@@ -154,8 +156,8 @@ impl Syntax {
     /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
     /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
     /// syntaxes have none, JSON-LD defines its own in `@context`, RDF/XML
-    /// in XML namespaces and OWL Functional syntax in `Prefix(…)`
-    /// declarations.
+    /// in XML namespaces, OWL Functional syntax in `Prefix(…)` declarations
+    /// and OWL/XML in `Prefix` elements.
     pub(crate) fn has_prefixes(self) -> bool {
         match self {
             Syntax::Turtle | Syntax::TriG => true,
@@ -207,9 +209,9 @@ pub enum Role {
     /// Subject of a top-level statement: this is where a resource is described.
     Subject,
     /// The subject of a statement that says more about a resource the
-    /// document introduces elsewhere: an OWL Functional axiom about a term
-    /// whose definition (its `Declaration`) is another axiom. Neither a
-    /// definition nor a use of the term.
+    /// document introduces elsewhere: an OWL axiom (Functional syntax or
+    /// OWL/XML) about a term whose definition (its `Declaration`) is another
+    /// axiom. Neither a definition nor a use of the term.
     About,
     Predicate,
     Object,
@@ -245,7 +247,9 @@ pub enum Form {
     A,
     /// The span is near the IRI, not its text: the XML tag of the triple it
     /// is in (RDF/XML), which may spell the IRI through a namespace or an
-    /// entity, or not at all. Nothing slices the text at it or writes there.
+    /// entity, or not at all, or an OWL/XML value with an entity or
+    /// character reference in it. Nothing slices the text at it or writes
+    /// there.
     Anchor,
 }
 
@@ -409,8 +413,8 @@ pub struct SyntaxError {
     /// The diagnostic code: `syntax` for Turtle and its relatives,
     /// `json-syntax` and `jsonld-context` for JSON-LD, `xml-syntax` and
     /// `rdfxml-syntax` for RDF/XML, `ofn-syntax` for OWL Functional syntax,
-    /// and `unsupported-syntax` for a text in an OWL syntax that is not
-    /// read.
+    /// `xml-syntax` and `owx-syntax` for OWL/XML, and `unsupported-syntax`
+    /// for a text in an OWL syntax that is not read.
     pub code: &'static str,
 }
 

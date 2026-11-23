@@ -355,9 +355,9 @@ impl Check {
         }
     }
 
-    /// Whether the check runs on an RDF/XML or OWL Functional document,
-    /// which nothing edits. Its syntax errors do (`xml-syntax`,
-    /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`); SHACL results
+    /// Whether the check runs on an RDF/XML, OWL Functional or OWL/XML
+    /// document, which nothing edits. Its syntax errors do (`xml-syntax`,
+    /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`, `owx-syntax`); SHACL results
     /// and reasoning findings come from outside these checks. Of the lints,
     /// those that need no edit (decision 8 of the RDF/XML plan), at the
     /// exact spans of its references; none offers a fix.

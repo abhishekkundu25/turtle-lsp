@@ -1,7 +1,8 @@
 //! RDF/XML 1.1: a frontend that turns an RDF/XML document into the same
 //! [`Parsed`] Turtle and JSON-LD produce, so knowledge, SHACL, reasoning,
 //! the CLI and the browser engine need no RDF/XML-specific code. It names
-//! only `syntax`.
+//! only `syntax`. Its scanner, [`xml`], is also the OWL/XML frontend's
+//! (`owx`).
 //!
 //! The stages, one module each:
 //! - [`xml`]: a fault-tolerant XML scanner that keeps the span of every
@@ -11,9 +12,11 @@
 //!   with the exact span of every term, read on past each error.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
-//! not RDF (OWL/XML, Manchester, and Functional given as RDF/XML: a
-//! Functional `.owl` reaches `ofn` instead, and so does an import of one)
-//! gives no triples and one `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
+//! not RDF gives no triples and one `unsupported-syntax` error that names
+//! it: Manchester, which is not read, and Functional syntax or OWL/XML
+//! given as RDF/XML (a Functional or OWL/XML `.owl` reaches `ofn` or `owx`
+//! instead, and so does an import of one), which the error says are read
+//! as such. What a [`Parsed`] of RDF/XML
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
@@ -32,7 +35,8 @@ pub(crate) mod xml;
 use crate::syntax::sniff::Sniffed;
 use crate::syntax::{Parsed, Severity, Span, Syntax, SyntaxError};
 
-/// The diagnostic code of a text in an OWL syntax that is not RDF.
+/// The diagnostic code of a text in an OWL syntax that is not RDF: OWL
+/// Manchester syntax, or Functional syntax or OWL/XML given as RDF/XML.
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// What a Functional text given as RDF/XML is said to hold.

@@ -1,6 +1,7 @@
 //! The reader, through what the mapping makes of its trees: the document
-//! level, IRIs, prefixes and bases, declarations, the first axioms, and
-//! recovery and limits. Each test gives a text and asserts the triples
+//! level, IRIs, prefixes and bases, declarations, a few axioms (the rest
+//! are in `axiom_tests`), the features over one document, and recovery and
+//! limits. Each test gives a text and asserts the triples
 //! (against the mapping of the same ontology in Functional syntax), the
 //! references with their spans, roles and forms, the statements, and the
 //! errors with their codes, spans and messages. Every tree the reader
@@ -555,33 +556,38 @@ fn a_prefix_declaration_and_its_spans() {
     );
 }
 
-/// A prefix declared as in Functional syntax holds what the Functional
-/// declaration holds: the document's prefix map is the same.
-#[test]
-fn a_prefix_declaration_holds_what_a_functional_one_holds() {
-    let text = owx("<Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>");
-    let p = clean(&text);
-    let theirs = functional(&ofn("Declaration(Class(ex:A))"));
-    let decls = |p: &Parsed| -> Vec<(String, Iri)> {
-        p.prefixes.iter().map(|d| (d.name.clone(), d.iri)).collect()
-    };
-    assert_eq!(decls(&p), decls(&theirs));
-    use crate::analysis::Analysis;
-    use std::sync::Arc;
-    let ours = Analysis::with_syntax(
-        URL.into(),
-        &text,
-        Arc::default(),
-        true,
-        crate::syntax::Syntax::OwlXml,
-    );
-    let theirs = Analysis::new(
-        "file:///w/o.ofn".into(),
-        &ofn("Declaration(Class(ex:A))"),
-        Arc::default(),
-        true,
-    );
-    assert_eq!(ours.prefix_map(), theirs.prefix_map());
+#[cfg(test)]
+mod prefix_map {
+    use super::*;
+
+    /// A prefix declared as in Functional syntax holds what the Functional
+    /// declaration holds: the document's prefix map is the same.
+    #[test]
+    fn a_prefix_declaration_holds_what_a_functional_one_holds() {
+        let text = owx("<Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>");
+        let p = clean(&text);
+        let theirs = functional(&ofn("Declaration(Class(ex:A))"));
+        let decls = |p: &Parsed| -> Vec<(String, Iri)> {
+            p.prefixes.iter().map(|d| (d.name.clone(), d.iri)).collect()
+        };
+        assert_eq!(decls(&p), decls(&theirs));
+        use crate::analysis::Analysis;
+        use std::sync::Arc;
+        let ours = Analysis::with_syntax(
+            URL.into(),
+            &text,
+            Arc::default(),
+            true,
+            crate::syntax::Syntax::OwlXml,
+        );
+        let theirs = Analysis::new(
+            "file:///w/o.ofn".into(),
+            &ofn("Declaration(Class(ex:A))"),
+            Arc::default(),
+            true,
+        );
+        assert_eq!(ours.prefix_map(), theirs.prefix_map());
+    }
 }
 
 #[test]
@@ -737,84 +743,89 @@ fn an_entity_has_one_iri_attribute_and_each_iri_is_one() {
 
 // ---- references to prefixes, through the features ----
 
-/// The readers of a prefix declaration's spans, on an OWL/XML document:
-/// hover on the `name` value describes the prefix there; the outline
-/// selects the `name` value. On the prefix of an abbreviated IRI, hover and
-/// go-to-definition describe and reach the term, as in Functional syntax.
-#[test]
-fn the_features_read_a_prefix_declaration_and_an_abbreviated_iri() {
-    use crate::analysis::{Analysis, Encoding};
-    use crate::features::{hover, navigation, symbols};
-    use crate::knowledge::{Knowledge, Source};
-    use lsp_types::HoverContents;
-    use std::sync::Arc;
-    let text = owx(
-        "<Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>\n<SubClassOf><Class abbreviatedIRI=\"ex:A\"/><Class abbreviatedIRI=\":B\"/></SubClassOf>",
-    );
-    let a = Arc::new(Analysis::with_syntax(
-        URL.into(),
-        &text,
-        Arc::default(),
-        true,
-        crate::syntax::Syntax::OwlXml,
-    ));
-    let mut k = Knowledge::default();
-    k.set(URL, Source::Open, a.clone());
-    let enc = Encoding::Utf8;
-    let pos = |offset: usize| a.position(enc, offset as u32);
-    // Hover on the name value of `<Prefix name="ex" …>`.
-    let name = text.find("name=\"ex\"").unwrap() + 6;
-    let h = hover::hover(&a, &k, enc, pos(name + 1)).unwrap();
-    let HoverContents::Markup(m) = &h.contents else {
-        panic!("{h:?}")
-    };
-    assert_eq!(m.value, "**ex:** → `<http://example.org/>`");
-    assert_eq!(
-        h.range,
-        Some(a.range(enc, Span::new(name as u32, name as u32 + 2)))
-    );
-    // The outline lists the prefixes, each selecting its name value.
-    let outline = symbols::document_symbols(&a, enc);
-    let prefixes = outline[0].children.as_ref().unwrap();
-    let names: Vec<_> = prefixes
-        .iter()
-        .map(|s| (s.name.as_str(), s.selection_range))
-        .collect();
-    assert_eq!(
-        names,
-        [
-            (":", a.range(enc, p_name(&a.parsed, 0))),
-            ("ex:", a.range(enc, Span::new(name as u32, name as u32 + 2))),
-        ]
-    );
-    // The empty name's span is empty, where its value is: hover there
-    // describes `:`, and only there.
-    let empty = a.parsed.prefixes[0].name_span;
-    let h = hover::hover(&a, &k, enc, pos(empty.start as usize)).unwrap();
-    let HoverContents::Markup(m) = &h.contents else {
-        panic!("{h:?}")
-    };
-    assert_eq!(m.value, "**:** → `<http://example.org/o#>`");
-    assert_eq!(h.range, Some(a.range(enc, empty)));
-    assert!(hover::hover(&a, &k, enc, pos(empty.start as usize - 1)).is_none());
-    // Go-to-definition reads references only in a read-only document: on
-    // a name value, nothing.
-    assert_eq!(navigation::definition(&a, &k, enc, pos(name + 1), None), []);
-    // On the prefix of `ex:A` in the axiom: the term, defined at its
-    // declaration.
-    let use_at = text.rfind("\"ex:A\"").unwrap() + 1;
-    let h = hover::hover(&a, &k, enc, pos(use_at + 1)).unwrap();
-    assert_eq!(
-        h.range,
-        Some(a.range(enc, Span::new(use_at as u32, use_at as u32 + 4)))
-    );
-    let declared = text.find("\"ex:A\"").unwrap() + 1;
-    let found = navigation::definition(&a, &k, enc, pos(use_at + 1), None);
-    let spans: Vec<_> = found.iter().map(|l| l.range).collect();
-    assert_eq!(
-        spans,
-        [a.range(enc, Span::new(declared as u32, declared as u32 + 4))]
-    );
+#[cfg(test)]
+mod prefix_features {
+    use super::*;
+
+    /// The readers of a prefix declaration's spans, on an OWL/XML document:
+    /// hover on the `name` value describes the prefix there; the outline
+    /// selects the `name` value. On the prefix of an abbreviated IRI, hover and
+    /// go-to-definition describe and reach the term, as in Functional syntax.
+    #[test]
+    fn the_features_read_a_prefix_declaration_and_an_abbreviated_iri() {
+        use crate::analysis::{Analysis, Encoding};
+        use crate::features::{hover, navigation, symbols};
+        use crate::knowledge::{Knowledge, Source};
+        use lsp_types::HoverContents;
+        use std::sync::Arc;
+        let text = owx(
+            "<Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>\n<SubClassOf><Class abbreviatedIRI=\"ex:A\"/><Class abbreviatedIRI=\":B\"/></SubClassOf>",
+        );
+        let a = Arc::new(Analysis::with_syntax(
+            URL.into(),
+            &text,
+            Arc::default(),
+            true,
+            crate::syntax::Syntax::OwlXml,
+        ));
+        let mut k = Knowledge::default();
+        k.set(URL, Source::Open, a.clone());
+        let enc = Encoding::Utf8;
+        let pos = |offset: usize| a.position(enc, offset as u32);
+        // Hover on the name value of `<Prefix name="ex" …>`.
+        let name = text.find("name=\"ex\"").unwrap() + 6;
+        let h = hover::hover(&a, &k, enc, pos(name + 1)).unwrap();
+        let HoverContents::Markup(m) = &h.contents else {
+            panic!("{h:?}")
+        };
+        assert_eq!(m.value, "**ex:** → `<http://example.org/>`");
+        assert_eq!(
+            h.range,
+            Some(a.range(enc, Span::new(name as u32, name as u32 + 2)))
+        );
+        // The outline lists the prefixes, each selecting its name value.
+        let outline = symbols::document_symbols(&a, enc);
+        let prefixes = outline[0].children.as_ref().unwrap();
+        let names: Vec<_> = prefixes
+            .iter()
+            .map(|s| (s.name.as_str(), s.selection_range))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (":", a.range(enc, p_name(&a.parsed, 0))),
+                ("ex:", a.range(enc, Span::new(name as u32, name as u32 + 2))),
+            ]
+        );
+        // The empty name's span is empty, where its value is: hover there
+        // describes `:`, and only there.
+        let empty = a.parsed.prefixes[0].name_span;
+        let h = hover::hover(&a, &k, enc, pos(empty.start as usize)).unwrap();
+        let HoverContents::Markup(m) = &h.contents else {
+            panic!("{h:?}")
+        };
+        assert_eq!(m.value, "**:** → `<http://example.org/o#>`");
+        assert_eq!(h.range, Some(a.range(enc, empty)));
+        assert!(hover::hover(&a, &k, enc, pos(empty.start as usize - 1)).is_none());
+        // Go-to-definition reads references only in a read-only document: on
+        // a name value, nothing.
+        assert_eq!(navigation::definition(&a, &k, enc, pos(name + 1), None), []);
+        // On the prefix of `ex:A` in the axiom: the term, defined at its
+        // declaration.
+        let use_at = text.rfind("\"ex:A\"").unwrap() + 1;
+        let h = hover::hover(&a, &k, enc, pos(use_at + 1)).unwrap();
+        assert_eq!(
+            h.range,
+            Some(a.range(enc, Span::new(use_at as u32, use_at as u32 + 4)))
+        );
+        let declared = text.find("\"ex:A\"").unwrap() + 1;
+        let found = navigation::definition(&a, &k, enc, pos(use_at + 1), None);
+        let spans: Vec<_> = found.iter().map(|l| l.range).collect();
+        assert_eq!(
+            spans,
+            [a.range(enc, Span::new(declared as u32, declared as u32 + 4))]
+        );
+    }
 }
 
 fn p_name(p: &Parsed, i: usize) -> Span {

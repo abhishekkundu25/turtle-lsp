@@ -10,13 +10,20 @@
 //!   2.2), with the span of each;
 //! - [`grammar`]: the productions (section 13) over [`lexer`], into a
 //!   [`tree::Document`], read on past each error to the next axiom;
+//! - [`signature`]: the operands of each construct, which the grammar
+//!   reads its productions from;
 //! - [`tree`]: the document's constructs as a flat tree with exact spans;
 //! - [`rdf`]: the mapping of the tree to the triples of the W3C mapping,
-//!   with the references, statements and prefixes of the shared parse.
+//!   with the references, statements and prefixes of the shared parse; it
+//!   asks a source ([`rdf::Source`]) how the text spells each term.
 //!
 //! [`parse`] gives the shared [`Parsed`], as Turtle, JSON-LD and RDF/XML
 //! do, so the workspace, knowledge, SHACL, reasoning, the query graph and
-//! the editor features that read need no Functional-specific code. An item
+//! the editor features that read need no Functional-specific code. The
+//! OWL/XML frontend (`owx`) builds the same tree, checked against the same
+//! [`signature`] table, and maps it with [`rdf`] through a source of its
+//! own; it is the one module besides `analysis` and `imports` that names
+//! this one. An item
 //! with an error gives no triples; what the mapping takes as a definition,
 //! and its own departures (SWRL), are in [`rdf`]. Every error has the code
 //! [`CODE`].

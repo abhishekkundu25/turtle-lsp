@@ -21,6 +21,12 @@
 //!   sibling nodes: an IRI node (the constraining facet), then a literal
 //!   node (its value).
 //!
+//! Where an IRI fills a slot, the table also says which kind of entity it
+//! names ([`Cat::entity`]: a class, a datatype, an object property, …).
+//! Functional syntax writes a bare IRI there; OWL/XML writes the entity's
+//! element (`<Class IRI="…"/>`), and its reader checks the element against
+//! that kind.
+//!
 //! The rules the grammar checks beside the signature (that a `HasKey` names
 //! a property, the checks of IRIs and literals) are not in it. For tests,
 //! `check` says whether a tree's constructs fill their signatures.

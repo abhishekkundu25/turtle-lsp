@@ -65,9 +65,10 @@ fn hover_with(
 
     let r = a.ref_at(offset)?;
     // The prefix of a QName in RDF/XML is an XML namespace's, not a
-    // declaration this document's prefixes hold. An OWL Functional
-    // document records no prefix uses (an undeclared one is an
-    // `ofn-syntax` error): its abbreviated IRI is the term, as in RDF/XML.
+    // declaration this document's prefixes hold. An OWL Functional or
+    // OWL/XML document records no prefix uses (an undeclared one is an
+    // `ofn-syntax` or `owx-syntax` error): its abbreviated IRI is the
+    // term, as in RDF/XML.
     let prefixes_written = match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
         Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,

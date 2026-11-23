@@ -19,13 +19,15 @@
 //! below a workspace import, cycles stop) and join the knowledge index as
 //! read-only external sources: hover, completion and lints know their terms,
 //! but they are never diagnosed. Each is read in its own syntax (Turtle, TriG,
-//! N-Triples, N-Quads, JSON-LD, RDF/XML) with our parser, chosen by the
-//! file's extension, else by what it starts with, never by the import IRI, so
-//! every source is an [`Analysis`] like any other. A local RDF/XML file is
-//! analysed over its own text, so locations point into it; a fetched one is
-//! converted to N-Triples text first, which is what the cache keeps. A document in OWL/XML, Functional or Manchester syntax is not
-//! read, and the import says so; one whose RDF/XML has errors is loaded but for
-//! what they break, with a warning on the import that says where the first is.
+//! N-Triples, N-Quads, JSON-LD, RDF/XML, OWL Functional syntax, OWL/XML)
+//! with our parser, chosen by the file's extension, else by what it starts
+//! with, never by the import IRI, so every source is an [`Analysis`] like
+//! any other. A local RDF/XML, Functional or OWL/XML file is analysed over
+//! its own text, so locations point into it; a fetched one is converted to
+//! N-Triples text first, which is what the cache keeps. A document in
+//! Manchester syntax is not read, and the import says so; one with errors
+//! (RDF/XML, Functional syntax, OWL/XML) is loaded but for what they
+//! break, with a warning on the import that says where the first is.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.

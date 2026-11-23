@@ -57,6 +57,12 @@
 //! replacement text, so a scan ends. Nesting is what bounds triple terms
 //! too: each level of one takes two elements, so they nest at most
 //! [`MAX_DEPTH`] / 2 deep.
+//!
+//! The scanner counts every fault ([`Scanner::faults`]): each error,
+//! reported or past [`MAX_ERRORS`], each reference left unexpanded past
+//! the expansion limit and each element skipped for its depth. The OWL/XML
+//! reader (`owx`), which reads this scanner too, compares the count before
+//! and after an axiom to know whether it read the axiom whole.
 
 use crate::syntax::{Severity, Span, SyntaxError};
 use rustc_hash::FxHashMap;

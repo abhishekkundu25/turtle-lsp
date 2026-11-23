@@ -138,12 +138,12 @@ fn compose(
 }
 
 /// The code of a document in an OWL syntax that is not read (the RDF/XML
-/// frontend's: OWL/XML and Manchester; OWL Functional syntax is read).
+/// frontend's: Manchester; OWL Functional syntax and OWL/XML are read).
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// An `unsupported-syntax` error becomes a warning unless `imported` says
-/// an import is read from the document: a copy of an ontology in OWL/XML
-/// or Manchester syntax beside its RDF/XML or Turtle breaks nothing until
+/// an import is read from the document: a copy of an ontology in
+/// Manchester syntax beside its RDF/XML or Turtle breaks nothing until
 /// something imports it.
 fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
