@@ -103,6 +103,10 @@ macro_rules! keywords {
         }
 
         impl Keyword {
+            /// Every keyword, in the order above.
+            #[cfg(test)]
+            pub(crate) const ALL: &[Keyword] = &[$(Keyword::$name),*];
+
             pub(crate) fn of(word: &str) -> Option<Keyword> {
                 match word {
                     $(stringify!($name) => Some(Keyword::$name),)*

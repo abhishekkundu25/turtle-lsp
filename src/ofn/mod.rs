@@ -59,6 +59,7 @@ mod lexer;
 mod rdf;
 #[cfg(test)]
 mod rdf_tests;
+pub(crate) mod signature;
 #[cfg(test)]
 mod tests;
 mod tree;
