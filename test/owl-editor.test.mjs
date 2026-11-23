@@ -167,9 +167,10 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
     // The whole value, from inside the .owl.
     const prepared = await s.request("textDocument/prepareRename", at)
-    const line = ONTO.split("\n").findIndex((l) => l.includes("http://example.org/Widget"))
-    const start = ONTO.split("\n")[line].indexOf("http://")
-    assert.deepEqual(prepared, { start: { line, character: start }, end: { line, character: start + "http://example.org/Widget".length } })
+    const value = 'about="http://example.org/Widget"'
+    const start = positionOf(ONTO, value, 'about="'.length)
+    const end = positionOf(ONTO, value, value.length - 1)
+    assert.deepEqual(prepared, { start, end })
     for (const [from, where] of [[w.onto, at], [w.data, { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:Widg") }]]) {
       const edit = await until(
         () => attempt(s, "textDocument/rename", { ...where, newName: from === w.onto ? "Thing" : "ex:Thing" }),
