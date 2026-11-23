@@ -434,7 +434,7 @@ describe("the imports of OWL/XML documents", () => {
     assert.deepEqual(unresolved(d), ["http://example.org/later", "http://example.org/absent-b"])
     fs.writeFileSync(path.join(dir, "later.owx"), LATER)
     s.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uri("later.owx"), type: 1 }] })
-    const after = await diagnosticsUntil(s, uri("user.ttl"), (d) => !unresolved(d).includes("http://example.org/later"))
+    const after = await diagnosticsUntil(s, uri("user.ttl"), (d) => !unresolved(d).some((iri) => iri === "http://example.org/later"))
     assert.deepEqual(unresolved(after), ["http://example.org/absent-b"])
   })
 })
