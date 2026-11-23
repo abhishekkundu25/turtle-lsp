@@ -56,13 +56,13 @@
 
 mod grammar;
 mod lexer;
-mod rdf;
+pub(crate) mod rdf;
 #[cfg(test)]
 mod rdf_tests;
 pub(crate) mod signature;
 #[cfg(test)]
 mod tests;
-mod tree;
+pub(crate) mod tree;
 
 #[cfg(test)]
 use crate::syntax::Syntax;

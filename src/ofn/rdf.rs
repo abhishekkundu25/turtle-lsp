@@ -122,7 +122,7 @@ use std::sync::OnceLock;
 /// The IRIs a parse makes total at most this many bytes per byte of text,
 /// plus [`MIN_IRI_BYTES`]: the interner keeps every IRI for good.
 pub(crate) const IRI_BYTES_PER_BYTE: usize = 16;
-const MIN_IRI_BYTES: usize = 1 << 20;
+pub(crate) const MIN_IRI_BYTES: usize = 1 << 20;
 
 /// The triples of a parse number at most this many per byte of text, plus
 /// [`MIN_TRIPLES`].
@@ -268,7 +268,8 @@ pub(crate) trait Source<'a> {
     /// The length of the text, which the budgets are per byte of.
     fn len(&self) -> usize;
     /// The key under which the value of IRI node `i` is memoised: in one
-    /// document, equal keys have equal values.
+    /// document, equal keys have equal values (so a key tells apart the
+    /// bases a reference resolves against).
     fn key(&self, doc: &Document, i: usize) -> Key<'a>;
     /// The value of IRI node `i`.
     fn value(&self, doc: &Document, i: usize) -> IriValue<'a>;
@@ -294,6 +295,11 @@ pub(crate) enum IriValue<'a> {
     Full(&'a str),
     /// A prefix IRI, and the local part that follows it.
     Prefixed { prefix: &'a str, local: &'a str },
+    /// An absolute IRI and a reference to resolve against it (RFC 3986,
+    /// section 5.2), each valid: the source checked them, so the result is
+    /// an IRI. The resolution is charged to the IRI budget each time, a
+    /// new IRI or not, at the length of the two.
+    Based { base: &'a str, reference: &'a str },
 }
 
 /// The key of an IRI value: its text as written, and the scope it is
@@ -690,6 +696,22 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
                 self.buf = buf;
                 iri?
             }
+            IriValue::Based { base, reference } => {
+                // The work is the base's length, however many references
+                // resolve to one IRI: charged before it is done.
+                let cost = base.len() + reference.len();
+                if self.iri_bytes + cost > self.iri_budget {
+                    return self.over_iris(span);
+                }
+                self.iri_bytes += cost;
+                let mut buf = std::mem::take(&mut self.buf);
+                buf.clear();
+                oxiri::Iri::parse_unchecked(base)
+                    .resolve_into_unchecked(&oxiri::IriRef::parse_unchecked(reference), &mut buf);
+                let iri = self.intern(&buf, span);
+                self.buf = buf;
+                iri?
+            }
         };
         self.memo.insert(key, iri);
         Ok(iri)
@@ -708,6 +730,11 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
         if let Some(iri) = Iri::get(s).filter(|i| self.made.contains(i)) {
             return Ok(iri);
         }
+        self.over_iris(span)
+    }
+
+    /// The IRI budget is spent, at `span`.
+    fn over_iris<T>(&mut self, span: Span) -> M<T> {
         self.over(
             span,
             format!(
@@ -1289,10 +1316,13 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
         if let Some(version) = self.doc.version_iri {
             self.arc(&s, v.version_iri, version, kw)?;
         }
-        for i in [self.doc.ontology_iri, self.doc.version_iri]
+        // In text order, whichever is written first.
+        let mut written: Vec<usize> = [self.doc.ontology_iri, self.doc.version_iri]
             .into_iter()
             .flatten()
-        {
+            .collect();
+        written.sort_unstable();
+        for i in written {
             self.references(i);
         }
         Ok(s)

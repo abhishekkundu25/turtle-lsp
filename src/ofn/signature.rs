@@ -34,8 +34,10 @@ use super::tree::{Document, NodeKind};
 pub(crate) enum Cat {
     /// `Annotation( … )`.
     Annotation,
-    /// An IRI: a class, datatype, property or individual name, a facet.
-    Iri,
+    /// An IRI, of the kind of entity the structural specification fixes
+    /// for the slot, if it fixes one (an import, a SWRL variable or
+    /// built-in, an annotation property's domain or range: none).
+    Iri(Option<Entity>),
     /// A data property, as the grammar names `DataPropertyExpression`.
     DataProperty,
     ClassExpression,
@@ -72,7 +74,7 @@ impl Cat {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Cat::Annotation => "an annotation",
-            Cat::Iri => "an IRI",
+            Cat::Iri(_) => "an IRI",
             Cat::DataProperty => "a data property",
             Cat::ClassExpression => "a class expression",
             Cat::ObjectProperty => "an object property expression",
@@ -115,6 +117,72 @@ impl Cat {
     }
 }
 
+/// The kinds of entity (structural specification, section 5.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Entity {
+    Class,
+    Datatype,
+    ObjectProperty,
+    DataProperty,
+    AnnotationProperty,
+    NamedIndividual,
+}
+
+impl Entity {
+    /// The entity whose keyword is `k`.
+    pub(crate) fn of(k: Keyword) -> Option<Entity> {
+        match k {
+            Keyword::Class => Some(Entity::Class),
+            Keyword::Datatype => Some(Entity::Datatype),
+            Keyword::ObjectProperty => Some(Entity::ObjectProperty),
+            Keyword::DataProperty => Some(Entity::DataProperty),
+            Keyword::AnnotationProperty => Some(Entity::AnnotationProperty),
+            Keyword::NamedIndividual => Some(Entity::NamedIndividual),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Entity::Class => "a class",
+            Entity::Datatype => "a datatype",
+            Entity::ObjectProperty => "an object property",
+            Entity::DataProperty => "a data property",
+            Entity::AnnotationProperty => "an annotation property",
+            Entity::NamedIndividual => "a named individual",
+        }
+    }
+}
+
+impl Cat {
+    /// The kind of entity an IRI names where it fills a slot of this
+    /// category: the class of a class expression, the datatype of a data
+    /// range, and so on.
+    pub(crate) fn entity(self) -> Option<Entity> {
+        match self {
+            Cat::Iri(entity) => entity,
+            Cat::ClassExpression => Some(Entity::Class),
+            Cat::ObjectProperty | Cat::SubObjectProperty => Some(Entity::ObjectProperty),
+            Cat::DataProperty | Cat::DataPropertiesThenRange => Some(Entity::DataProperty),
+            Cat::DataRange => Some(Entity::Datatype),
+            Cat::Individual | Cat::IArg => Some(Entity::NamedIndividual),
+            Cat::Annotation
+            | Cat::Literal
+            | Cat::AnnotationSubject
+            | Cat::AnnotationValue
+            | Cat::Integer
+            | Cat::Entity
+            | Cat::ObjectKeys
+            | Cat::DataKeys
+            | Cat::Facets
+            | Cat::Body
+            | Cat::Head
+            | Cat::Atom
+            | Cat::DArg => None,
+        }
+    }
+}
+
 /// How many times a slot is filled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rep {
@@ -126,7 +194,13 @@ pub(crate) enum Rep {
 pub(crate) type Slot = (Cat, Rep);
 
 const ANNOTATIONS: Slot = (Cat::Annotation, Rep::AtLeast(0));
-const IRI: Slot = (Cat::Iri, Rep::One);
+const IRI: Slot = (Cat::Iri(None), Rep::One);
+const CLASS: Slot = (Cat::Iri(Some(Entity::Class)), Rep::One);
+const DATATYPE: Slot = (Cat::Iri(Some(Entity::Datatype)), Rep::One);
+const OBJECT_PROPERTY: Slot = (Cat::Iri(Some(Entity::ObjectProperty)), Rep::One);
+const DATA_PROPERTY: Slot = (Cat::Iri(Some(Entity::DataProperty)), Rep::One);
+const AP: Slot = (Cat::Iri(Some(Entity::AnnotationProperty)), Rep::One);
+const NAMED_INDIVIDUAL: Slot = (Cat::Iri(Some(Entity::NamedIndividual)), Rep::One);
 const DP: Slot = (Cat::DataProperty, Rep::One);
 const CE: Slot = (Cat::ClassExpression, Rep::One);
 const OPE: Slot = (Cat::ObjectProperty, Rep::One);
@@ -143,21 +217,19 @@ pub(crate) fn signature(k: Keyword) -> &'static [Slot] {
     match k {
         // Prefix and Ontology have their own productions.
         K::Prefix | K::Ontology => &[],
-        K::Import => &[IRI],
-        K::Annotation => &[ANNOTATIONS, IRI, (Cat::AnnotationValue, Rep::One)],
-        K::Class
-        | K::Datatype
-        | K::ObjectProperty
-        | K::DataProperty
-        | K::AnnotationProperty
-        | K::NamedIndividual
-        | K::ObjectInverseOf
-        | K::Variable => &[IRI],
+        K::Import | K::Variable => &[IRI],
+        K::Annotation => &[ANNOTATIONS, AP, (Cat::AnnotationValue, Rep::One)],
+        K::Class => &[CLASS],
+        K::Datatype => &[DATATYPE],
+        K::ObjectProperty | K::ObjectInverseOf => &[OBJECT_PROPERTY],
+        K::DataProperty => &[DATA_PROPERTY],
+        K::AnnotationProperty => &[AP],
+        K::NamedIndividual => &[NAMED_INDIVIDUAL],
         K::ObjectPropertyChain => &[(Cat::ObjectProperty, Rep::AtLeast(2))],
         K::DataIntersectionOf | K::DataUnionOf => &[(Cat::DataRange, Rep::AtLeast(2))],
         K::DataComplementOf => &[DR],
         K::DataOneOf => &[(Cat::Literal, Rep::AtLeast(1))],
-        K::DatatypeRestriction => &[IRI, (Cat::Facets, Rep::One)],
+        K::DatatypeRestriction => &[DATATYPE, (Cat::Facets, Rep::One)],
         K::ObjectIntersectionOf | K::ObjectUnionOf => &[(Cat::ClassExpression, Rep::AtLeast(2))],
         K::ObjectComplementOf => &[CE],
         K::ObjectOneOf => &[(Cat::Individual, Rep::AtLeast(1))],
@@ -177,7 +249,7 @@ pub(crate) fn signature(k: Keyword) -> &'static [Slot] {
         K::EquivalentClasses | K::DisjointClasses => {
             &[ANNOTATIONS, (Cat::ClassExpression, Rep::AtLeast(2))]
         }
-        K::DisjointUnion => &[ANNOTATIONS, IRI, (Cat::ClassExpression, Rep::AtLeast(2))],
+        K::DisjointUnion => &[ANNOTATIONS, CLASS, (Cat::ClassExpression, Rep::AtLeast(2))],
         K::SubObjectPropertyOf => &[ANNOTATIONS, (Cat::SubObjectProperty, Rep::One), OPE],
         K::EquivalentObjectProperties | K::DisjointObjectProperties => {
             &[ANNOTATIONS, (Cat::ObjectProperty, Rep::AtLeast(2))]
@@ -198,7 +270,7 @@ pub(crate) fn signature(k: Keyword) -> &'static [Slot] {
         K::DataPropertyDomain => &[ANNOTATIONS, DP, CE],
         K::DataPropertyRange => &[ANNOTATIONS, DP, DR],
         K::FunctionalDataProperty => &[ANNOTATIONS, DP],
-        K::DatatypeDefinition => &[ANNOTATIONS, IRI, DR],
+        K::DatatypeDefinition => &[ANNOTATIONS, DATATYPE, DR],
         K::HasKey => &[
             ANNOTATIONS,
             CE,
@@ -215,13 +287,12 @@ pub(crate) fn signature(k: Keyword) -> &'static [Slot] {
         K::DataPropertyAssertion | K::NegativeDataPropertyAssertion => &[ANNOTATIONS, DP, IND, LIT],
         K::AnnotationAssertion => &[
             ANNOTATIONS,
-            IRI,
+            AP,
             (Cat::AnnotationSubject, Rep::One),
             (Cat::AnnotationValue, Rep::One),
         ],
-        K::SubAnnotationPropertyOf | K::AnnotationPropertyDomain | K::AnnotationPropertyRange => {
-            &[ANNOTATIONS, IRI, IRI]
-        }
+        K::SubAnnotationPropertyOf => &[ANNOTATIONS, AP, AP],
+        K::AnnotationPropertyDomain | K::AnnotationPropertyRange => &[ANNOTATIONS, AP, IRI],
         K::DLSafeRule => &[ANNOTATIONS, (Cat::Body, Rep::One), (Cat::Head, Rep::One)],
         K::Body | K::Head => &[(Cat::Atom, Rep::AtLeast(0))],
         K::ClassAtom => &[CE, IARG],
@@ -336,7 +407,7 @@ pub(crate) fn keyword_in(k: Keyword, cat: Cat) -> bool {
                 | K::DifferentIndividualsAtom
         ),
         Cat::IArg | Cat::DArg => k == K::Variable,
-        Cat::Iri
+        Cat::Iri(_)
         | Cat::DataProperty
         | Cat::Individual
         | Cat::Literal
@@ -559,7 +630,7 @@ fn one(doc: &Document, c: usize, cat: Cat) -> bool {
         return keyword_in(k, cat);
     }
     match cat {
-        Cat::Iri
+        Cat::Iri(_)
         | Cat::DataProperty
         | Cat::ClassExpression
         | Cat::ObjectProperty
@@ -572,5 +643,68 @@ fn one(doc: &Document, c: usize, cat: Cat) -> bool {
         // A node alone is none of these: `take` reads their shapes.
         Cat::ObjectKeys | Cat::DataKeys | Cat::DataPropertiesThenRange | Cat::Facets => false,
         Cat::Annotation | Cat::Entity | Cat::Body | Cat::Head | Cat::Atom => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where the structural specification names the kind of an IRI that
+    /// Functional syntax writes bare, the slot says it; every other IRI
+    /// slot names none.
+    #[test]
+    fn each_typed_iri_slot_names_the_kind_the_structural_specification_gives() {
+        use Entity as E;
+        use Keyword as K;
+        let typed = [
+            (K::Annotation, 1, E::AnnotationProperty),
+            (K::Class, 0, E::Class),
+            (K::Datatype, 0, E::Datatype),
+            (K::ObjectProperty, 0, E::ObjectProperty),
+            (K::DataProperty, 0, E::DataProperty),
+            (K::AnnotationProperty, 0, E::AnnotationProperty),
+            (K::NamedIndividual, 0, E::NamedIndividual),
+            (K::ObjectInverseOf, 0, E::ObjectProperty),
+            (K::DatatypeRestriction, 0, E::Datatype),
+            (K::DisjointUnion, 1, E::Class),
+            (K::DatatypeDefinition, 1, E::Datatype),
+            (K::AnnotationAssertion, 1, E::AnnotationProperty),
+            (K::SubAnnotationPropertyOf, 1, E::AnnotationProperty),
+            (K::SubAnnotationPropertyOf, 2, E::AnnotationProperty),
+            (K::AnnotationPropertyDomain, 1, E::AnnotationProperty),
+            (K::AnnotationPropertyRange, 1, E::AnnotationProperty),
+        ];
+        let mut found = Vec::new();
+        let mut untyped = Vec::new();
+        for &k in Keyword::ALL {
+            for (n, &(cat, _)) in signature(k).iter().enumerate() {
+                match cat {
+                    Cat::Iri(Some(e)) => found.push((k, n, e)),
+                    Cat::Iri(None) => untyped.push((k, n)),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(found, typed);
+        assert_eq!(
+            untyped,
+            [
+                (K::Import, 0),
+                (K::AnnotationPropertyDomain, 2),
+                (K::AnnotationPropertyRange, 2),
+                (K::BuiltInAtom, 0),
+                (K::Variable, 0),
+            ]
+        );
+        // The entity keywords are the entities, and each names its own.
+        for &k in Keyword::ALL {
+            if let Some(e) = Entity::of(k) {
+                assert!(keyword_in(k, Cat::Entity), "{k:?}");
+                assert_eq!(signature(k), [(Cat::Iri(Some(e)), Rep::One)]);
+            }
+        }
+        // Errors name the slot as before.
+        assert_eq!(Cat::Iri(Some(E::Class)).name(), Cat::Iri(None).name());
     }
 }

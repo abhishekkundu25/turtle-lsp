@@ -70,7 +70,7 @@ type R<T = ()> = Result<T, Stop>;
 fn token_in(kind: Kind, cat: Cat) -> bool {
     let iri = matches!(kind, Kind::FullIri | Kind::PName);
     match cat {
-        Cat::Iri
+        Cat::Iri(_)
         | Cat::DataProperty
         | Cat::ClassExpression
         | Cat::ObjectProperty
@@ -376,7 +376,7 @@ impl<'a> Parser<'a> {
         let opened = self.expect(Kind::LParen, "'(' after 'Ontology'").is_ok();
         if opened {
             let mut slots = 2;
-            while slots > 0 && token_in(self.tok.kind, Cat::Iri) {
+            while slots > 0 && token_in(self.tok.kind, Cat::Iri(None)) {
                 let node = self.header_iri();
                 if slots == 2 {
                     self.doc.ontology_iri = node;
@@ -706,7 +706,7 @@ impl<'a> Parser<'a> {
                     prefix_len: Some(colon as u32),
                 });
             }
-            _ => return self.expected(Cat::Iri.name()),
+            _ => return self.expected(Cat::Iri(None).name()),
         }
         Ok(())
     }
@@ -770,7 +770,7 @@ impl<'a> Parser<'a> {
         let r = match self.tok.kind {
             Kind::Carets => {
                 self.bump();
-                if token_in(self.tok.kind, Cat::Iri) {
+                if token_in(self.tok.kind, Cat::Iri(None)) {
                     self.iri()
                 } else {
                     self.expected("a datatype IRI after '^^'")
@@ -862,10 +862,10 @@ impl<'a> Parser<'a> {
 
     /// `constrainingFacet restrictionValue { … }` of `DatatypeRestriction`.
     fn facets(&mut self) -> R {
-        if !token_in(self.tok.kind, Cat::Iri) {
+        if !token_in(self.tok.kind, Cat::Iri(None)) {
             return self.expected("a facet (an IRI such as xsd:minInclusive)");
         }
-        while token_in(self.tok.kind, Cat::Iri) {
+        while token_in(self.tok.kind, Cat::Iri(None)) {
             self.iri()?;
             if self.tok.kind != Kind::String {
                 return self.expected("a literal (the facet's value)");

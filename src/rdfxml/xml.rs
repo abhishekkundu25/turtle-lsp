@@ -230,6 +230,8 @@ pub(crate) struct Prolog {
     pos: usize,
     errors: Vec<SyntaxError>,
     dropped: bool,
+    /// [`Scanner::faults`] at the root element.
+    faults: usize,
     comments: Vec<Span>,
 }
 
@@ -250,6 +252,7 @@ impl Prolog {
             pos: s.pos,
             errors: s.errors,
             dropped: s.dropped,
+            faults: s.faults,
             comments: s.comments,
         }
     }
@@ -326,6 +329,8 @@ pub(crate) struct Scanner<'a> {
     done: bool,
     errors: Vec<SyntaxError>,
     dropped: bool,
+    /// Every fault so far: see [`Scanner::faults`].
+    faults: usize,
     comments: Vec<Span>,
 }
 
@@ -516,6 +521,7 @@ impl<'a> Scanner<'a> {
         s.xml11 = prolog.xml11;
         s.errors.clone_from(&prolog.errors);
         s.dropped = prolog.dropped;
+        s.faults = prolog.faults;
         s.comments.clone_from(&prolog.comments);
         s
     }
@@ -549,6 +555,7 @@ impl<'a> Scanner<'a> {
             done: false,
             errors: Vec::new(),
             dropped: false,
+            faults: 0,
             comments: Vec::new(),
         }
     }
@@ -558,8 +565,18 @@ impl<'a> Scanner<'a> {
         (self.errors, self.comments)
     }
 
+    /// How many faults the scan has met so far: one per error, reported or
+    /// past [`MAX_ERRORS`], one per reference left unexpanded past the
+    /// expansion limit, and one per element skipped for its depth. A reader
+    /// that reads it between events knows whether what it read in between
+    /// was read whole.
+    pub(crate) fn faults(&self) -> usize {
+        self.faults
+    }
+
     /// Report an error, unless [`MAX_ERRORS`] have been.
     pub(crate) fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        self.faults += 1;
         if self.errors.len() < MAX_ERRORS {
             self.errors.push(SyntaxError::new(
                 span,
@@ -662,7 +679,9 @@ impl<'a> Scanner<'a> {
         }
         let cost = entity.text.len() + 1;
         if self.over_budget || self.expanded + cost > self.budget {
-            if !self.over_budget {
+            if self.over_budget {
+                self.faults += 1;
+            } else {
                 self.over_budget = true;
                 self.error(
                     here,
@@ -1559,6 +1578,7 @@ impl<'a> Scanner<'a> {
         }
         let span = self.span(start, self.pos);
         if self.skip > 0 {
+            self.faults += 1;
             if !empty {
                 self.skip += 1;
             }
@@ -2248,6 +2268,89 @@ mod tests {
                 "the entity &a; refers to itself: it is not expanded"
             ]
         );
+    }
+
+    /// Every error moves the fault count, past the cap of reported ones too.
+    #[test]
+    fn the_fault_count_moves_past_the_error_cap() {
+        let text = format!("<r>{}</r>", "& ".repeat(150));
+        let prolog = Prolog::read(&text);
+        let mut s = Scanner::new(&text, &prolog);
+        assert_eq!(s.faults(), 0);
+        while s.next() != Event::Eof {}
+        assert_eq!(s.faults(), 150);
+        let (errors, _) = s.finish();
+        assert_eq!(errors.len(), MAX_ERRORS);
+        // An error in the prolog is a fault before the root element.
+        let text = "<!DOCTYPE r [ x ]><r/>";
+        let prolog = Prolog::read(text);
+        let s = Scanner::new(text, &prolog);
+        assert_eq!(s.faults(), 1);
+    }
+
+    /// Past the expansion limit, each reference left as written is a fault,
+    /// counted while the event that holds it is read.
+    #[test]
+    fn the_fault_count_moves_for_each_reference_left_unexpanded() {
+        let value = "v".repeat(60_000);
+        let text = format!(
+            "<!DOCTYPE r [<!ENTITY e \"{value}\">]><r>{}</r>",
+            "<x>&e;</x>".repeat(40)
+        );
+        let prolog = Prolog::read(&text);
+        let mut s = Scanner::new(&text, &prolog);
+        let (mut expanded, mut kept) = (0, 0);
+        loop {
+            let before = s.faults();
+            match s.next() {
+                Event::Eof => break,
+                Event::Text { text, .. } if text == "&e;" => {
+                    kept += 1;
+                    assert_eq!(s.faults(), before + 1);
+                }
+                Event::Text { text, .. } => {
+                    assert_eq!(text, value);
+                    expanded += 1;
+                    assert_eq!(s.faults(), before);
+                }
+                _ => assert_eq!(s.faults(), before),
+            }
+        }
+        assert!(expanded > 0 && kept > 0, "{expanded} {kept}");
+        assert_eq!(expanded + kept, 40);
+        let (errors, _) = s.finish();
+        assert_eq!(
+            messages(&errors),
+            ["entity expansion is over its limit: the rest of the references are not expanded"]
+        );
+    }
+
+    /// An element too deep is a fault, and so is each element inside it.
+    #[test]
+    fn the_fault_count_moves_for_a_skipped_element() {
+        let text = format!(
+            "{}<b><c/><c>t</c></b>{}",
+            "<a>".repeat(MAX_DEPTH),
+            "</a>".repeat(MAX_DEPTH)
+        );
+        let prolog = Prolog::read(&text);
+        let mut s = Scanner::new(&text, &prolog);
+        let mut starts = 0;
+        loop {
+            let before = s.faults();
+            match s.next() {
+                Event::Eof => break,
+                Event::Start(_) => starts += 1,
+                // The innermost `<a>` ends after the skipped elements.
+                Event::End(_) if starts == MAX_DEPTH => {
+                    assert_eq!(s.faults(), before + 3);
+                    starts += 1;
+                }
+                _ => assert_eq!(s.faults(), before),
+            }
+        }
+        assert_eq!(s.faults(), 3);
+        assert_eq!(s.finish().0.len(), 1);
     }
 
     /// A document in ASCII means the same in any encoding that extends

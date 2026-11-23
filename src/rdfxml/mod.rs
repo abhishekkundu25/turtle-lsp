@@ -27,7 +27,7 @@
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
 mod grammar;
-mod xml;
+pub(crate) mod xml;
 
 use crate::syntax::sniff::Sniffed;
 use crate::syntax::{Parsed, Severity, Span, Syntax, SyntaxError};

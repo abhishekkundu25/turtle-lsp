@@ -911,7 +911,7 @@ fn a_misplaced_import_or_annotation_gives_nothing() {
 /// What the test source answers for a node of a hand-built tree.
 enum Answer<'a> {
     Iri {
-        key: &'a str,
+        key: rdf::Key<'a>,
         value: rdf::IriValue<'a>,
         form: Form,
     },
@@ -947,10 +947,7 @@ impl<'a> rdf::Source<'a> for Table<'a> {
 
     fn key(&self, _: &Document, i: usize) -> rdf::Key<'a> {
         match self.answers[i] {
-            Answer::Iri { key, .. } => rdf::Key {
-                scope: 0,
-                written: key,
-            },
+            Answer::Iri { key, .. } => key,
             _ => panic!("node {i} is no IRI"),
         }
     }
@@ -1042,11 +1039,30 @@ fn leaf(kind: NodeKind, answer: Answer<'_>) -> Hand<'_> {
 fn full(iri: &str) -> Hand<'_> {
     let value = rdf::IriValue::Full(iri);
     let answer = Answer::Iri {
-        key: iri,
+        key: written(iri),
         value,
         form: Form::Iri,
     };
     leaf(NodeKind::Iri { prefix_len: None }, answer)
+}
+
+/// The key of a value written once, in no scope.
+fn written(written: &str) -> rdf::Key<'_> {
+    rdf::Key { scope: 0, written }
+}
+
+/// `reference`, to resolve against `base`, memoised in `scope`.
+fn based<'a>(base: &'a str, reference: &'a str, scope: u32) -> Hand<'a> {
+    let value = rdf::IriValue::Based { base, reference };
+    let answer = Answer::Iri {
+        key: rdf::Key {
+            scope,
+            written: reference,
+        },
+        value,
+        form: Form::Iri,
+    };
+    leaf(NO_PREFIX_LEN, answer)
 }
 
 /// `pfx:local`, with a prefix of [`NAMESPACES`].
@@ -1058,7 +1074,7 @@ fn pname(written: &'static str) -> Hand<'static> {
         prefix_len: name.len() as u32,
     };
     let answer = Answer::Iri {
-        key: written,
+        key: self::written(written),
         value,
         form,
     };
@@ -1208,7 +1224,7 @@ fn a_source_s_iris_are_charged_to_the_iri_budget() {
             local,
         };
         let answer = Answer::Iri {
-            key: name,
+            key: written(name),
             value,
             form: Form::PName { prefix_len: 1 },
         };
@@ -1235,4 +1251,88 @@ fn a_source_s_iris_are_charged_to_the_iri_budget() {
     assert_eq!(mapped, 2 + 17);
     assert_eq!(limit[0].span, class_iris[17]);
     assert!(p.triples.iter().all(|t| (t.statement as usize) < mapped));
+}
+
+/// A reference resolves in the mapper against the base its source gives:
+/// one text under two bases is two IRIs, and its dot segments go.
+#[test]
+fn a_reference_resolves_against_its_base_in_the_mapper() {
+    let (one, two) = ("http://example.org/one/o", "http://example.org/two/o");
+    let (doc, source) = hand_built(
+        full("http://example.org/o"),
+        vec![
+            construct(K::ClassAssertion, vec![based(one, "#A", 2), pname(":a")]),
+            construct(K::ClassAssertion, vec![based(two, "#A", 3), pname(":a")]),
+            construct(
+                K::ClassAssertion,
+                vec![based(two, "../x/./y#B", 3), pname(":a")],
+            ),
+            construct(K::ClassAssertion, vec![based(one, "#A", 2), pname(":b")]),
+        ],
+    );
+    let ours = rdf::map_with(&source, doc, None);
+    let theirs = parse(
+        &in_ontology(
+            "ClassAssertion(<http://example.org/one/o#A> :a)\nClassAssertion(<http://example.org/two/o#A> :a)\nClassAssertion(<http://example.org/x/y#B> :a)\nClassAssertion(<http://example.org/one/o#A> :b)",
+        ),
+        None,
+    );
+    assert!(ours.errors.is_empty(), "{:?}", ours.errors);
+    assert_eq!(
+        difference(&graph_of(&ours), &graph_of(&theirs), "Functional"),
+        None
+    );
+    let iris: Vec<&str> = ours.refs.iter().map(|r| r.iri.as_str()).collect();
+    assert_eq!(
+        iris,
+        [
+            "http://example.org/o",
+            "http://example.org/one/o#A",
+            "http://example.org/o#a",
+            "http://example.org/two/o#A",
+            "http://example.org/o#a",
+            "http://example.org/x/y#B",
+            "http://example.org/o#a",
+            "http://example.org/one/o#A",
+            "http://example.org/o#b",
+        ]
+    );
+}
+
+/// Each resolution is charged to the IRI budget at the length of its base
+/// and reference, whether or not it makes a new IRI: past it, one error
+/// under the source's code at the IRI, and the items from there on give
+/// nothing.
+#[test]
+fn base_resolved_iris_are_charged_to_the_iri_budget() {
+    let dir = format!("http://example.org/{}/", "x".repeat(60_000));
+    let long = format!("{dir}o");
+    // Forty texts for one IRI, `<dir>#C`: only the first is new.
+    let references: Vec<String> = (0..40).map(|i| format!("d{i}/../#C")).collect();
+    let mut items = vec![construct(K::SubClassOf, vec![pname(":A"), pname(":B")])];
+    for r in &references {
+        items.push(construct(
+            K::ClassAssertion,
+            vec![based(&long, r, 2), pname(":a")],
+        ));
+    }
+    let (doc, source) = hand_built(full("http://example.org/o"), items);
+    assert!(source.text.len() < 200, "{}", source.text.len());
+    let class_iris: Vec<Span> = doc.top().skip(2).map(|i| doc.nodes[i + 1].span).collect();
+    let p = rdf::map_with(&source, doc, None);
+    let limit: Vec<_> = p
+        .errors
+        .iter()
+        .filter(|e| e.message().contains("bytes per byte"))
+        .collect();
+    assert_eq!(limit.len(), 1, "{:?}", p.errors);
+    assert_eq!(p.errors.len(), 1);
+    assert_eq!(limit[0].code, "test-syntax");
+    // The floor of 1 MiB holds the first resolution and its new IRI (about
+    // 120,000 bytes), then 15 more resolutions of about 60,030 each.
+    let mapped = p.statements.len();
+    assert_eq!(mapped, 2 + 16);
+    assert_eq!(limit[0].span, class_iris[16]);
+    let c = format!("{dir}#C");
+    assert!(p.refs.iter().any(|r| r.iri.as_str() == c));
 }

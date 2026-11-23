@@ -11,47 +11,68 @@
 //! errors the reader will report, and the one the editor's note on a
 //! capped list of them carries.
 
-use crate::syntax::{Parsed, Syntax};
+mod reader;
+mod source;
+#[cfg(test)]
+mod tests;
+
+use crate::syntax::Parsed;
+#[cfg(test)]
+use crate::syntax::Syntax;
 
 pub(crate) const CODE: &str = "owx-syntax";
 
-/// Parse an OWL/XML document into the shared parse model. `base` is the
-/// document's URL.
+/// Parse an OWL/XML document into the shared parse model: the reader's
+/// tree, mapped as a Functional document's is. `base` is the document's
+/// URL, against which relative IRIs resolve until an `xml:base` replaces
+/// it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    Parsed {
-        syntax: Syntax::OwlXml,
-        ..crate::rdfxml::parse(text, base)
-    }
+    let (doc, terms) = reader::read(text, base);
+    crate::ofn::rdf::map_with(&source::OwlXml::new(text, &terms), doc, base)
 }
 
-/// What the editor features see of an OWL/XML document: nothing to
-/// complete, format, colour, splice or rename, as in OWL Functional syntax.
+/// What the editor features see of an OWL/XML document: its errors and
+/// its prefixes, and nothing to complete, format, colour, splice or rename,
+/// as in OWL Functional syntax.
 #[cfg(test)]
 mod gates {
     use super::*;
 
     const URI: &str = "file:///w/o.owx";
-    const TEXT: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Declaration><Class IRI=\"http://example.org/o#A\"/></Declaration>\n</Ontology>\n";
+    const TEXT: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/></SubClassOf>\n</Ontology>\n";
 
+    /// The editor shows the first errors of a document with many, and a
+    /// note with the document's code, so that ignoring `owx-syntax` hides
+    /// all of them.
     #[test]
-    fn the_parse_is_the_rdfxml_frontends_answer_under_its_own_syntax() {
-        let p = parse(TEXT, Some(URI));
-        assert_eq!(p.syntax, Syntax::OwlXml);
-        assert_eq!(p.document_base.as_deref(), Some(URI));
-        assert!(p.triples.is_empty() && p.refs.is_empty(), "{p:?}");
-        let errors: Vec<_> = p.errors.iter().map(|e| (e.code, e.span)).collect();
-        assert_eq!(
-            errors,
-            [("unsupported-syntax", crate::syntax::Span::new(0, 0))]
-        );
-        assert!(p.errors[0].message().contains("OWL/XML"), "{:?}", p.errors);
+    fn the_editor_caps_the_errors_under_their_code() {
+        use crate::analysis::{Analysis, Encoding};
+        use crate::features::diagnostics;
+        use crate::knowledge::Knowledge;
+        use std::sync::Arc;
+        let body = "<SubClassOf><Class abbreviatedIRI=\"nope:A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n"
+            .repeat(2 * diagnostics::MAX_SYNTAX_ERRORS);
+        let text = format!("<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">{body}</Ontology>");
+        let a = Analysis::with_syntax(URI.into(), &text, Arc::default(), true, Syntax::OwlXml);
+        let opts = diagnostics::Options {
+            max_syntax_errors: Some(diagnostics::MAX_SYNTAX_ERRORS),
+            ..Default::default()
+        };
+        let d = diagnostics::diagnostics_with(&a, &Knowledge::default(), Encoding::Utf8, &opts);
+        assert_eq!(d.len(), diagnostics::MAX_SYNTAX_ERRORS + 1);
+        let code = |d: &lsp_types::Diagnostic| match &d.code {
+            Some(lsp_types::NumberOrString::String(c)) => c.clone(),
+            _ => String::new(),
+        };
+        assert!(d.iter().all(|d| code(d) == CODE), "{:?}", d.last());
+        assert!(d.last().unwrap().message.starts_with("More than"));
     }
 
     #[test]
     fn owl_xml_is_read_and_never_written() {
         use crate::analysis::{Analysis, Encoding};
         use crate::features::navigation::{PrefixScope, rename};
-        use crate::features::{completion, format, semantic};
+        use crate::features::{completion, diagnostics, format, semantic, symbols};
         use crate::knowledge::{Knowledge, Source};
         use crate::syntax::splice::{Edit, Fallback};
         use lsp_types::{CompletionResponse, Position};
@@ -66,10 +87,46 @@ mod gates {
         let mut k = Knowledge::default();
         k.set(URI, Source::Open, a.clone());
         assert_eq!(a.parsed.syntax, Syntax::OwlXml);
+        assert_eq!(a.parsed, parse(TEXT, Some(URI)));
+        assert_eq!(a.parsed.document_base.as_deref(), Some(URI));
         assert!(a.tokens().is_empty() && a.tokens_or_lexed().is_empty());
         assert_eq!(Syntax::OwlXml.tokens(TEXT), []);
+        // Its errors, at their spans.
+        let d = diagnostics::diagnostics_with(&a, &k, Encoding::Utf8, &Default::default());
+        let shown: Vec<_> = d
+            .iter()
+            .map(|d| {
+                let code = match &d.code {
+                    Some(lsp_types::NumberOrString::String(c)) => c.as_str(),
+                    _ => "",
+                };
+                (code, d.range.start, d.message.as_str())
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    CODE,
+                    Position::new(5, 65),
+                    "Undeclared prefix 'nope:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"nope\" IRI=\"…\"/>"
+                ),
+                (
+                    CODE,
+                    Position::new(6, 42),
+                    "Expected a class expression, found </SubClassOf>"
+                ),
+            ]
+        );
+        // The prefixes fold, as in Turtle.
+        let folds: Vec<_> = symbols::folding_ranges(&a)
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        assert_eq!(folds, [(2, 3)]);
+        // Nothing is offered, formatted, coloured, spliced or renamed.
         assert!(!crate::features::writes(Syntax::OwlXml));
-        for line in 0..5 {
+        for line in 0..8 {
             for character in [0, 1, 10, 30, 60] {
                 let pos = Position::new(line, character);
                 let got = completion::complete(&a, &k, Encoding::Utf8, pos);
@@ -95,7 +152,7 @@ mod gates {
             file: None,
             file_of: &mut |_| None,
         };
-        let refused = rename(&a, &k, Encoding::Utf8, Position::new(2, 30), "B", scope);
+        let refused = rename(&a, &k, Encoding::Utf8, Position::new(4, 39), "B", scope);
         let message = refused.unwrap_err();
         assert!(message.contains("an OWL/XML document"), "{message}");
     }
