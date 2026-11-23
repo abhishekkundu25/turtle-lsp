@@ -28,7 +28,7 @@ use crate::syntax::Syntax;
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
     }
 }
 

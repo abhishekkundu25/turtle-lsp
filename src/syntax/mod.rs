@@ -48,6 +48,11 @@ pub enum Syntax {
     /// its axioms to RDF triples by the W3C mapping. Nothing edits it, as
     /// RDF/XML: it has no tokens, no formatting and no statement splice.
     OwlFunctional,
+    /// The OWL 2 XML Serialization: a notational variant of OWL Functional
+    /// syntax, read as Functional syntax is and never edited: no tokens, no
+    /// formatting and no statement splice. No extension, language id or
+    /// content leads here yet, so only a caller that names it gets it.
+    OwlXml,
 }
 
 impl Syntax {
@@ -152,7 +157,32 @@ impl Syntax {
     /// in XML namespaces and OWL Functional syntax in `Prefix(…)`
     /// declarations.
     pub(crate) fn has_prefixes(self) -> bool {
-        matches!(self, Syntax::Turtle | Syntax::TriG)
+        match self {
+            Syntax::Turtle | Syntax::TriG => true,
+            Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::JsonLd
+            | Syntax::RdfXml
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => false,
+        }
+    }
+
+    /// Whether the document writes its ontology header and its imports as
+    /// constructs of the syntax (OWL Functional's `Ontology(…)` and
+    /// `Import(…)`, OWL/XML's `Ontology` and `Import` elements), so no
+    /// reference in it names `owl:Ontology` or `owl:imports` though its
+    /// triples hold them.
+    pub(crate) fn has_keyword_header(self) -> bool {
+        match self {
+            Syntax::OwlFunctional | Syntax::OwlXml => true,
+            Syntax::Turtle
+            | Syntax::TriG
+            | Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::JsonLd
+            | Syntax::RdfXml => false,
+        }
     }
 }
 
@@ -453,6 +483,26 @@ pub type PrefixMap = FxHashMap<String, String>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_owl_syntaxes_write_their_header_as_keywords() {
+        let others = [
+            Syntax::Turtle,
+            Syntax::TriG,
+            Syntax::NTriples,
+            Syntax::NQuads,
+            Syntax::JsonLd,
+            Syntax::RdfXml,
+        ];
+        for syntax in others {
+            assert!(!syntax.has_keyword_header(), "{syntax:?}");
+        }
+        assert!(Syntax::OwlFunctional.has_keyword_header());
+        assert!(Syntax::OwlXml.has_keyword_header());
+        // The import sync and the import diagnostics ask the method.
+        let imports = include_str!("../imports/mod.rs");
+        assert!(!imports.contains("Syntax::OwlFunctional"));
+    }
 
     #[test]
     fn extensions_are_read_in_any_letter_case() {

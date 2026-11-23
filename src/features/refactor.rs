@@ -34,7 +34,8 @@ pub fn code_actions(
         | Syntax::NQuads
         | Syntax::JsonLd
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => return Vec::new(),
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => return Vec::new(),
     }
     let uri = &params.text_document.uri;
     let only = params.context.only.as_deref();

@@ -925,7 +925,7 @@ impl DocFacts {
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
                 &a.parsed.prefix_uses
             }
-            Syntax::RdfXml | Syntax::OwlFunctional => &[],
+            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => &[],
         };
         for u in uses {
             if u.resolved

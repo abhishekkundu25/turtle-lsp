@@ -75,7 +75,8 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
         | Syntax::NTriples
         | Syntax::NQuads
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => FxHashSet::default(),
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => FxHashSet::default(),
     };
     // A subject is named as written, except in RDF/XML, where its span is
     // an XML tag or attribute, and in OWL Functional syntax, whose axioms
@@ -87,7 +88,7 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
             written(text, span).to_string()
         }
-        Syntax::RdfXml | Syntax::OwlFunctional => {
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
             shorten(iri, &prefixes).unwrap_or_else(|| iri.to_string())
         }
     };

@@ -218,6 +218,10 @@ impl Analysis {
                 parsed: crate::ofn::parse(text, Some(&uri)),
                 ..Default::default()
             },
+            Syntax::OwlXml => crate::jsonld::Document {
+                parsed: crate::owx::parse(text, Some(&uri)),
+                ..Default::default()
+            },
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 crate::jsonld::Document {
                     // Relative IRIs resolve against the document's URL, as in JSON-LD:

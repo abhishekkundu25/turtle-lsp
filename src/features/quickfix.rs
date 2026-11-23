@@ -411,7 +411,7 @@ impl<'a> Fixer<'a> {
                     }
                     // The span is the triple's, not a string written there;
                     // nothing writes OWL Functional syntax.
-                    Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
+                    Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return Vec::new(),
                 };
                 vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]
             }
@@ -434,7 +434,8 @@ impl<'a> Fixer<'a> {
             | Syntax::NQuads
             | Syntax::JsonLd
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => return None,
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => return None,
         }
         let mut all: Vec<(String, String)> = Vec::new();
         for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {

@@ -98,7 +98,7 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
         Syntax::JsonLd => return jsonld_tokens(a, k, from, to),
         // The editor's XML grammar colours RDF/XML, and the extension's own
         // grammar (or Monaco's) OWL Functional syntax, read-only as RDF/XML.
-        Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return Vec::new(),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     let wanted = |s: u32, e: u32| e > from && s <= to && s < e;

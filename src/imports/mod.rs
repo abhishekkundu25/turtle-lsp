@@ -395,18 +395,18 @@ impl Imports {
             return None;
         }
         self.seen = seen;
-        // The documents that write the vocabulary, and every OWL Functional
-        // document: its `Ontology(…)` header and `Import(…)` are keywords,
-        // so no reference names `owl:Ontology` or `owl:imports` there.
-        let functional = k
+        // The documents that write the vocabulary, and every document whose
+        // syntax writes its header and imports as keywords (OWL Functional,
+        // OWL/XML): no reference names `owl:Ontology` or `owl:imports` there.
+        let keyword_header = k
             .docs()
-            .filter(|(_, _, a)| a.parsed.syntax == crate::syntax::Syntax::OwlFunctional)
+            .filter(|(_, _, a)| a.parsed.syntax.has_keyword_header())
             .map(|(id, src, _)| (id, src));
         let mut ids: Vec<_> = [OWL_IMPORTS, OWL_ONTOLOGY, OWL_VERSION_IRI]
             .iter()
             .flat_map(|p| k.docs_referencing(*p))
             .map(|(id, src, _)| (id, src))
-            .chain(functional)
+            .chain(keyword_header)
             .filter(|(_, src)| *src != Source::External)
             .map(|(id, _)| id)
             .collect();
@@ -578,9 +578,8 @@ pub fn diagnostics_with<'s>(
     status: impl Fn(&str) -> Option<&'s Status>,
 ) -> Vec<Diagnostic> {
     // A document with no `owl:imports` written has no import triple, but
-    // in OWL Functional syntax, which writes the keyword `Import`.
-    let functional = a.parsed.syntax == crate::syntax::Syntax::OwlFunctional;
-    if !functional && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
+    // in a syntax that writes the keyword `Import`.
+    if !a.parsed.syntax.has_keyword_header() && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
         return vec![];
     }
     let p = preds();

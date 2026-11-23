@@ -50,7 +50,7 @@ pub fn inlay_hints(
 fn hinted(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
     }
 }
 

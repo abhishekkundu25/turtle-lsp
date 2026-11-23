@@ -40,6 +40,7 @@ fn oxttl_quads(src: &str, syntax: Syntax) -> Result<Vec<oxrdf::Quad>, String> {
         Syntax::JsonLd => unreachable!("oxttl reads no JSON-LD"),
         Syntax::RdfXml => unreachable!("oxttl reads no RDF/XML"),
         Syntax::OwlFunctional => unreachable!("oxttl reads no OWL Functional syntax"),
+        Syntax::OwlXml => unreachable!("oxttl reads no OWL/XML"),
     }
 }
 

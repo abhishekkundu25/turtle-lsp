@@ -59,7 +59,9 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
     for (file, fr) in ws.files.iter().zip(report.files) {
         let Some(verdict) = fr.format else { continue };
         let written = match verdict.outcome {
-            FormatOutcome::Refused(_) if matches!(fr.kind, "rdfxml" | "ofn") && !file.named => {
+            FormatOutcome::Refused(_)
+                if matches!(fr.kind, "rdfxml" | "ofn" | "owx") && !file.named =>
+            {
                 passed_over += 1;
                 continue;
             }

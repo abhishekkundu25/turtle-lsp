@@ -339,7 +339,7 @@ fn capped_note(kept: usize) -> Diagnostic {
 /// RDF/XML and OWL Functional syntax (which have no named graphs) are.
 fn is_dataset(a: &Analysis) -> bool {
     match a.parsed.syntax {
-        Syntax::Turtle | Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::Turtle | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
         Syntax::JsonLd => a.parsed.triples.iter().any(|t| t.graph.is_some()),
         Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
     }

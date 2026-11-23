@@ -290,6 +290,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "jsonld",
         Syntax::RdfXml => "owl",
         Syntax::OwlFunctional => "ofn",
+        Syntax::OwlXml => "owx",
     }
 }
 

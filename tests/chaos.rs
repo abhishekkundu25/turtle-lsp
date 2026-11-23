@@ -856,7 +856,10 @@ fn fix_all_leaves_rdf_xml(rng: &mut Rng, name: &str, text: &str) {
     let file = batch::BatchFile::named(name, text.to_string(), false);
     let out = batch::fix_all(&[file], &Settings::default(), unsafe_too);
     let syntax = Syntax::of(None, name, text);
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         let after = &out.files[0].text;
         assert!(
             after == text,
@@ -1337,6 +1340,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "file:///chaos/doc.jsonld",
         Syntax::RdfXml => "file:///chaos/doc.rdf",
         Syntax::OwlFunctional => "file:///chaos/doc.ofn",
+        Syntax::OwlXml => "file:///chaos/doc.owx",
     }
 }
 
@@ -1449,7 +1453,7 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
 fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
     match syntax {
         Syntax::JsonLd => jsonld::parse(text, base, &jsonld::NoNetwork::default()),
-        Syntax::RdfXml | Syntax::OwlFunctional => {
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
             let uri = base.unwrap_or(doc_uri(syntax)).to_string();
             let external = Arc::new(prefixes.clone());
             Analysis::with_syntax(uri, text, external, false, syntax).parsed
@@ -1464,7 +1468,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     spans_are_inside(text, &p);
     // RDF/XML's blank nodes are numbered, not named at random: a second read
     // gives the same parse. So does OWL Functional syntax's.
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         let again = parse_doc(text, syntax, None, &PrefixMap::default());
         assert!(p == again, "two reads of one {syntax:?} text differ");
     }
@@ -1571,7 +1578,7 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         Syntax::JsonLd => {
             a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()
         }
-        Syntax::RdfXml | Syntax::OwlFunctional => true,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => true,
         _ => a
             .parsed
             .errors
@@ -1714,7 +1721,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     };
     let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
     let name = format!("doc.{}", extension(syntax));
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         fix_all_leaves_rdf_xml(rng, &name, text);
     } else {
         fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
@@ -1924,6 +1934,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "jsonld",
         Syntax::RdfXml => "rdf",
         Syntax::OwlFunctional => "ofn",
+        Syntax::OwlXml => "owx",
     }
 }
 

@@ -28,7 +28,7 @@ pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     // reference is its IRI, whatever part of it the cursor is on. So in an
     // OWL Functional document, which records no prefix uses.
     match a.parsed.syntax {
-        Syntax::RdfXml | Syntax::OwlFunctional => {
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
             let r = a.ref_at(offset)?;
             return Some((Target::Iri(r.iri), r.span));
         }
@@ -94,6 +94,7 @@ pub(crate) fn shown(uri: &str) -> String {
 fn not_edited(a: &Analysis) -> String {
     let what = match a.parsed.syntax {
         Syntax::OwlFunctional => "an OWL Functional syntax document",
+        Syntax::OwlXml => "an OWL/XML document",
         Syntax::Turtle
         | Syntax::TriG
         | Syntax::NTriples
@@ -603,7 +604,8 @@ pub(crate) fn renamed_iri_at(
         | Syntax::NTriples
         | Syntax::NQuads
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => false,
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => false,
     };
     if bare_iri
         && let Some((p, rest)) = new_name.split_once(':')
@@ -672,7 +674,9 @@ pub(crate) fn rename_term(
         .filter(|(_, src, _)| *src != Source::External)
     {
         match other.parsed.syntax {
-            Syntax::RdfXml | Syntax::OwlFunctional => return Err(not_edited(other)),
+            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+                return Err(not_edited(other));
+            }
             Syntax::JsonLd => jsonld_docs.push(other),
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 turtle_docs.push(other)

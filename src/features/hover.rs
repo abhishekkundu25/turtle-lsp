@@ -70,7 +70,7 @@ fn hover_with(
     // `ofn-syntax` error): its abbreviated IRI is the term, as in RDF/XML.
     let prefixes_written = match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
     };
     let text_label = match r.form {
         Form::PName { prefix_len } if prefixes_written => {

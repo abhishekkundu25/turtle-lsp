@@ -347,9 +347,15 @@ fn fetch_document(
             let (nt, truncated) = functional_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
             marked(nt, truncated.as_deref(), TRUNCATED_FUNCTIONAL)
         }
+        // No reader yet: the RDF/XML frontend's answer, which names the
+        // syntax and gives no triples.
+        Format::OwlXml => {
+            let (nt, truncated) = rdf_xml_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
+            marked(nt, truncated.as_deref(), TRUNCATED)
+        }
     };
     let format = match format {
-        Format::RdfXml | Format::Functional => Format::Turtle,
+        Format::RdfXml | Format::Functional | Format::OwlXml => Format::Turtle,
         other => other,
     };
     Ok(Fetched {
@@ -552,6 +558,9 @@ pub enum Format {
     RdfXml,
     /// OWL 2 Functional-Style Syntax, its axioms mapped to RDF.
     Functional,
+    /// The OWL 2 XML Serialization. Nothing names or sniffs a document so
+    /// yet: an OWL/XML text is refused as today ([`Sniffed::format`]).
+    OwlXml,
 }
 
 impl Format {
@@ -565,6 +574,7 @@ impl Format {
             Syntax::JsonLd => Format::JsonLd,
             Syntax::RdfXml => Format::RdfXml,
             Syntax::OwlFunctional => Format::Functional,
+            Syntax::OwlXml => Format::OwlXml,
         }
     }
 
@@ -576,6 +586,7 @@ impl Format {
             Format::Turtle => Syntax::Turtle,
             Format::RdfXml => Syntax::RdfXml,
             Format::Functional => Syntax::OwlFunctional,
+            Format::OwlXml => Syntax::OwlXml,
             Format::TriG => Syntax::TriG,
             Format::NTriples => Syntax::NTriples,
             Format::NQuads => Syntax::NQuads,
@@ -587,7 +598,7 @@ impl Format {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn cache_extension(self) -> &'static str {
         match self {
-            Format::Turtle | Format::RdfXml | Format::Functional => "ttl",
+            Format::Turtle | Format::RdfXml | Format::Functional | Format::OwlXml => "ttl",
             Format::TriG => "trig",
             Format::NTriples => "nt",
             Format::NQuads => "nq",
@@ -702,7 +713,8 @@ pub(super) fn parse(
         | Format::NQuads
         | Format::JsonLd
         | Format::RdfXml
-        | Format::Functional => text.to_string(),
+        | Format::Functional
+        | Format::OwlXml => text.to_string(),
     };
     let a = Analysis::with_syntax(
         base.to_string(),
@@ -711,7 +723,7 @@ pub(super) fn parse(
         false,
         format.syntax(),
     );
-    if matches!(format, Format::RdfXml | Format::Functional) {
+    if matches!(format, Format::RdfXml | Format::Functional | Format::OwlXml) {
         // Read on past its errors; the first says where it went wrong.
         truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
     }

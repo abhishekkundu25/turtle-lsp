@@ -145,7 +145,8 @@ impl<'a> Checks<'a> {
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => a.prefix_map(),
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => a.prefix_map(),
         });
         shorten(iri, prefixes).unwrap_or_else(|| format!("<{iri}>"))
     }
@@ -656,7 +657,8 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => false,
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => false,
         };
         if let Some(s) = string
             && let Some(replace) = trimmed(&a.text[s.start as usize..s.end as usize], json)
@@ -683,7 +685,7 @@ fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
             return (t.kind == Kind::String && t.error().is_none())
                 .then(|| at(Span::new(t.start, t.end)));
         }
-        Syntax::RdfXml | Syntax::OwlFunctional => return None,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return None,
         Syntax::JsonLd => {}
     }
     if text.starts_with('"') {

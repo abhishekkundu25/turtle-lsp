@@ -100,9 +100,10 @@ pub fn parse(src: &str, external: &PrefixMap, syntax: Syntax) -> Parsed {
 /// URL) until an `@base` replaces it. An invalid `base` is ignored.
 ///
 /// For the Turtle family only. It never fails, but it does not read JSON-LD,
-/// RDF/XML or OWL Functional syntax, which have their own frontends: given
-/// [`Syntax::JsonLd`], [`Syntax::RdfXml`] or [`Syntax::OwlFunctional`] it
-/// returns no triples and one `syntax` error at offset 0.
+/// RDF/XML, OWL Functional syntax or OWL/XML, which have their own
+/// frontends: given [`Syntax::JsonLd`], [`Syntax::RdfXml`],
+/// [`Syntax::OwlFunctional`] or [`Syntax::OwlXml`] it returns no triples
+/// and one `syntax` error at offset 0.
 pub fn parse_with_base(
     src: &str,
     external: &PrefixMap,
@@ -135,7 +136,9 @@ impl Syntax {
     /// OWL Functional syntax, which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
         match self {
-            Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
+            Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+                return Vec::new();
+            }
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
         }
         let mut all = tokenize(src);
@@ -163,6 +166,7 @@ fn run(
         Syntax::JsonLd => Some("JSON-LD documents are parsed by jsonld::parse"),
         Syntax::RdfXml => Some("RDF/XML documents are parsed by rdfxml::parse"),
         Syntax::OwlFunctional => Some("OWL Functional documents are parsed by ofn::parse"),
+        Syntax::OwlXml => Some("OWL/XML documents are parsed by owx::parse"),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => None,
     };
     if let Some(message) = frontend {

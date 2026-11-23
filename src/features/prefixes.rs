@@ -74,7 +74,8 @@ impl Naming {
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => a
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => a
                 .parsed
                 .prefixes
                 .iter()

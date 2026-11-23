@@ -397,7 +397,8 @@ fn embeds(a: &Analysis) -> bool {
         | Syntax::NQuads
         | Syntax::JsonLd
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => false,
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => false,
     }
 }
 

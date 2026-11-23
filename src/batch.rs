@@ -53,6 +53,7 @@ const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 fn not_formatted(syntax: Syntax) -> &'static str {
     match syntax {
         Syntax::OwlFunctional => "OWL Functional syntax",
+        Syntax::OwlXml => "OWL/XML",
         Syntax::Turtle
         | Syntax::TriG
         | Syntax::NTriples
@@ -884,6 +885,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
             Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
             Some(DocKind::Rdf(Syntax::OwlFunctional)) => "ofn",
+            Some(DocKind::Rdf(Syntax::OwlXml)) => "owx",
             _ => "turtle",
         }
     }

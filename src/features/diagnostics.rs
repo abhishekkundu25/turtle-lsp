@@ -351,7 +351,7 @@ impl Check {
                 true
             }
             // Read-only, as RDF/XML: the same checks.
-            Syntax::RdfXml | Syntax::OwlFunctional => self.runs_read_only(),
+            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => self.runs_read_only(),
         }
     }
 
@@ -500,7 +500,8 @@ pub(crate) fn diagnostics_kept(
                 | Syntax::NTriples
                 | Syntax::NQuads
                 | Syntax::RdfXml
-                | Syntax::OwlFunctional => {}
+                | Syntax::OwlFunctional
+                | Syntax::OwlXml => {}
             },
             Check::ShaclLint => {
                 for f in crate::features::shacl_lint::lint(a, k) {
@@ -547,7 +548,8 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
         | Syntax::NTriples
         | Syntax::NQuads
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => true,
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => true,
     };
     let cap = opts
         .max_syntax_errors
@@ -571,6 +573,7 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
         // this one too.
         let code = match a.parsed.syntax {
             Syntax::OwlFunctional => crate::ofn::CODE,
+            Syntax::OwlXml => crate::owx::CODE,
             Syntax::Turtle
             | Syntax::TriG
             | Syntax::NTriples
@@ -1355,6 +1358,7 @@ mod tests {
             );
             assert_eq!(check.runs_on(Syntax::RdfXml), on, "{check:?}");
             assert_eq!(check.runs_on(Syntax::OwlFunctional), on, "{check:?}");
+            assert_eq!(check.runs_on(Syntax::OwlXml), on, "{check:?}");
             assert!(check.runs_on(Syntax::Turtle), "{check:?}");
         }
 

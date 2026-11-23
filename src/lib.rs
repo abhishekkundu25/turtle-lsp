@@ -213,6 +213,7 @@ pub(crate) mod layout;
 pub(crate) mod ofn;
 #[doc(hidden)]
 pub mod oracle;
+pub(crate) mod owx;
 pub mod query;
 pub mod rdf;
 pub(crate) mod rdfxml;
