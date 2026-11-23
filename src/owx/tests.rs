@@ -934,6 +934,42 @@ fn an_empty_iri_or_import_is_the_base() {
     assert!(p.refs.is_empty());
 }
 
+/// The attributes whose schema type collapses white space (`xsd:anyURI`,
+/// `xsd:NCName`; and `abbreviatedIRI`, as the content of
+/// `AbbreviatedIRI`) are read without the XML white space at their ends,
+/// and the span of the value is the trimmed part. A prefix's `name`, an
+/// `xsd:string`, keeps it.
+#[test]
+fn white_space_around_an_attribute_value_is_trimmed() {
+    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\" http://example.org/o \" versionIRI=\"\thttp://example.org/v\n\">\n<Prefix name=\"ex\" IRI=\" http://example.org/ \"/>\n<Declaration><Class IRI=\"  http://example.org/A  \"/></Declaration>\n<Declaration><Class abbreviatedIRI=\" ex:B \"/></Declaration>\n<ClassAssertion><Class IRI=\"http://example.org/A\"/><AnonymousIndividual nodeID=\" n1 \"/></ClassAssertion>\n<DataPropertyAssertion><DataProperty IRI=\"http://example.org/p\"/><NamedIndividual IRI=\"http://example.org/i\"/><Literal datatypeIRI=\" http://www.w3.org/2001/XMLSchema#integer \">1</Literal></DataPropertyAssertion>\n<DatatypeDefinition><Datatype IRI=\"http://example.org/d\"/><DatatypeRestriction><Datatype IRI=\"http://www.w3.org/2001/XMLSchema#integer\"/><FacetRestriction facet=\" http://www.w3.org/2001/XMLSchema#minInclusive \"><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#integer\">0</Literal></FacetRestriction></DatatypeRestriction></DatatypeDefinition>\n</Ontology>";
+    let p = clean(text);
+    same_mapping(
+        &p,
+        &functional(
+            "Prefix(ex:=<http://example.org/>)\nOntology(<http://example.org/o> <http://example.org/v>\nDeclaration(Class(<http://example.org/A>))\nDeclaration(Class(ex:B))\nClassAssertion(<http://example.org/A> _:n1)\nDataPropertyAssertion(<http://example.org/p> <http://example.org/i> \"1\"^^<http://www.w3.org/2001/XMLSchema#integer>)\nDatatypeDefinition(<http://example.org/d> DatatypeRestriction(<http://www.w3.org/2001/XMLSchema#integer> <http://www.w3.org/2001/XMLSchema#minInclusive> \"0\"^^<http://www.w3.org/2001/XMLSchema#integer>)))",
+        ),
+    );
+    let spans: Vec<&str> = p.refs.iter().map(|r| at(text, r.span)).collect();
+    assert_eq!(
+        spans[..4],
+        [
+            "http://example.org/o",
+            "http://example.org/v",
+            "http://example.org/A",
+            "ex:B"
+        ]
+    );
+    assert!(spans.contains(&"http://www.w3.org/2001/XMLSchema#minInclusive"));
+    assert!(spans.iter().all(|s| s.trim() == *s), "{spans:?}");
+    assert_eq!(at(text, p.prefixes[0].iri_span), "http://example.org/");
+    let text = owx("<Prefix name=\" p\" IRI=\"http://example.org/p#\"/>");
+    let p = read(&text, Some(URL));
+    assert_eq!(
+        errors(&text, &p),
+        [(CODE, " p", "' p' is no prefix name (PN_PREFIX)")]
+    );
+}
+
 #[test]
 fn declarations_of_the_six_kinds() {
     let kinds = [

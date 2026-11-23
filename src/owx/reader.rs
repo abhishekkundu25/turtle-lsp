@@ -572,6 +572,24 @@ impl<'a> Reader<'a> {
         &self.text[span.start as usize..span.end as usize]
     }
 
+    /// The value `v` of an attribute whose schema type collapses white
+    /// space (`xsd:anyURI`, `xsd:NCName`, `xsd:nonNegativeInteger`; and
+    /// `abbreviatedIRI`, read as the content of `AbbreviatedIRI` is): its
+    /// text and its span without the XML white space at their ends.
+    fn collapsed(&self, v: &xml::Value<'a>) -> Written<'a> {
+        let text = match &v.text {
+            Cow::Borrowed(t) => Cow::Borrowed(t.trim_matches(WHITE)),
+            Cow::Owned(t) if t.trim_matches(WHITE).len() == t.len() => v.text.clone(),
+            Cow::Owned(t) => Cow::Owned(t.trim_matches(WHITE).to_string()),
+        };
+        let span = self.trimmed(v.span);
+        Written {
+            spelled: self.at(span) == text,
+            span,
+            text,
+        }
+    }
+
     /// `span` without the XML white space at its ends.
     fn trimmed(&self, span: Span) -> Span {
         let raw = self.at(span);
@@ -909,12 +927,12 @@ impl<'a> Reader<'a> {
         let [iri, abbreviated] = self.attrs(tag, ["IRI", "abbreviatedIRI"])?;
         let (w, value) = match (iri, abbreviated) {
             (Some(a), None) => {
-                let w = Written::of(&a.value);
+                let w = self.collapsed(&a.value);
                 let value = self.any_uri(&w, self.base())?;
                 (w, value)
             }
             (None, Some(a)) => {
-                let w = Written::of(&a.value);
+                let w = self.collapsed(&a.value);
                 let value = self.abbreviated(&w)?;
                 (w, value)
             }
@@ -1119,24 +1137,16 @@ impl<'a> Reader<'a> {
             let message = format!("<{}> needs the attribute cardinality", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
-        let w = Written::of(&a.value);
-        // The schema's type collapses white space.
-        let text = w.text.trim_matches(WHITE);
-        let span = if w.spelled {
-            self.trimmed(w.span)
-        } else {
-            w.span
-        };
-        if !is_non_negative_integer(text) {
-            let message = format!("Expected a non-negative integer, found '{}'", shown(text));
-            return self.stop(span, message);
+        let w = self.collapsed(&a.value);
+        if !is_non_negative_integer(&w.text) {
+            let message = format!(
+                "Expected a non-negative integer, found '{}'",
+                shown(&w.text)
+            );
+            return self.stop(w.span, message);
         }
-        let value = if w.spelled {
-            Str::Text(span)
-        } else {
-            self.stash(text, span)?
-        };
-        self.leaf(NodeKind::Integer, span, Term::Integer(value));
+        let value = self.keep(&w)?;
+        self.leaf(NodeKind::Integer, w.span, Term::Integer(value));
         Ok(())
     }
 
@@ -1244,7 +1254,7 @@ impl<'a> Reader<'a> {
         };
         let [datatype] = self.attrs(tag, ["datatypeIRI"])?;
         if let Some(a) = datatype {
-            let w = Written::of(&a.value);
+            let w = self.collapsed(&a.value);
             let value = self.any_uri(&w, self.base())?;
             self.iri_node(&w, value);
         }
@@ -1302,7 +1312,7 @@ impl<'a> Reader<'a> {
             let message = format!("<{}> needs the attribute nodeID", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
-        let w = Written::of(&a.value);
+        let w = self.collapsed(&a.value);
         if !xml::is_nc_name(w.text.strip_prefix("_:").unwrap_or(&w.text)) {
             let message = format!(
                 "'{}' is no nodeID: a nodeID is an NCName (a name without ':'), or '_:' and an NCName",
@@ -1323,7 +1333,7 @@ impl<'a> Reader<'a> {
             let message = format!("<{}> needs the attribute facet", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
-        let w = Written::of(&a.value);
+        let w = self.collapsed(&a.value);
         let value = self.any_uri(&w, self.base())?;
         self.iri_node(&w, value);
         let Some(child) = self.child(tag)? else {
@@ -1481,7 +1491,7 @@ impl<'a> Reader<'a> {
         let mut written: Vec<&Attr<'a>> = [ontology, version].into_iter().flatten().collect();
         written.sort_by_key(|a| a.span.start);
         for a in written {
-            let w = Written::of(&a.value);
+            let w = self.collapsed(&a.value);
             let Ok(value) = self.any_uri(&w, self.base()) else {
                 continue;
             };
@@ -1601,7 +1611,7 @@ impl<'a> Reader<'a> {
             );
             return None;
         }
-        let w = Written::of(&iri.value);
+        let w = self.collapsed(&iri.value);
         let value = self.any_uri(&w, self.base()).ok()?;
         let resolved = match value {
             Value::Full(s) => s,
