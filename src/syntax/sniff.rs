@@ -1,6 +1,7 @@
 //! What a text is written in, from how it starts: the RDF syntaxes
-//! turtle-lsp reads, and the OWL syntaxes it names but does not read. The
-//! import loader and the RDF/XML frontend both ask.
+//! turtle-lsp reads, OWL Functional syntax, whose axioms it maps to RDF,
+//! and the OWL syntaxes it names but does not read. The import loader,
+//! `Syntax::of_content` and the RDF/XML frontend ask.
 
 /// How far a sniff looks: past an XML declaration, comments and a DOCTYPE
 /// with entities to the root element.
@@ -73,16 +74,18 @@ impl Sniffed {
 
     /// What a text in an OWL syntax holds and how to make RDF of it, as
     /// the end of a sentence ("holds OWL/XML, which turtle-lsp does not
-    /// read. In Protégé: …"); `None` for the RDF syntaxes.
+    /// read. In Protégé: …"); `None` for the syntaxes it reads: the RDF
+    /// syntaxes and OWL Functional syntax.
     pub(crate) fn unread(self) -> Option<String> {
-        let name = match self {
-            Sniffed::Turtle | Sniffed::JsonLd | Sniffed::RdfXml => return None,
-            Sniffed::OwlXml => "OWL/XML",
-            Sniffed::Functional => "OWL Functional syntax",
-            Sniffed::Manchester => "OWL Manchester syntax",
+        let what = match self {
+            Sniffed::Turtle | Sniffed::JsonLd | Sniffed::RdfXml | Sniffed::Functional => {
+                return None;
+            }
+            Sniffed::OwlXml => "OWL/XML, which turtle-lsp does not read",
+            Sniffed::Manchester => "OWL Manchester syntax, which turtle-lsp does not read",
         };
         Some(format!(
-            "holds {name}, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
+            "holds {what}. In Protégé: File > Save as > RDF/XML or Turtle"
         ))
     }
 }
@@ -523,11 +526,11 @@ mod tests {
         assert_eq!(Sniffed::of(&long), OwlXml);
         let unread = |text: &str| Sniffed::of(text).unread().unwrap();
         assert!(unread(&long).starts_with("holds OWL/XML, "));
-        let e = unread("Prefix(:=<http://e/>)");
-        assert!(e.contains("OWL Functional syntax"), "{e}");
         let e = unread("Prefix: : <http://e/>");
         assert!(e.contains("OWL Manchester syntax"), "{e}");
-        for rdf in [Turtle, JsonLd, RdfXml] {
+        // OWL Functional syntax is read.
+        assert_eq!(Sniffed::of("Prefix(:=<http://e/>)"), Functional);
+        for rdf in [Turtle, JsonLd, RdfXml, Functional] {
             assert_eq!(rdf.unread(), None);
         }
     }
@@ -705,6 +708,21 @@ mod tests {
                 Functional,
             ),
             ("Ontology(<http://example.org/o>\n)".into(), Functional),
+            // Functional as OWL API writes it, and with what may come first.
+            (
+                "Prefix(:=<http://example.org/o#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\n\nOntology(<http://example.org/o>\n".into(),
+                Functional,
+            ),
+            (
+                "\u{feff}Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\r\nOntology(".into(),
+                Functional,
+            ),
+            (
+                "# Written by hand\n# second line\n\nPrefix (ex:=<http://example.org/>)".into(),
+                Functional,
+            ),
+            ("Ontology()".into(), Functional),
+            ("\t\nOntology\n(\n)".into(), Functional),
             (
                 "Prefix: : <http://example.org/o#>\nOntology: <http://example.org/o>".into(),
                 Manchester,

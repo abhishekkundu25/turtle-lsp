@@ -1,0 +1,6 @@
+Prefix(:=<http://example.org/o#>)
+Ontology(<http://example.org/o>
+Declaration(Class(:A))
+SubClassOf(:A nope:B)
+AnnotationAssertion(rdfs:label :A "Apple")
+)

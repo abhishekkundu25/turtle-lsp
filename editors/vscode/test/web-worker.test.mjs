@@ -119,6 +119,7 @@ test("the features the server writes with are registered after the initialize an
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
   for (const x of regs) {
     const selector = x.registerOptions.documentSelector
+    assert.doesNotMatch(JSON.stringify(selector), /ofn/, x.method)
     if (x.method !== "textDocument/rename") assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, x.method)
     else assert.deepEqual(selector.filter((f) => /owl|rdf|xml/.test(JSON.stringify(f))), [{ pattern: "**/*.{owl,rdf}" }])
   }

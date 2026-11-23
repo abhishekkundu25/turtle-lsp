@@ -390,6 +390,68 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   vim.api.nvim_buf_delete(other, { force = true })
 end)
 
+check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; nothing is written in it", function()
+  local file = owl_dir .. "/onto.ofn"
+  local text = {
+    "Prefix(:=<http://example.org/o#>)",
+    "Ontology(<http://example.org/o>",
+    "Declaration(Class(:A))",
+    "SubClassOf(:A nope:B)",
+    'AnnotationAssertion(rdfs:label :A "Apple")',
+    ")",
+  }
+  vim.fn.writefile(text, file)
+  local b, c = open(file)
+  assert(vim.bo[b].filetype == "ofn", "filetype " .. vim.bo[b].filetype)
+  local d = wait_diagnostics(b)
+  assert(#d == 1, "diagnostics: " .. vim.inspect(d))
+  assert(d[1].code == "ofn-syntax" and d[1].lnum == 3 and d[1].col == 14, vim.inspect(d[1]))
+  assert(d[1].message == "Undeclared prefix 'nope:'", d[1].message)
+  local edits = request(b, "textDocument/formatting", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    options = { tabSize = 2, insertSpaces = true },
+  })
+  assert(edits == nil or #edits == 0, "formatting edits in a .ofn: " .. vim.inspect(edits))
+  local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, ":A))"),
+    newName = "ex:Thing",
+  }, TIMEOUT)
+  local answer = res and res[c.id]
+  local message = answer and answer.err and answer.err.message or vim.inspect(answer)
+  assert(message:find("OWL Functional syntax document is not edited", 1, true), "rename in a .ofn: " .. message)
+  -- Its axioms are read: the label in hover, the declaration as definition.
+  local h = request(b, "textDocument/hover", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "Class(:"),
+  })
+  assert(h and h.contents.value:find("Apple", 1, true), "hover in a .ofn: " .. vim.inspect(h))
+  local def = request(b, "textDocument/definition", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "rdfs:label :"),
+  })
+  def = def and (def.range and { def } or def) or {}
+  assert(#def == 1 and def[1].range.start.line == 2 and def[1].range.start.character == 18, "definition in a .ofn: " .. vim.inspect(def))
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
+check("a .ofn and a Functional .owl or .rdf read no modelines: ' ex:' in their last lines raises no E518", function()
+  local text = {
+    "Prefix(ex:=<http://example.org/>)",
+    "Ontology(<http://example.org/o>",
+    "SubClassOf(ex:Foo ex:Bar))",
+  }
+  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl", "/modeline.rdf" }) do
+    local file = owl_dir .. name
+    vim.fn.writefile(text, file)
+    local ok, b = pcall(open, file)
+    assert(ok, name .. ": " .. tostring(b))
+    assert(vim.bo[b].modeline == false, name .. ": modeline on")
+    wait_diagnostics(b)
+    vim.api.nvim_buf_delete(b, { force = true })
+  end
+end)
+
 check("a Turtle buffer gets static formatting and rename with prepareRename", function()
   local ttl, tc = open(people)
   assert(tc:supports_method("textDocument/formatting", ttl), "no formatting in people.ttl")

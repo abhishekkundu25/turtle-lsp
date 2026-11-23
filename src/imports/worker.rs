@@ -271,6 +271,82 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// An OWL Functional ontology is read as an import, through a catalog
+    /// (`.ofn`) and by its file IRI (a Functional `.owl`, which the first
+    /// imports): its axioms are its triples, its `Import`s are followed, and
+    /// one with an error loads in part.
+    #[test]
+    fn functional_imports_load_through_a_catalog_and_a_file_iri() {
+        let root = tmp("functional");
+        let ws = root.join("ws");
+        fs::create_dir_all(ws.join("v")).unwrap();
+        fs::write(
+            ws.join(CATALOG_FILE),
+            r#"<catalog><uri name="http://ex.com/f" uri="v/f.ofn"/><uri name="http://ex.com/broken" uri="v/broken.ofn"/></catalog>"#,
+        )
+        .unwrap();
+        let g = ws.join("v").join("g.owl");
+        let g_iri = url::Url::from_file_path(&g).unwrap().to_string();
+        fs::write(
+            ws.join("v").join("f.ofn"),
+            format!(
+                "Prefix(:=<http://ex.com/f#>)\nOntology(<http://ex.com/f>\nImport(<{g_iri}>)\nDeclaration(Class(:A))\nSubClassOf(:A <http://ex.com/g#B>)\n)\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &g,
+            "Prefix(:=<http://ex.com/g#>)\nOntology(<http://ex.com/g>\nDeclaration(Class(:B))\n)\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("v").join("broken.ofn"),
+            "Prefix(:=<http://ex.com/x#>)\nOntology(<http://ex.com/broken>\nDeclaration(Class(:X))\nSubClassOf(:X nope:Y)\n)\n",
+        )
+        .unwrap();
+        let j = job(
+            &["http://ex.com/f", "http://ex.com/broken"],
+            &[],
+            vec![ws.clone()],
+            None,
+        );
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        let st: FxHashMap<_, _> = done.status.iter().cloned().collect();
+        assert!(matches!(st["http://ex.com/f"], Status::Loaded(_)), "{st:?}");
+        assert!(matches!(st[g_iri.as_str()], Status::Loaded(_)), "{st:?}");
+        assert!(
+            matches!(&st["http://ex.com/broken"], Status::Truncated(_, m) if m.contains("Undeclared prefix 'nope:'")),
+            "{st:?}"
+        );
+        let loaded = |end: &str| {
+            done.loaded
+                .iter()
+                .find(|l| l.analysis.uri.ends_with(end))
+                .unwrap_or_else(|| panic!("{end}"))
+                .analysis
+                .clone()
+        };
+        let f = loaded("v/f.ofn");
+        assert_eq!(f.parsed.syntax, crate::syntax::Syntax::OwlFunctional);
+        let supers: Vec<&str> = f
+            .supers
+            .get("http://ex.com/f#A")
+            .unwrap()
+            .iter()
+            .map(|i| i.as_str())
+            .collect();
+        assert_eq!(supers, ["http://ex.com/g#B"]);
+        assert!(f.defs.contains_key("http://ex.com/f#A"));
+        assert!(loaded("v/g.owl").defs.contains_key("http://ex.com/g#B"));
+        // The part read whole of the broken one.
+        assert!(
+            loaded("v/broken.ofn")
+                .defs
+                .contains_key("http://ex.com/x#X")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn imports_resolve_transitively_through_catalog_and_cache_with_cycles() {
         let root = tmp("transitive");

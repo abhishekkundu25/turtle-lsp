@@ -269,7 +269,7 @@ test("query: turtle-lsp.json's query.reasoning applies without the flag; the fla
   assert.deepEqual([off.out, off.err], ["p\r\n", ""])
 })
 
-test("query: .owl and .rdf files are data, as their content gives it; a broken one up to its error, a Functional one none", (t) => {
+test("query: .owl, .rdf and .ofn files are data, as their content gives it; a broken one up to its error, a Functional one its axioms", (t) => {
   const owl = (name) => `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">
     <ex:Person rdf:about="http://example.org/${name}">
@@ -283,17 +283,42 @@ test("query: .owl and .rdf files are data, as their content gives it; a broken o
     "onto/carol.owl": owl("carol"),
     "onto/dave.rdf": owl("dave").replace("</ex:Person>", "</ex:Persn>"),
     "onto/erin.owl": 'ex:erin ex:name "Erin" .\n',
-    "onto/functional.owl": "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/f>\nDeclaration(Class(:Person))\n)\n",
+    "onto/functional.owl": 'Prefix(:=<http://example.org/>)\nOntology(<http://example.org/f>\nDeclaration(Class(:Person))\nDataPropertyAssertion(:name :frank "Frank")\n)\n',
+    "onto/gina.ofn": 'Prefix(:=<http://example.org/>)\nOntology(<http://example.org/g>\nDataPropertyAssertion(:name :gina "Gina")\nSubClassOf(:A nope:B)\n)\n',
   })
   const r = query(ws, ["names.rq", "--format", "csv"])
   assert.equal(r.code, 0, r.err)
   assert.equal(
     r.out.replaceAll("\r\n", "\n"),
-    // Ordered by name: upper case first. Dave's friend is after the error.
-    "s,name\nhttp://example.org/alice,\"Alice, A\"\nhttp://example.org/bob,Bob\nhttp://example.org/erin,Erin\nhttp://example.org/carol,carol\nhttp://example.org/carol-friend,carol's friend\nhttp://example.org/dave,dave\n",
+    // Ordered by name: upper case first. Dave's friend is after the error;
+    // Gina's axiom is before hers.
+    "s,name\nhttp://example.org/alice,\"Alice, A\"\nhttp://example.org/bob,Bob\nhttp://example.org/erin,Erin\nhttp://example.org/frank,Frank\nhttp://example.org/gina,Gina\nhttp://example.org/carol,carol\nhttp://example.org/carol-friend,carol's friend\nhttp://example.org/dave,dave\n",
   )
   // A query on one .owl file reads that file alone.
   const one = query(ws, ["-e", "ASK { ex:carol a ex:Person }", "onto/carol.owl"])
   assert.equal(one.code, 0, one.err)
   assert.equal(one.out, "true\n")
+  const functional = query(ws, ["-e", "PREFIX owl: <http://www.w3.org/2002/07/owl#> ASK { ex:Person a owl:Class }", "onto/functional.owl"])
+  assert.equal(functional.code, 0, functional.err)
+  assert.equal(functional.out, "true\n")
+})
+
+test("query: CONSTRUCT prints an OWL Functional file's triples as Turtle, as the W3C mapping gives them", (t) => {
+  const ofn = `Prefix(:=<http://example.org/>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://example.org/o>
+Declaration(Class(:Widget))
+SubClassOf(Annotation(rdfs:comment "why") :Widget ObjectSomeValuesFrom(:hasPart :Part))
+)
+`
+  const prefixes = `${PREFIXES}@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n`
+  const ws = workspace(t, { ".git/HEAD": "", "prefixes.ttl": prefixes, "onto.ofn": ofn })
+  const r = query(ws, ["-e", "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o FILTER(isIRI(?s)) }", "onto.ofn"])
+  assert.equal(r.code, 0, r.err)
+  assert.match(r.out, /\nex:o a owl:Ontology \.\n\nex:Widget a owl:Class ;\n {4}rdfs:subClassOf _:g0 \.\n$/)
+  // The restriction and the annotated axiom's node.
+  const all = query(ws, ["-e", "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }", "--format", "csv", "onto.ofn"])
+  assert.equal(all.out.replaceAll("\r\n", "\n"), "n\n11\n", all.err)
+  const axiom = query(ws, ["-e", "ASK { [] a owl:Axiom ; owl:annotatedSource ex:Widget ; owl:annotatedProperty rdfs:subClassOf ; rdfs:comment \"why\" }", "onto.ofn"])
+  assert.equal(axiom.out, "true\n", axiom.err)
 })

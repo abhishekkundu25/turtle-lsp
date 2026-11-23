@@ -26,9 +26,10 @@ pub(crate) enum Target {
 
 pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
     // An XML namespace prefix is no Turtle prefix: in RDF/XML every
-    // reference is its IRI, whatever part of it the cursor is on.
+    // reference is its IRI, whatever part of it the cursor is on. So in an
+    // OWL Functional document, which records no prefix uses.
     match a.parsed.syntax {
-        Syntax::RdfXml => {
+        Syntax::RdfXml | Syntax::OwlFunctional => {
             let r = a.ref_at(offset)?;
             return Some((Target::Iri(r.iri), r.span));
         }
@@ -101,13 +102,19 @@ pub enum RdfXml {
     Refuse,
 }
 
-/// Why a rename that would edit the document at `uri`, an RDF/XML document
-/// with [`RdfXml::Refuse`], is refused.
-fn not_edited(uri: &str) -> String {
-    format!(
-        "can't rename in {}: an RDF/XML document is not edited",
-        shown(uri)
-    )
+/// Why a rename that would edit `a` is refused: an RDF/XML document with
+/// [`RdfXml::Refuse`], or an OWL Functional one, which nothing edits.
+fn not_edited(a: &Analysis) -> String {
+    let what = match a.parsed.syntax {
+        Syntax::OwlFunctional => "an OWL Functional syntax document",
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml => "an RDF/XML document",
+    };
+    format!("can't rename in {}: {what} is not edited", shown(&a.uri))
 }
 
 /// Why a rename cannot edit the RDF/XML document at `uri`: its file, the
@@ -446,6 +453,10 @@ pub fn prepare_rename(
     pos: Position,
     rdfxml: RdfXml,
 ) -> Result<Option<PrepareRenameResponse>, String> {
+    // Nothing renames in an OWL Functional document.
+    if a.parsed.syntax == Syntax::OwlFunctional {
+        return Ok(None);
+    }
     let Some(offset) = a.offset(enc, pos) else {
         return Ok(None);
     };
@@ -540,10 +551,13 @@ pub fn rename(
     scope: PrefixScope,
     rdfxml: RdfXml,
 ) -> Result<WorkspaceEdit, String> {
+    if a.parsed.syntax == Syntax::OwlFunctional {
+        return Err(not_edited(a));
+    }
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
     if a.parsed.syntax == Syntax::RdfXml {
         if rdfxml == RdfXml::Refuse {
-            return Err(not_edited(&a.uri));
+            return Err(not_edited(a));
         }
         let base = a.parsed.document_base.as_deref();
         let at = rdfxml_rename::at(&a.text, base, offset).map_err(|r| refused(&a.uri, r))?;
@@ -691,9 +705,14 @@ pub(crate) fn renamed_iri_at(
                 _ => PrefixMap::default(),
             }
         }
-        Syntax::JsonLd | Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
-            jsonld::prefixes_at(a, offset)
-        }
+        // An OWL Functional document is never renamed in ([`rename`]
+        // refuses); the new name is read as in Turtle.
+        Syntax::JsonLd
+        | Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::OwlFunctional => jsonld::prefixes_at(a, offset),
     };
     renamed_iri(old, new_name, &prefixes)
 }
@@ -778,6 +797,7 @@ pub(crate) fn rename_term(
     {
         match other.parsed.syntax {
             Syntax::RdfXml => rdfxml_docs.push(other),
+            Syntax::OwlFunctional => return Err(not_edited(other)),
             Syntax::JsonLd => jsonld_docs.push(other),
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 turtle_docs.push(other)
@@ -785,6 +805,20 @@ pub(crate) fn rename_term(
         }
     }
     if let Some(old) = Iri::get(old) {
+        // An OWL Functional document whose triples name `old` is not
+        // edited, though no reference of it may be read.
+        let functional = k
+            .docs()
+            .filter(|(_, src, d)| {
+                *src != Source::External
+                    && d.parsed.syntax == Syntax::OwlFunctional
+                    && triples_name(d, old)
+            })
+            .map(|(_, _, d)| d)
+            .min_by(|x, y| x.uri.cmp(&y.uri));
+        if let Some(d) = functional {
+            return Err(not_edited(d));
+        }
         rdfxml_docs.extend(
             k.docs()
                 .filter(|(_, src, d)| *src != Source::External && rdfxml_names(d, old))
@@ -808,7 +842,7 @@ pub(crate) fn rename_term(
     if rdfxml == RdfXml::Refuse
         && let Some(d) = rdfxml_docs.first()
     {
-        return Err(not_edited(&d.uri));
+        return Err(not_edited(d));
     }
     // Every RDF/XML document is planned before anything is written.
     let mut rdfxml_changes = Vec::new();
@@ -869,11 +903,18 @@ pub(crate) fn rename_term(
     Ok(())
 }
 
-/// Whether `a` is an RDF/XML document whose triples name `iri`, as subject,
-/// predicate, object or datatype, or inside a triple term. Its references
-/// do not say it all: an entity reference stands for everything read from
-/// it, and a production implies vocabulary no name is written for.
+/// Whether `a` is an RDF/XML document whose triples name `iri`
+/// ([`triples_name`]).
 fn rdfxml_names(a: &Analysis, iri: Iri) -> bool {
+    a.parsed.syntax == Syntax::RdfXml && triples_name(a, iri)
+}
+
+/// Whether the triples of `a` name `iri`, as subject, predicate, object or
+/// datatype, or inside a triple term. In RDF/XML and OWL Functional syntax
+/// the references do not say it all: an entity reference stands for
+/// everything read from it, and a production or an axiom implies
+/// vocabulary no name is written for.
+fn triples_name(a: &Analysis, iri: Iri) -> bool {
     fn names(n: &Node, iri: Iri) -> bool {
         match n {
             Node::Iri(i) => *i == iri,
@@ -882,11 +923,10 @@ fn rdfxml_names(a: &Analysis, iri: Iri) -> bool {
             Node::Blank(_) => false,
         }
     }
-    a.parsed.syntax == Syntax::RdfXml
-        && a.parsed
-            .triples
-            .iter()
-            .any(|t| t.p == iri || names(&t.s, iri) || names(&t.o, iri))
+    a.parsed
+        .triples
+        .iter()
+        .any(|t| t.p == iri || names(&t.s, iri) || names(&t.o, iri))
 }
 
 #[cfg(test)]
@@ -1881,7 +1921,7 @@ mod tests {
         };
         assert_eq!(
             rename(&ttl, &k, Encoding::Utf8, at, "ex:Z", scope, RdfXml::Refuse).unwrap_err(),
-            not_edited(&owl_uri)
+            not_edited(&owl)
         );
         // Started inside, on the use the grammar no longer reads.
         let inside = owl.position(Encoding::Utf8, offset_of(tx, "example.org/A", 3));

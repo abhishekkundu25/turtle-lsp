@@ -66,8 +66,15 @@ impl Naming {
     pub(crate) fn at(a: &Analysis, offset: u32, project: Arc<PrefixMap>) -> Naming {
         let own = match a.parsed.syntax {
             Syntax::JsonLd => context_prefixes(&a.source_index, offset),
-            // RDF/XML declares none: its XML namespaces are not prefixes.
-            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => a
+            // RDF/XML declares none: its XML namespaces are not prefixes. An
+            // OWL Functional document's `Prefix( … )` declarations hold for
+            // the whole document, written before the ontology.
+            Syntax::Turtle
+            | Syntax::TriG
+            | Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::RdfXml
+            | Syntax::OwlFunctional => a
                 .parsed
                 .prefixes
                 .iter()

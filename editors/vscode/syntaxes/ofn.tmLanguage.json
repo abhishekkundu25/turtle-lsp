@@ -1,0 +1,138 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "OWL Functional Syntax",
+  "scopeName": "source.ofn",
+  "fileTypes": [
+    "ofn"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#iri"
+    },
+    {
+      "include": "#langtag"
+    },
+    {
+      "include": "#datatype-marker"
+    },
+    {
+      "include": "#node-id"
+    },
+    {
+      "include": "#prefix-declaration"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#prefixed-name"
+    },
+    {
+      "include": "#integer"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.ofn"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.ofn",
+      "patterns": [
+        {
+          "match": "\\\\[\"\\\\]",
+          "name": "constant.character.escape.ofn"
+        },
+        {
+          "match": "\\\\.?",
+          "name": "invalid.illegal.escape.ofn"
+        }
+      ]
+    },
+    "iri": {
+      "match": "<[^<>\"{}|^`\\\\\\s]*>",
+      "name": "markup.underline.link.iri.ofn"
+    },
+    "langtag": {
+      "match": "(?<=\")\\s*@[a-zA-Z]+(?:-[a-zA-Z0-9]+)*",
+      "name": "constant.language.language-tag.ofn"
+    },
+    "datatype-marker": {
+      "match": "\\^\\^",
+      "name": "keyword.operator.datatype.ofn"
+    },
+    "node-id": {
+      "match": "_:[\\w\\x{00C0}-\\x{FFFD}](?:[\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*[\\w\\-\\x{00B7}\\x{00C0}-\\x{FFFD}])?",
+      "name": "variable.other.node-id.ofn"
+    },
+    "prefix-declaration": {
+      "match": "\\b(Prefix)\\s*(\\()\\s*([A-Za-z\\x{00C0}-\\x{FFFD}][\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*)?(:)\\s*(=)",
+      "captures": {
+        "1": {
+          "name": "keyword.other.directive.prefix.ofn"
+        },
+        "2": {
+          "name": "punctuation.section.parens.begin.ofn"
+        },
+        "3": {
+          "name": "entity.name.namespace.prefix.ofn"
+        },
+        "4": {
+          "name": "punctuation.separator.prefix.ofn"
+        },
+        "5": {
+          "name": "keyword.operator.assignment.ofn"
+        }
+      }
+    },
+    "keyword": {
+      "match": "\\b[A-Za-z]+(?=\\s*\\()",
+      "name": "keyword.other.construct.ofn"
+    },
+    "prefixed-name": {
+      "match": "((?:[A-Za-z\\x{00C0}-\\x{FFFD}](?:[\\w.\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]*[\\w\\-\\x{00B7}\\x{00C0}-\\x{FFFD}])?)?)(:)((?:[\\w:\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2})(?:(?:[\\w.:\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2})*(?:[\\w:\\-\\x{00B7}\\x{00C0}-\\x{FFFD}]|%[0-9A-Fa-f]{2}))?)?",
+      "captures": {
+        "1": {
+          "name": "entity.name.namespace.prefix.ofn"
+        },
+        "2": {
+          "name": "punctuation.separator.prefix.ofn"
+        },
+        "3": {
+          "name": "entity.name.local.ofn"
+        }
+      }
+    },
+    "integer": {
+      "match": "(?<![\\w:])\\d+(?![\\w:])",
+      "name": "constant.numeric.integer.ofn"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "match": "\\(",
+          "name": "punctuation.section.parens.begin.ofn"
+        },
+        {
+          "match": "\\)",
+          "name": "punctuation.section.parens.end.ofn"
+        },
+        {
+          "match": "=",
+          "name": "keyword.operator.assignment.ofn"
+        }
+      ]
+    }
+  }
+}

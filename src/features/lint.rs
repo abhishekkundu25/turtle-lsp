@@ -11,7 +11,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::{SOURCE, TermUse};
 use crate::features::quickfix::FixData;
 use crate::knowledge::{Knowledge, namespace_of};
-use crate::syntax::{Form, Iri, IriKey, PrefixMap, Role, Span, Syntax};
+use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
 use crate::vocab::{EditBuf, NameTable};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -161,7 +161,7 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         .parsed
         .refs
         .iter()
-        .filter(|r| r.role != Role::Subject)
+        .filter(|r| !r.role.is_subject())
         .filter_map(|r| match r.form {
             // The text at an anchor is not the term: nothing to report it at.
             Form::A | Form::Anchor => None,
@@ -187,6 +187,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => (false, false),
         // Its prefixes are the XML namespaces of its qualified names.
         Syntax::RdfXml => (true, true),
+        // Its names are written as in Turtle: `pfx:local` or `<…>`.
+        Syntax::OwlFunctional => (false, false),
     };
     let mut found = undescribed_written(
         uses,

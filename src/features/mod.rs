@@ -28,11 +28,13 @@ use crate::syntax::Syntax;
 /// through this gate: `navigation::rename_term` edits an RDF/XML document
 /// only through `rdfxml::rename::plan`, which places each edit at the spans
 /// the RDF/XML grammar reads and refuses the rename when it cannot
-/// (`rename.rdfXml` turns it off).
+/// (`rename.rdfXml` turns it off). OWL Functional syntax is read-only for
+/// all of them and for rename too: turtle-lsp checks it and writes none of
+/// it.
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml => false,
+        Syntax::RdfXml | Syntax::OwlFunctional => false,
     }
 }
 

@@ -5,6 +5,9 @@ dist
 test/fixtures/real/
 # Public corpus downloaded by tools/corpus/fetch.sh.
 test/corpus/
+# OWL Functional files downloaded by tools/corpus/fetch-ofn.sh (apart from
+# test/corpus/, whose presence the corpus tests take to mean it is fetched).
+test/corpus-ofn/
 # VS Code downloaded by the extension tests.
 .vscode-test/
 

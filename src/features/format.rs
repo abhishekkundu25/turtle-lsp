@@ -93,8 +93,9 @@ fn format_with<'t>(
             }
             return crate::jsonld::format::format(text, opts);
         }
-        // No formatter writes RDF/XML (only a rename does).
-        Syntax::RdfXml => return None,
+        // No formatter writes RDF/XML (only a rename does) or OWL Functional
+        // syntax (nothing does).
+        Syntax::RdfXml | Syntax::OwlFunctional => return None,
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {

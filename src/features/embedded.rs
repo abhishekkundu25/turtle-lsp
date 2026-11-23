@@ -387,12 +387,17 @@ impl Embedded<'_> {
 }
 
 /// Whether the document can embed queries the editor features map: Turtle
-/// and TriG (JSON-LD strings escape differently, and an RDF/XML literal is
-/// XML text).
+/// and TriG (JSON-LD strings escape differently, an RDF/XML literal is
+/// XML text, and an OWL Functional string escapes only `\"` and `\\`;
+/// neither of the last two is edited).
 fn embeds(a: &Analysis) -> bool {
     match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG => true,
-        Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd | Syntax::RdfXml => false,
+        Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml
+        | Syntax::OwlFunctional => false,
     }
 }
 

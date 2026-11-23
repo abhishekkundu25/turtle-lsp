@@ -7,7 +7,7 @@ local bundled = root .. "/bin/turtle-lsp" .. (vim.fn.has("win32") == 1 and ".exe
 ---@type vim.lsp.Config
 return {
   cmd = { vim.fn.executable(bundled) == 1 and bundled or "turtle-lsp" },
-  filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql" },
+  filetypes = { "turtle", "trig", "ntriples", "nquads", "jsonld", "sparql", "ofn" },
   -- In priority order: the nearest turtle-lsp.json, else the repository
   -- root, else the nearest prefixes.ttl. A prefixes.ttl in a subfolder is
   -- part of the project, not a project of its own.

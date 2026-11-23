@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import { documentSelector, inSchemes, JSONLD_PATTERN, OPT_IN, RDF_GLOB, RDFXML_PATTERN, registrationsInSchemes, settingsFrom } from "../src/client.ts"
+import { documentSelector, inSchemes, JSONLD_PATTERN, OPT_IN, RDF_GLOB, RDFXML_PATTERN, READ_ONLY_LANGUAGES, registrationsInSchemes, settingsFrom } from "../src/client.ts"
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 const settings = pkg.contributes.configuration.properties
@@ -141,21 +141,46 @@ test(".owl and .rdf files are read and watched, and the client attaches to them 
   for (const ext of [".owl", ".rdf"]) assert.ok(title.includes(`resourceExtname == ${ext}`), title)
 })
 
-test("the server's registered selector, in the client's schemes, leaves .owl and .rdf out but for rename", () => {
+test(".ofn files are OWL Functional syntax: a language of the extension, read and watched, served in every scheme", () => {
+  const ofn = pkg.contributes.languages.find((l) => l.id === "ofn")
+  assert.deepEqual(ofn.extensions, [".ofn"])
+  assert.ok(ofn.aliases.includes("OWL Functional Syntax"), ofn.aliases.join(", "))
+  const config = JSON.parse(fs.readFileSync(new URL(`../${ofn.configuration}`, import.meta.url), "utf8"))
+  assert.equal(config.comments.lineComment, "#")
+  // Its own grammar colours it (test/grammar.test.mjs).
+  assert.equal(pkg.contributes.grammars.find((g) => g.language === "ofn").scopeName, "source.ofn")
+  assert.deepEqual(READ_ONLY_LANGUAGES, ["ofn"])
+  assert.ok(RDF_GLOB.match(/\{([^}]*)\}/)[1].split(",").includes("ofn"), RDF_GLOB)
+  // Served in every scheme, untitled too: the language id names its syntax.
+  const selector = documentSelector(["file", "untitled", "vscode-vfs"])
+  assert.deepEqual(selector.filter((f) => f.language === "ofn").map((f) => f.scheme), ["file", "untitled", "vscode-vfs"])
+  // The server reads the language id as the syntax (src/syntax/mod.rs).
+  const rust = fs.readFileSync(new URL("../../../src/syntax/mod.rs", import.meta.url), "utf8")
+  assert.match(rust, /"ofn" => Some\(Syntax::OwlFunctional\)/)
+})
+
+test("the server's registered selector, in the client's schemes, leaves .owl, .rdf and .ofn out, and rename's only .ofn", () => {
   // The selector src/server/registrations.rs sends: its languages and the JSON-LD pattern, no scheme.
   const rust = fs.readFileSync(new URL("../../../src/server/registrations.rs", import.meta.url), "utf8")
   const languages = JSON.parse(rust.match(/LANGUAGES: \[&str; \d+\] =\s*(\[[^\]]*\])/)[1])
   assert.equal(rust.match(/JSONLD_PATTERN: &str = "([^"]*)"/)[1], JSONLD_PATTERN)
   const server = [...languages.map((language) => ({ language })), { pattern: JSONLD_PATTERN }]
-  // Every language the client serves is one the server registers for.
-  for (const f of documentSelector(["file"])) if ("language" in f) assert.ok(languages.includes(f.language), f.language)
+  // Every language the client serves is one the server registers for, but
+  // the read-only ones, which it registers nothing for.
+  const writes = (f) => f.pattern !== RDFXML_PATTERN && !READ_ONLY_LANGUAGES.includes(f.language)
+  for (const f of documentSelector(["file"])) if ("language" in f) assert.equal(languages.includes(f.language), writes(f), f.language)
   for (const schemes of [["file", "untitled"], ["vscode-vfs", "vscode-test-web"]]) {
     const selector = documentSelector(schemes)
     const narrowed = inSchemes(server, selector)
-    assert.deepEqual(narrowed, selector.filter((f) => f.pattern !== RDFXML_PATTERN), schemes.join(", "))
-    // Rename's selector has the RDF/XML pattern too: it keeps every filter.
+    assert.deepEqual(narrowed, selector.filter(writes), schemes.join(", "))
+    // Rename's selector has the RDF/XML pattern too: it keeps every filter
+    // but the read-only languages'.
     assert.equal(rust.match(/RDFXML_PATTERN: &str = "([^"]*)"/)[1], RDFXML_PATTERN)
-    assert.deepEqual(inSchemes([...server, { pattern: RDFXML_PATTERN }], selector), selector, schemes.join(", "))
+    assert.deepEqual(
+      inSchemes([...server, { pattern: RDFXML_PATTERN }], selector),
+      selector.filter((f) => !READ_ONLY_LANGUAGES.includes(f.language)),
+      schemes.join(", "),
+    )
   }
   // A registration without a selector (the watchers') stays as it is; a filter with a scheme too.
   const params = {
@@ -167,7 +192,7 @@ test("the server's registered selector, in the client's schemes, leaves .owl and
   const out = registrationsInSchemes(params, documentSelector(["file"]))
   assert.deepEqual(out.registrations[0], params.registrations[0])
   assert.deepEqual(out.registrations[1].registerOptions.documentSelector, [
-    ...documentSelector(["file"]).filter((f) => f.pattern !== RDFXML_PATTERN),
+    ...documentSelector(["file"]).filter(writes),
     { scheme: "git", language: "turtle" },
   ])
   // Both entries ask for the registrations, with the server's key, beside the

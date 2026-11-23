@@ -70,17 +70,26 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
     // Only JSON-LD has statements that are graphs; looked up once, not per statement.
     let graph_spans: FxHashSet<Span> = match a.parsed.syntax {
         Syntax::JsonLd => a.parsed.graphs.iter().map(|g| g.span).collect(),
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => {
-            FxHashSet::default()
-        }
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::RdfXml
+        | Syntax::OwlFunctional => FxHashSet::default(),
     };
     // A subject is named as written, except in RDF/XML, where its span is
-    // an XML tag or attribute: there its IRI names it.
+    // an XML tag or attribute, and in OWL Functional syntax, whose axioms
+    // name a term many times: there its IRI names it, shortened by the
+    // document's prefixes. A Functional document's statement has a subject
+    // where it defines its IRI (its declaration), so each term is listed
+    // once.
     let name = |iri: &Iri, span: Span| match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
             written(text, span).to_string()
         }
-        Syntax::RdfXml => shorten(iri, &prefixes).unwrap_or_else(|| iri.to_string()),
+        Syntax::RdfXml | Syntax::OwlFunctional => {
+            shorten(iri, &prefixes).unwrap_or_else(|| iri.to_string())
+        }
     };
     let detail = |iri: &Iri| {
         a.label(iri).map(str::to_string).or_else(|| {

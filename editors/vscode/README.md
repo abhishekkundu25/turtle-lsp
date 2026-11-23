@@ -89,6 +89,10 @@ Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, 
 
 A `.owl` or `.rdf` file opened on its own, with no folder, does not start the extension: open its folder instead.
 
+## OWL Functional syntax (`.ofn`)
+
+`.ofn` files get the language "OWL Functional Syntax", with its highlighting, and a `.owl` whose text is OWL Functional syntax (as ROBOT and Protégé write OBO edit files) is read as that syntax too. Their axioms are read as RDF, as an RDF/XML file's are: their classes and properties count in other files (hover with their labels, completion, no `unknown-term`), go to definition opens a term's `Declaration`, and find references, highlights, the outline, workspace symbols and folding work in them, as do queries, SHACL validation and reasoning. Each error is in the Problems panel at its exact place, with the code `ofn-syntax`: what the parser expected, an undeclared prefix, an IRI that is not absolute, too few operands, a cardinality that is not a non-negative integer; an axiom with an error is left out, the rest is read. Formatting, rename, completion and quick fixes are never offered in them, and a rename of a term they use is refused.
+
 ## Project prefixes
 
 If your Turtle files share a prefix header instead of declaring prefixes

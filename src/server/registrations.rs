@@ -2,18 +2,22 @@
 //! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
 //! their editor's own XML language, and of these only rename edits them
 //! (`features::writes`), so the editor should not offer the other three
-//! there.
+//! there. OWL Functional files (`.ofn`, the `ofn` language of VS Code and
+//! Neovim) are read-only for all four: [`LANGUAGES`] leaves `ofn` out, and
+//! rename refuses a term a Functional document uses (one under a `.owl` or
+//! `.rdf` name is in [`rename_selector`]'s pattern, and is refused there).
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
 //! document but a rename (no formatting edits, no completions, no code
-//! actions). A client opts in to more with `"registerOutsideRdfXml": true`
-//! at the top level of its `initializationOptions` ([`OPT_IN`]): each of
-//! the four features that the client can register dynamically
-//! (`dynamicRegistration`) is then left out of the result and registered
-//! once the client is initialized, for [`selector`], which leaves RDF/XML
-//! files out, and rename for [`rename_selector`], which takes them in. VS
-//! Code opts in, so that it lists no turtle-lsp formatter for XML files.
+//! actions), and nothing that writes an OWL Functional document. A client
+//! opts in to more with `"registerOutsideRdfXml": true` at the top level of
+//! its `initializationOptions` ([`OPT_IN`]): each of the four features that
+//! the client can register dynamically (`dynamicRegistration`) is then left
+//! out of the result and registered once the client is initialized, for
+//! [`selector`], which leaves RDF/XML and OWL Functional files out, and
+//! rename for [`rename_selector`], which takes RDF/XML files in. VS Code
+//! opts in, so that it lists no turtle-lsp formatter for XML files.
 //! The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does
@@ -304,6 +308,11 @@ mod tests {
         assert_eq!(actions["resolveProvider"], true);
     }
 
+    /// The language ids of the documents the server reads and never
+    /// writes: `ofn`, OWL Functional syntax, a language of VS Code's
+    /// extension and a Neovim file type. [`selector`] leaves them out.
+    const READ_ONLY_LANGUAGES: [&str; 1] = ["ofn"];
+
     #[test]
     fn the_languages_are_neovims_file_types() {
         let config = include_str!("../../lsp/turtle_lsp.lua");
@@ -312,7 +321,16 @@ mod tests {
             .find(|l| l.trim_start().starts_with("filetypes"))
             .unwrap();
         let mut filetypes: Vec<_> = line.split('"').skip(1).step_by(2).collect();
-        let mut languages = LANGUAGES.to_vec();
+        let mut languages = [&LANGUAGES[..], &READ_ONLY_LANGUAGES[..]].concat();
+        // The read-only ones are in no registration.
+        let registered = serde_json::to_string(&selector()).unwrap();
+        for id in READ_ONLY_LANGUAGES {
+            assert!(!registered.contains(&format!("\"{id}\"")), "{registered}");
+            assert_eq!(
+                crate::syntax::Syntax::from_language_id(id),
+                Some(crate::syntax::Syntax::OwlFunctional)
+            );
+        }
         filetypes.sort_unstable();
         languages.sort_unstable();
         assert_eq!(filetypes, languages);

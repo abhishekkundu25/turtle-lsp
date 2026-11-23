@@ -13,8 +13,9 @@
 //!   spans the grammar reads, or why they cannot be made.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
-//! not RDF (OWL/XML, Functional, Manchester) gives no triples and one
-//! `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
+//! not RDF (OWL/XML, Manchester, and Functional given as RDF/XML: a
+//! Functional `.owl` reaches `ofn` instead, and so does an import of one)
+//! gives no triples and one `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
@@ -37,6 +38,10 @@ use crate::syntax::{Parsed, Severity, Span, Syntax, SyntaxError};
 
 /// The diagnostic code of a text in an OWL syntax that is not RDF.
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
+
+/// What a Functional text given as RDF/XML is said to hold.
+const FUNCTIONAL: &str =
+    "holds OWL Functional syntax, which turtle-lsp reads as such, not as RDF/XML";
 
 /// Parse an RDF/XML document into the shared parse model. `base` is the
 /// document's URL, against which relative IRIs resolve until an `xml:base`
@@ -62,7 +67,12 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
 /// still look like RDF/XML to the grammar, so what reads the text again
 /// ([`rename`]) asks this first.
 fn unread(text: &str) -> Option<String> {
-    Sniffed::of(text).unread()
+    match Sniffed::of(text) {
+        // Read by its own frontend, never given here but by a caller that
+        // names the syntax.
+        Sniffed::Functional => Some(FUNCTIONAL.to_string()),
+        other => other.unread(),
+    }
 }
 
 #[cfg(test)]
@@ -98,17 +108,24 @@ mod tests {
             assert_eq!(p.errors.len(), 1);
             let e = &p.errors[0];
             assert_eq!((e.code, e.severity), (UNSUPPORTED_SYNTAX, Severity::Error));
-            // The words the import loader uses.
-            let unread = Sniffed::of(text).unread().unwrap();
-            assert_eq!(e.message(), format!("The document {unread}"));
             assert!(
                 e.message()
-                    .starts_with(&format!("The document holds {name}, "))
-            );
-            assert!(
+                    .starts_with(&format!("The document holds {name}, ")),
+                "{}",
                 e.message()
-                    .ends_with("In Protégé: File > Save as > RDF/XML or Turtle")
             );
+            // The words the import loader uses; Functional syntax is read
+            // there.
+            match Sniffed::of(text).unread() {
+                Some(unread) => {
+                    assert_eq!(e.message(), format!("The document {unread}"));
+                    assert!(
+                        e.message()
+                            .ends_with("In Protégé: File > Save as > RDF/XML or Turtle")
+                    );
+                }
+                None => assert_eq!(e.message(), format!("The document {FUNCTIONAL}")),
+            }
         }
     }
 

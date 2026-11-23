@@ -26,10 +26,15 @@ pub fn code_actions(
     lazy: bool,
 ) -> Vec<CodeActionOrCommand> {
     // Every refactoring here reads or writes prefixes, which N-Triples and
-    // N-Quads lack and JSON-LD keeps in its context; RDF/XML is not edited.
+    // N-Quads lack and JSON-LD keeps in its context; RDF/XML and OWL
+    // Functional syntax are not edited.
     match a.parsed.syntax {
         Syntax::Turtle | Syntax::TriG => {}
-        Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd | Syntax::RdfXml => return Vec::new(),
+        Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml
+        | Syntax::OwlFunctional => return Vec::new(),
     }
     let uri = &params.text_document.uri;
     let only = params.context.only.as_deref();

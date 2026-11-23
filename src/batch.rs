@@ -18,7 +18,7 @@ use crate::analysis::{Analysis, Encoding, LineIndex, SparqlAnalysis, offset_in};
 use crate::diagnose::{self, DiagnosticInputs, Doc};
 use crate::features::quickfix::Fixer;
 use crate::features::shacl_validate;
-use crate::features::{curation, diagnostics, format, lint};
+use crate::features::{self, curation, diagnostics, format, lint};
 use crate::imports;
 use crate::knowledge::Source;
 use crate::layout;
@@ -48,8 +48,20 @@ const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
 /// Diagnostic codes whose fixes rewrite a literal's value, so are unsafe too.
 const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
-/// Why an RDF/XML file is not formatted: only a rename writes RDF/XML.
-const RDF_XML_NOT_FORMATTED: &str = "RDF/XML";
+/// Why a file in a syntax no formatter writes ([`features::writes`]) is
+/// not formatted: the syntax's name. Only a rename writes RDF/XML, and
+/// nothing writes OWL Functional syntax.
+fn not_formatted(syntax: Syntax) -> &'static str {
+    match syntax {
+        Syntax::OwlFunctional => "OWL Functional syntax",
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml => "RDF/XML",
+    }
+}
 
 /// One input file.
 #[derive(Clone, Debug)]
@@ -168,7 +180,8 @@ pub struct Report {
 #[derive(Clone, Debug)]
 pub struct FileReport {
     pub name: String,
-    /// `turtle`, `trig`, `ntriples`, `nquads` or `sparql`.
+    /// `turtle`, `trig`, `ntriples`, `nquads`, `jsonld`, `rdfxml`, `ofn` or
+    /// `sparql`.
     pub kind: &'static str,
     /// The file's diagnostics, SHACL results last.
     pub problems: Vec<Problem>,
@@ -445,9 +458,10 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        // No fix writes RDF/XML (only an editor's rename does): such a file is
-        // neither fixed nor edited by another file's fix.
-        let read_only: Vec<bool> = files.iter().map(|f| input.is_rdf_xml(&f.uri)).collect();
+        // No fix writes RDF/XML (only an editor's rename does) or OWL
+        // Functional syntax (nothing does): such a file is neither fixed nor
+        // edited by another file's fix.
+        let read_only: Vec<bool> = files.iter().map(|f| input.is_read_only(&f.uri)).collect();
         for (f, _) in files
             .iter()
             .zip(&read_only)
@@ -796,11 +810,12 @@ impl<'a> Input<'a> {
             return Some(Formatted { guarantee, outcome });
         }
         let a = self.ws.analysis(uri)?;
-        if a.parsed.syntax == Syntax::RdfXml {
-            // No formatter writes RDF/XML, whatever it holds.
+        if !features::writes(a.parsed.syntax) {
+            // No formatter writes RDF/XML or OWL Functional syntax, whatever
+            // it holds.
             return Some(Formatted {
                 guarantee: "same graph",
-                outcome: FormatOutcome::Refused(RDF_XML_NOT_FORMATTED.to_string()),
+                outcome: FormatOutcome::Refused(not_formatted(a.parsed.syntax).to_string()),
             });
         }
         let jsonld = a.parsed.syntax == Syntax::JsonLd;
@@ -854,10 +869,12 @@ impl<'a> Input<'a> {
         }
     }
 
-    /// Whether the file at `uri` is RDF/XML (an `.owl` or `.rdf` file whose
-    /// text is not Turtle or JSON-LD).
-    fn is_rdf_xml(&self, uri: &str) -> bool {
-        self.ws.doc_kind(uri) == Some(DocKind::Rdf(Syntax::RdfXml))
+    /// Whether the file at `uri` is in a syntax nothing writes
+    /// ([`features::writes`]): RDF/XML (an `.owl` or `.rdf` file whose text
+    /// is not Turtle, JSON-LD or OWL Functional syntax) or OWL Functional
+    /// syntax.
+    fn is_read_only(&self, uri: &str) -> bool {
+        matches!(self.ws.doc_kind(uri), Some(DocKind::Rdf(s)) if !features::writes(s))
     }
 
     fn kind(&self, uri: &str) -> &'static str {
@@ -868,6 +885,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::NQuads)) => "nquads",
             Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
             Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
+            Some(DocKind::Rdf(Syntax::OwlFunctional)) => "ofn",
             _ => "turtle",
         }
     }

@@ -99,8 +99,9 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
     let offset = offset as usize;
     match a.parsed.syntax {
         Syntax::JsonLd => return jsonld::complete(a, k, enc, offset),
-        // No completion in RDF/XML: only a rename writes it.
-        Syntax::RdfXml => return CompletionResponse::Array(vec![]),
+        // No completion in RDF/XML (only a rename writes it) or in OWL
+        // Functional syntax (nothing writes it).
+        Syntax::RdfXml | Syntax::OwlFunctional => return CompletionResponse::Array(vec![]),
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {

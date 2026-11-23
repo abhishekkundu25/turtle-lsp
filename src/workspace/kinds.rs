@@ -77,6 +77,7 @@ pub(crate) const ROWS: &[Row] = &[
     ext("json", FileKind::Json, Case::Any),
     ext("rdf", FileKind::Ontology, Case::Any),
     ext("owl", FileKind::Ontology, Case::Any),
+    ext("ofn", FileKind::Rdf(Syntax::OwlFunctional), Case::Any),
     ext("rq", FileKind::Sparql, Case::Exact),
     ext("sparql", FileKind::Sparql, Case::Exact),
     ext("ru", FileKind::Sparql, Case::Exact),
@@ -120,7 +121,8 @@ impl Row {
 }
 
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`,
-/// `.jsonld`, `.owl` or `.rdf`, in any letter case.
+/// `.jsonld`, `.owl`, `.rdf` or `.ofn` (OWL Functional syntax, its axioms
+/// read as RDF), in any letter case.
 pub(crate) fn is_rdf_file(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),
@@ -300,6 +302,8 @@ mod tests {
             ("/w/a.NT", Some(Rdf(Syntax::NTriples))),
             ("/w/a.nq", Some(Rdf(Syntax::NQuads))),
             ("/w/ctx.jsonld", Some(Rdf(Syntax::JsonLd))),
+            ("/w/o.ofn", Some(Rdf(Syntax::OwlFunctional))),
+            ("O.OFN", Some(Rdf(Syntax::OwlFunctional))),
             ("/w/.ttl", Some(Rdf(Syntax::Turtle))),
             ("/w/prefixes.ttl", Some(Rdf(Syntax::Turtle))),
             ("/w/a.b.ttl", Some(Rdf(Syntax::Turtle))),

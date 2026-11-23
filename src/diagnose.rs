@@ -138,13 +138,13 @@ fn compose(
 }
 
 /// The code of a document in an OWL syntax that is not read (the RDF/XML
-/// frontend's).
+/// frontend's: OWL/XML and Manchester; OWL Functional syntax is read).
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// An `unsupported-syntax` error becomes a warning unless `imported` says
-/// an import is read from the document: a copy of an ontology in OWL/XML,
-/// Functional or Manchester syntax beside its RDF/XML or Turtle breaks
-/// nothing until something imports it.
+/// an import is read from the document: a copy of an ontology in OWL/XML
+/// or Manchester syntax beside its RDF/XML or Turtle breaks nothing until
+/// something imports it.
 fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
     let Some(d) = out.iter_mut().find(|d| d.code.as_ref() == Some(&code)) else {
@@ -216,6 +216,34 @@ mod tests {
         assert_eq!(at("unresolved-import") + 1, at("shacl-violation"));
         assert_eq!(at("shacl-violation") + 1, at("turbowl/cax-dw"));
         assert_eq!(codes.last(), Some(&"turbowl/cax-dw"));
+    }
+
+    /// An OWL Functional document that an import is read from is read: it
+    /// has its own diagnostics and no `unsupported-syntax`, imported or not.
+    #[test]
+    fn an_imported_functional_document_is_read() {
+        let mut ws = Workspace::new(Vec::new(), Default::default());
+        let uri = "file:///work/o.ofn";
+        let text = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\n)\n";
+        ws.open_doc(uri.into(), text.into(), 1);
+        let a = ws.analysis(uri).unwrap();
+        assert!(!a.parsed.triples.is_empty());
+        let k = &*ws.knowledge_mut();
+        let settings = Settings::default();
+        let alone = document(
+            Doc::Rdf(&a),
+            k,
+            Encoding::Utf16,
+            &DiagnosticInputs::new(&settings),
+        );
+        let imported = DiagnosticInputs {
+            imported: &|u| u == uri,
+            ..DiagnosticInputs::new(&settings)
+        };
+        let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
+        assert_eq!(d, alone);
+        assert_eq!(d.iter().map(code).collect::<Vec<_>>(), ["ofn-syntax"]);
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
     }
 
     #[test]

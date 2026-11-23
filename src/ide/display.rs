@@ -505,6 +505,112 @@ mod tests {
         markdown(&s.hover(uri, pos).unwrap()).to_string()
     }
 
+    /// A Turtle file that uses the terms of an ontology in OWL Functional
+    /// syntax (a `.owl` file): they are known (no `unknown-term` or
+    /// `undescribed-term`, which a term no file describes gets), hover
+    /// shows their labels, definition leads to their declarations, the
+    /// Functional file's uses are among the references, and reasoning
+    /// reads its axioms (the superclass of a `SubClassOf`).
+    #[test]
+    fn a_functional_ontology_serves_the_turtle_files_that_use_it() {
+        let dir = Dir::new("functional");
+        let onto = "Prefix(ex:=<http://example.org/>)\nPrefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\nOntology(<http://example.org/onto>\nDeclaration(Class(ex:Widget))\nDeclaration(Class(ex:Gadget))\nDeclaration(Class(ex:Part))\nDeclaration(ObjectProperty(ex:hasPart))\nAnnotationAssertion(rdfs:label ex:Widget \"Widget\"@en)\nSubClassOf(ex:Gadget ex:Widget)\nSubClassOf(ex:Widget ObjectSomeValuesFrom(ex:hasPart ex:Part))\n)\n";
+        let data = format!(
+            "{PREFIXES}ex:w1 a ex:Gadget ;\n  ex:hasPart ex:p1 .\nex:p1 a ex:Part .\nex:w2 a ex:Gizmo .\n"
+        );
+        let (mut ws, uris) = workspace(&dir, &[("data.ttl", &data), ("onto.owl", onto)]);
+        let (ttl, owl) = (&uris[0], &uris[1]);
+        let settings = Settings::default();
+        let mut s = Session::new(&mut ws, Encoding::Utf16, &settings, false);
+        // Known: only the term no file describes is reported so.
+        let inputs = crate::diagnose::DiagnosticInputs::new(&settings);
+        let d = s.diagnostics(ttl, &inputs).unwrap();
+        let nowhere: Vec<_> = d
+            .iter()
+            .filter(|d| {
+                matches!(&d.code, Some(lsp_types::NumberOrString::String(c)) if c == "unknown-term" || c == "undescribed-term")
+            })
+            .map(|d| d.range.start)
+            .collect();
+        assert_eq!(nowhere, [at(&data, "ex:Gizmo", 0)], "{d:?}");
+        // The label, from the Functional file.
+        let h = s.hover(ttl, at(&data, "Gadget", 0)).unwrap();
+        assert!(markdown(&h).contains("Gadget"), "{}", markdown(&h));
+        let h = s.hover(owl, at(onto, "Widget \"", 0)).unwrap();
+        assert!(markdown(&h).contains("Widget"), "{}", markdown(&h));
+        // Definition: the declaration in the Functional file.
+        let defs = s.definition(ttl, at(&data, "Gadget", 0)).unwrap();
+        let shown: Vec<_> = defs
+            .iter()
+            .map(|l| (l.uri.as_str(), l.range.start))
+            .collect();
+        assert_eq!(shown, [(owl.as_str(), at(onto, "ex:Gadget))", 0))]);
+        // References: the Turtle use and the Functional ones.
+        let refs = s.references(ttl, at(&data, "Gadget", 0), false).unwrap();
+        let mut shown: Vec<_> = refs
+            .iter()
+            .map(|l| (l.uri.as_str(), l.range.start))
+            .collect();
+        shown.sort();
+        let mut want = vec![
+            (ttl.as_str(), at(&data, "ex:Gadget", 0)),
+            (owl.as_str(), at(onto, "ex:Gadget ex:Widget", 0)),
+        ];
+        want.sort();
+        assert_eq!(shown, want);
+        // The outline: one entry per term, at its declaration.
+        let names: Vec<_> = s
+            .document_symbols(owl)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "prefixes",
+                "ex:onto",
+                "ex:Widget",
+                "ex:Gadget",
+                "ex:Part",
+                "ex:hasPart"
+            ]
+        );
+        // Reasoning: ex:w1 is a Widget by the Functional SubClassOf.
+        let shared = Arc::new(crate::reasoning::Shared::new(
+            crate::server::worker::Spawn::Thread,
+        ));
+        let docs = ws
+            .knowledge()
+            .docs()
+            .map(|(_, s, a)| (s, a.clone()))
+            .collect();
+        crate::reasoning::run_inline(
+            &shared,
+            &crate::reasoning::Job {
+                generation: 1,
+                docs,
+                rules: crate::settings::Reasoning::Default,
+                max_triples: 1000,
+                enc: Encoding::Utf16,
+                related: true,
+                findings: false,
+                project: Default::default(),
+                cancel: Default::default(),
+            },
+        );
+        shared.show(1);
+        let md = hover_at(&mut ws, &settings, &shared, ttl, at(&data, "w1", 0));
+        let section = &md[md
+            .find("\n\n**Inferred**")
+            .unwrap_or_else(|| panic!("{md}"))..];
+        assert!(section.contains("**ex:Widget**"), "{section}");
+        assert!(
+            section.contains("`ex:Gadget rdfs:subClassOf ex:Widget` ["),
+            "{section}"
+        );
+    }
+
     #[test]
     fn inlay_hints_follow_the_labels_setting() {
         let dir = Dir::new("inlay");

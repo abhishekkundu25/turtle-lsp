@@ -1,0 +1,14 @@
+# OWL Functional syntax files that OBO projects edit by hand or with ROBOT:
+# tools/corpus/fetch-ofn.sh downloads them into test/corpus-ofn/ (not tracked),
+# and `ofn_real_files` in src/ofn/tests.rs parses them with OFN_REAL=1. Each URL
+# names a commit, so the files do not change; the sha256 is checked after the
+# download and for files already present. Columns, tab-separated:
+#   name     where it lands under test/corpus-ofn/
+#   url      https only, at a commit
+#   sha256
+cl-edit.owl	https://raw.githubusercontent.com/obophenotype/cell-ontology/a4bf9f5266c4d7192431f3aa5e8f469f24869807/src/ontology/cl-edit.owl	fb8f6419cc000464f7eab9a4fc6e2112d1088b818eb2a59ee80e7a9fddb5bb3b
+uo-edit.owl	https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/5da8f423c8817986201f27bc26f7f66b2623de40/src/ontology/uo-edit.owl	e95fd980dccbb32f4536267b1861b0ba467526d268b57732868e378e282d256c
+ro-edit.owl	https://raw.githubusercontent.com/oborel/obo-relations/1763baea8065348487ec30080f1fc320f1fe67cc/src/ontology/ro-edit.owl	7491758da6190c33e59c3d6383b3a79eefa1f0b53f80347c8dab5e4d2dc3aefb
+ro-omo_import.owl	https://raw.githubusercontent.com/oborel/obo-relations/1763baea8065348487ec30080f1fc320f1fe67cc/src/ontology/imports/omo_import.owl	b51049ab031665e3cd97be2b046b77d40407867ff4b0d4618fd57c18c46dff09
+hp-pato_import.owl	https://raw.githubusercontent.com/obophenotype/human-phenotype-ontology/b0c281ba0d4606da519dc502dd57e2c5c985aabc/src/ontology/imports/pato_import.owl	951855d9858b9317e4d187391829b6299d07228ac6eba3bd65f7fccd1eac73ed
+hp-edit.owl	https://raw.githubusercontent.com/obophenotype/human-phenotype-ontology/b0c281ba0d4606da519dc502dd57e2c5c985aabc/src/ontology/hp-edit.owl	09d225909f6962e83dcedd5add0b27496273fb960870798ddeb4d2d24dcf1ed7
