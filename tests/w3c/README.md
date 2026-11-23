@@ -10,7 +10,7 @@ Copied without the generated reports so the conformance tests run offline.
 | `sparql-tests/sparql11/{aggregates,bind,construct,exists,functions,grouping,negation,property-path,subquery}` (SPARQL 1.1 query evaluation: `.rq`, `.ttl`, `.srx`, `.srj`, manifests and one empty `.nt`; 510 files, 275 KB) | https://github.com/w3c/rdf-tests (`sparql/sparql11/`) | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
 | `shacl/core/` (SHACL Core) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/core`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 | `shacl/sparql/` (SHACL-SPARQL) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/sparql`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
-| `owl2/` (OWL 2 Functional-Style Syntax: the 78 Functional texts of the approved OWL 2 test cases, one file each, and their `MANIFEST.tsv`) | https://www.w3.org/2009/11/owl-test/all.rdf (the W3C archive of the OWL 2 Test Case Repository) | `Last-Modified` 2009-11-18, sha256 `5383f1ddf4cf2f03703a2f886f41d4e5bc375633a1cfa94a03254fd89330f8bb` |
+| `owl2/` (OWL 2 Functional-Style Syntax: the 78 Functional texts of the approved OWL 2 test cases, one file each, the 57 RDF/XML texts of the same ontologies, and their `MANIFEST.tsv`) | https://www.w3.org/2009/11/owl-test/all.rdf (the W3C archive of the OWL 2 Test Case Repository) | `Last-Modified` 2009-11-18, sha256 `5383f1ddf4cf2f03703a2f886f41d4e5bc375633a1cfa94a03254fd89330f8bb` |
 
 Each directory keeps its upstream licence (`LICENSE.md`); `owl2/` is
 CC BY 3.0, with its authors named per file.
@@ -24,6 +24,16 @@ consistency or profiles, and each text in it is a valid document. Of its
 489 tests, 83 have a Functional text; the 60 of them that are approved give
 the 78 files here (60 premises, 16 conclusions, 2 non-conclusions). The
 test passes when each parses with no error. Result: 78 of 78.
+
+The mapping to RDF is checked against the 57 of them whose test also has
+an RDF/XML text of the same ontology (`owl2/rdfxml/`, the rows flagged
+`also-rdfxml-text`), read by the RDF/XML frontend
+(`w3c_functional_and_rdfxml_texts_give_one_graph` in
+`tests/ofn_oracle.rs`): the two graphs must be isomorphic. Result: 51 of
+57; the other 6 are texts that are not the same ontology (an extra or a
+missing triple, a `differentFrom` pair the other way, a list ended with
+the `rdf:` namespace IRI instead of `rdf:nil`), each listed with the edit
+that makes them agree, which the test checks.
 
 ## RDF/XML 1.1
 

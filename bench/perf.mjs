@@ -604,6 +604,61 @@ scenario("big-file", "a file over 2 MB: open and keystroke", async () => {
   })
 })
 
+// An OWL Functional document as OWL API writes OBO edit files: per class a
+// declaration, annotations (one annotated), a subclass axiom and, for one in
+// four, an equivalence with a class expression.
+function functionalDoc(n) {
+  let out = `Prefix(:=<http://example.org/o#>)
+Prefix(obo:=<http://purl.obolibrary.org/obo/>)
+Prefix(oboInOwl:=<http://www.geneontology.org/formats/oboInOwl#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+
+Ontology(<http://example.org/o>
+`
+  for (let i = 0; i < n; i++) {
+    const c = `obo:EX_${String(i).padStart(7, "0")}`
+    const p = `obo:EX_${String(i >> 1).padStart(7, "0")}`
+    out += `
+# Class: ${c} (Class ${i})
+
+AnnotationAssertion(Annotation(oboInOwl:hasDbXref "PMID:${i}") obo:IAO_0000115 ${c} "A class numbered ${i}.")
+AnnotationAssertion(oboInOwl:hasExactSynonym ${c} "Synonym ${i}"@en)
+AnnotationAssertion(rdfs:label ${c} "Class ${i}"@en)
+SubClassOf(${c} ${p})
+`
+    if (i % 4 === 0) out += `EquivalentClasses(${c} ObjectIntersectionOf(${p} ObjectSomeValuesFrom(obo:BFO_0000050 ${p})))\n`
+    out += `Declaration(Class(${c}))\n`
+  }
+  return out + ")\n"
+}
+
+scenario("big-functional", "an OWL Functional document over 1 MB: open and keystroke", async () => {
+  const target = scaled(1_050_000)
+  let n = Math.ceil(target / 330)
+  let doc = functionalDoc(n)
+  while (doc.length < target) doc = functionalDoc((n = Math.ceil(n * 1.05)))
+  await withDir("turtle-bench-functional-", async (ws) => {
+    const file = path.join(ws, "onto.ofn")
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc)
+      const t = performance.now()
+      await s.diagnosticsFor(u, WAIT)
+      const size = `${n} classes, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
+      record("big-functional-open", `OWL Functional: didOpen -> diagnostics (${size})`, [performance.now() - t])
+      const keys = await time(20, async (i) => {
+        doc = typeAt(s, u, doc, `"Class ${i}"`, `"Class ${i}x"`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("big-functional-keystroke", `OWL Functional: keystroke -> diagnostics (${size})`, keys, { gate: true })
+      recordRss("rss-big-functional", "OWL Functional: server RSS after the edits", rssMb(s.proc.pid))
+    })
+  })
+})
+
 // Four triples per class: what the label and definition checks and the
 // workspace's term index work on, which instance data never reaches.
 function vocabDoc(n) {

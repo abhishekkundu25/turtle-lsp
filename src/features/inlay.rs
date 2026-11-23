@@ -45,7 +45,8 @@ pub fn inlay_hints(
 /// Whether a document of `syntax` gets label hints. Not RDF/XML: a hint
 /// after an attribute value would sit inside its quotes, and one after an
 /// element name between it and its attributes; the editor's XML support
-/// owns that text. Not OWL Functional syntax, which has no references yet.
+/// owns that text. Nor OWL Functional syntax, which is read-only as RDF/XML
+/// is: no text is put between its terms.
 fn hinted(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,

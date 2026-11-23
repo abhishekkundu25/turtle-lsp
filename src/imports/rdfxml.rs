@@ -1,10 +1,12 @@
-//! RDF/XML as N-Triples text, for the cache of a fetched import (a cache
-//! file holds Turtle). The RDF/XML frontend ([`crate::rdfxml`]) reads it,
-//! with its limits on what the XML may ask for; a local import is analysed
-//! by that frontend directly, over the file's own text.
+//! RDF/XML and OWL Functional syntax as N-Triples text, for the cache of a
+//! fetched import (a cache file holds Turtle). The RDF/XML frontend
+//! ([`crate::rdfxml`]) reads RDF/XML, with its limits on what the XML may
+//! ask for, and the Functional frontend ([`crate::ofn`]) maps Functional
+//! syntax to RDF; a local import is analysed by its frontend directly, over
+//! the file's own text.
 
 use crate::rdf::dataset::node_term;
-use crate::syntax::{Iri, Node, SyntaxError};
+use crate::syntax::{Iri, Node, Parsed, SyntaxError};
 use oxilangtag::LanguageTag;
 
 /// RDF/XML as N-Triples text, and its first error, as "line L, column C:
@@ -15,7 +17,23 @@ use oxilangtag::LanguageTag;
 /// triple, and when `bytes` are not UTF-8.
 pub fn rdf_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<String>), String> {
     let text = super::load::utf8(bytes)?;
-    let parsed = crate::rdfxml::parse(text, Some(base));
+    ntriples(text, crate::rdfxml::parse(text, Some(base)))
+}
+
+/// [`rdf_xml_to_ntriples`] for OWL Functional syntax: the triples of the
+/// axioms read whole (an axiom with an error gives none), and the first
+/// error.
+pub fn functional_to_ntriples(
+    bytes: &[u8],
+    base: &str,
+) -> Result<(String, Option<String>), String> {
+    let text = super::load::utf8(bytes)?;
+    ntriples(text, crate::ofn::parse(text, Some(base)))
+}
+
+/// The triples of `parsed`, the parse of `text`, as N-Triples text, and its
+/// first error.
+fn ntriples(text: &str, parsed: Parsed) -> Result<(String, Option<String>), String> {
     let stop = parsed.errors.first().map(|e| stopped_at(text, e));
     if parsed.triples.is_empty()
         && let Some(stop) = stop
@@ -53,7 +71,7 @@ fn is_iri(i: Iri) -> bool {
     oxiri::Iri::parse(i.as_str()).is_ok()
 }
 
-/// Where and why an RDF/XML text has an error: "line L, column C: why", at
+/// Where and why an RDF/XML or Functional text has an error: "line L, column C: why", at
 /// the end of the error's span.
 pub(super) fn stopped_at(text: &str, e: &SyntaxError) -> String {
     let (line, column) = line_column(text.as_bytes(), u64::from(e.span.end));

@@ -395,11 +395,20 @@ impl Imports {
             return None;
         }
         self.seen = seen;
+        // The documents that write the vocabulary, and every OWL Functional
+        // document: its `Ontology(…)` header and `Import(…)` are keywords,
+        // so no reference names `owl:Ontology` or `owl:imports` there.
+        let functional = k
+            .docs()
+            .filter(|(_, _, a)| a.parsed.syntax == crate::syntax::Syntax::OwlFunctional)
+            .map(|(id, src, _)| (id, src));
         let mut ids: Vec<_> = [OWL_IMPORTS, OWL_ONTOLOGY, OWL_VERSION_IRI]
             .iter()
             .flat_map(|p| k.docs_referencing(*p))
-            .filter(|(_, src, _)| *src != Source::External)
-            .map(|(id, _, _)| id)
+            .map(|(id, src, _)| (id, src))
+            .chain(functional)
+            .filter(|(_, src)| *src != Source::External)
+            .map(|(id, _)| id)
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -568,7 +577,10 @@ pub fn diagnostics_with<'s>(
     enc: Encoding,
     status: impl Fn(&str) -> Option<&'s Status>,
 ) -> Vec<Diagnostic> {
-    if !a.refs_by_iri.contains_key(OWL_IMPORTS) {
+    // A document with no `owl:imports` written has no import triple, but
+    // in OWL Functional syntax, which writes the keyword `Import`.
+    let functional = a.parsed.syntax == crate::syntax::Syntax::OwlFunctional;
+    if !functional && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
         return vec![];
     }
     let p = preds();
@@ -692,7 +704,7 @@ pub use catalog::parse_catalog;
 pub(crate) use load::fs_policy;
 pub use load::sniff;
 pub(crate) use load::{fs_policy_path, is_network_path};
-pub use rdfxml::rdf_xml_to_ntriples;
+pub use rdfxml::{functional_to_ntriples, rdf_xml_to_ntriples};
 
 /// Whether web fetches may reach internal addresses: set by the environment
 /// (`fetch::ALLOW_PRIVATE_ENV`), never by a file of the workspace.
@@ -791,6 +803,29 @@ mod tests {
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::INFORMATION));
         assert_eq!(d[0].range.start.character, 31);
         assert_eq!(d[0].message, "nope");
+    }
+
+    /// An OWL Functional document writes `Import( … )`, no `owl:imports`:
+    /// its imports get their diagnostics all the same, at the IRI.
+    #[test]
+    fn the_imports_of_a_functional_document_are_diagnosed_at_their_iri() {
+        let text = "Ontology(<http://ex.com/me>\nImport(<http://ex.com/x>)\nImport(<http://ex.com/y>)\n)\n";
+        let a = Analysis::new("file:///d.ofn".into(), text, Arc::default(), false);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let missing = Status::Unresolved("nope".into());
+        let ok = Status::Loaded("/w/y.owl".into());
+        let d = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(if i.ends_with('x') { &missing } else { &ok })
+        });
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].code, Some(NumberOrString::String(UNRESOLVED.into())));
+        assert_eq!(
+            (d[0].range.start, d[0].range.end),
+            (
+                lsp_types::Position::new(1, 7),
+                lsp_types::Position::new(1, 24)
+            )
+        );
     }
 
     #[test]
@@ -1045,5 +1080,28 @@ mod tests {
         let done = imports.sync(&k, &[], false).unwrap();
         assert!(imports.apply(done, &mut k));
         assert!(imports.status("http://ex.com/other").is_none());
+    }
+
+    /// A Functional document writes its header and imports with keywords,
+    /// not the IRIs `owl:Ontology`, `owl:imports` and `owl:versionIRI`, so
+    /// no reference names them: its ontology and imports are found all the
+    /// same, and a Turtle import of its ontology is local.
+    #[test]
+    fn functional_ontologies_and_imports_are_found() {
+        let mut k = Knowledge::default();
+        let none = Arc::new(PrefixMap::default());
+        let lib = "Ontology(<http://ex.com/lib> <http://ex.com/lib/1.0>\nImport(<http://ex.com/absent>)\nDeclaration(Class(<http://ex.com/A>))\n)\n";
+        let app = format!("<http://ex.com/app> <{OWL_IMPORTS}> <http://ex.com/lib> .\n");
+        for (uri, text) in [("file:///lib.ofn", lib), ("file:///app.ttl", &app)] {
+            let a = Analysis::new(uri.into(), text, none.clone(), false);
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            k.set(uri, Source::Disk, Arc::new(a));
+        }
+        let mut imports = Imports::new();
+        imports.cache = None;
+        assert!(imports.sync(&k, &[], false).is_none());
+        let req = imports.last.clone().unwrap();
+        assert_eq!(req.imports, ["http://ex.com/absent", "http://ex.com/lib"]);
+        assert_eq!(req.local, ["http://ex.com/lib", "http://ex.com/lib/1.0"]);
     }
 }

@@ -112,7 +112,7 @@ test("an .owl or .rdf file is read by its content: RDF/XML with blank nodes is d
   assert.equal(fileOf(res, "turtle.owl").format.status, "changed")
 })
 
-test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), never formatted or fixed, and gives no triples", () => {
+test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), never formatted or fixed, and its axioms are data", () => {
   const broken = "Prefix(:=<http://example.org/o#>)\nOntology(\nAnnotationAssertion(rdfs:label :A \" a \")\nSubClassOf(:A nope:B)\n)\n"
   const files = [
     { name: "onto.ofn", text: broken },
@@ -129,8 +129,9 @@ test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), ne
   assert.deepEqual(fileOf(res, "clean.ofn").diagnostics, [])
   const fixed = engine.call("fix_all", { files })
   for (const f of files) assert.equal(fixed.files.find((x) => x.name === f.name).text, f.text)
-  const q = engine.call("query", { files: [files[0], { name: "q.rq", text: "SELECT * WHERE { ?s ?p ?o }" }], query: "q.rq" })
-  assert.deepEqual(q.rows, [])
+  // The axiom read whole is a triple; the one with the error is not.
+  const q = engine.call("query", { files: [files[0], { name: "q.rq", text: "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(isLiteral(?o)) }" }], query: "q.rq" })
+  assert.deepEqual(q.rows, [["<http://example.org/o#A>", "\" a \""]])
 })
 
 // --- query ---------------------------------------------------------------------

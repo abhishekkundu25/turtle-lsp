@@ -8,13 +8,20 @@
 //! extension of the URL it was finally fetched from, else from what it starts
 //! with. The format never comes from the import IRI.
 //!
-//! A local RDF/XML file is analysed by the RDF/XML frontend over its own
-//! text, so locations point into the file. A fetched one is converted to
-//! N-Triples ([`rdf_xml_to_ntriples`]), and that text is what is cached and
-//! analysed.
+//! A local RDF/XML or OWL Functional file is analysed by its frontend over
+//! its own text, so locations point into the file. A fetched one is
+//! converted to N-Triples ([`rdf_xml_to_ntriples`],
+//! [`functional_to_ntriples`]), and that text is what is cached and
+//! analysed. A text in OWL Functional syntax is read as such whatever its
+//! name or content type says (servers send `.owl` files as
+//! `application/rdf+xml` or `text/plain`, whatever their syntax); one in
+//! OWL/XML or Manchester syntax is refused.
 
 use super::catalog::{Catalog, Target};
-use super::rdfxml::{rdf_xml_to_ntriples, stopped_at};
+use super::rdfxml::stopped_at;
+// Fetching converts; the browser build fetches nothing.
+#[cfg(not(target_arch = "wasm32"))]
+use super::rdfxml::{functional_to_ntriples, rdf_xml_to_ntriples};
 use super::worker::{Memo, Ontology, RETRY_FETCH_AFTER};
 use super::*;
 use crate::syntax::Syntax;
@@ -267,9 +274,11 @@ pub(super) fn load(
 
 // ---- the web ----
 
-/// What a web import is asked for: its content types, best first.
+/// What a web import is asked for: its content types, best first. OWL
+/// Functional syntax, which is read too, last: a server with an RDF form
+/// of the same ontology sends that.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8";
+const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8, text/owl-functional;q=0.7";
 
 /// A fetched document, as [`parse`] reads it.
 struct Fetched {
@@ -307,13 +316,15 @@ fn fetch_document(
     };
     let lossy = utf8(&r.body).map_err(unread)?;
     let lossy = lossy.trim_start_matches('\u{feff}');
-    // Whatever the content type says: `application/owl+xml` is XML.
-    Sniffed::of(lossy).format().map_err(unread)?;
+    // Whatever the content type says: `application/owl+xml` is XML, and a
+    // Functional text is Functional.
+    let sniffed = Sniffed::of(lossy).format().map_err(unread)?;
     let by_type = r
         .content_type
         .as_deref()
         .and_then(|ct| format_of_type(&ct.to_ascii_lowercase()));
     let (format, guessed) = match by_type {
+        _ if sniffed == Format::Functional => (Format::Functional, false),
         Some(format) => (format, false),
         None => {
             let path = url::Url::parse(&r.final_url)
@@ -330,13 +341,16 @@ fn fetch_document(
         Format::NTriples | Format::NQuads | Format::JsonLd => lossy.to_string(),
         Format::RdfXml => {
             let (nt, truncated) = rdf_xml_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
-            marked(nt, truncated.as_deref())
+            marked(nt, truncated.as_deref(), TRUNCATED)
+        }
+        Format::Functional => {
+            let (nt, truncated) = functional_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
+            marked(nt, truncated.as_deref(), TRUNCATED_FUNCTIONAL)
         }
     };
-    let format = if format == Format::RdfXml {
-        Format::Turtle
-    } else {
-        format
+    let format = match format {
+        Format::RdfXml | Format::Functional => Format::Turtle,
+        other => other,
     };
     Ok(Fetched {
         text,
@@ -367,7 +381,9 @@ fn fetch_document(
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn format_of_type(content_type: &str) -> Option<Format> {
     let ct = content_type.split(';').next().unwrap_or("").trim();
-    if ct.contains("xml") {
+    if ct == "text/owl-functional" {
+        Some(Format::Functional)
+    } else if ct.contains("xml") {
         Some(Format::RdfXml)
     } else if ct.ends_with("json") {
         Some(Format::JsonLd)
@@ -534,30 +550,32 @@ pub enum Format {
     NQuads,
     JsonLd,
     RdfXml,
+    /// OWL 2 Functional-Style Syntax, its axioms mapped to RDF.
+    Functional,
 }
 
 impl Format {
-    /// The format of a document of `syntax`, or why it is not read: OWL
-    /// Functional syntax is checked in the workspace, but nothing reads its
-    /// axioms into an import.
-    fn of_syntax(syntax: Syntax) -> Result<Format, String> {
-        Ok(match syntax {
+    /// The format of a document of `syntax`.
+    fn of_syntax(syntax: Syntax) -> Format {
+        match syntax {
             Syntax::Turtle => Format::Turtle,
             Syntax::TriG => Format::TriG,
             Syntax::NTriples => Format::NTriples,
             Syntax::NQuads => Format::NQuads,
             Syntax::JsonLd => Format::JsonLd,
             Syntax::RdfXml => Format::RdfXml,
-            Syntax::OwlFunctional => return Sniffed::Functional.format(),
-        })
+            Syntax::OwlFunctional => Format::Functional,
+        }
     }
 
-    /// The syntax the analysis reads it in. (A fetched RDF/XML document is
-    /// converted to N-Triples first, and read as Turtle.)
+    /// The syntax the analysis reads it in. (A fetched RDF/XML or
+    /// Functional document is converted to N-Triples first, and read as
+    /// Turtle.)
     pub(crate) fn syntax(self) -> Syntax {
         match self {
             Format::Turtle => Syntax::Turtle,
             Format::RdfXml => Syntax::RdfXml,
+            Format::Functional => Syntax::OwlFunctional,
             Format::TriG => Syntax::TriG,
             Format::NTriples => Syntax::NTriples,
             Format::NQuads => Syntax::NQuads,
@@ -569,7 +587,7 @@ impl Format {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn cache_extension(self) -> &'static str {
         match self {
-            Format::Turtle | Format::RdfXml => "ttl",
+            Format::Turtle | Format::RdfXml | Format::Functional => "ttl",
             Format::TriG => "trig",
             Format::NTriples => "nt",
             Format::NQuads => "nq",
@@ -584,7 +602,7 @@ impl Format {
 /// is not read.
 pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Result<(Format, bool), String> {
     match Syntax::from_extension(name) {
-        Some(syntax) => Ok((Format::of_syntax(syntax)?, false)),
+        Some(syntax) => Ok((Format::of_syntax(syntax), false)),
         None => sniff(bytes).map(|f| (f, true)),
     }
 }
@@ -597,14 +615,16 @@ pub fn sniff(bytes: &[u8]) -> Result<Format, String> {
 }
 
 impl Sniffed {
-    /// The format turtle-lsp reads it in, or why it reads none: OWL/XML,
-    /// Functional and Manchester are OWL syntaxes, not RDF.
+    /// The format turtle-lsp reads it in, or why it reads none: OWL/XML and
+    /// Manchester are OWL syntaxes that are not read. (Functional syntax's
+    /// axioms are mapped to RDF.)
     pub(crate) fn format(self) -> Result<Format, String> {
         match self {
             Sniffed::Turtle => Ok(Format::Turtle),
             Sniffed::JsonLd => Ok(Format::JsonLd),
             Sniffed::RdfXml => Ok(Format::RdfXml),
-            Sniffed::OwlXml | Sniffed::Functional | Sniffed::Manchester => {
+            Sniffed::Functional => Ok(Format::Functional),
+            Sniffed::OwlXml | Sniffed::Manchester => {
                 Err(format!("it {}", self.unread().unwrap_or_default()))
             }
         }
@@ -615,13 +635,15 @@ impl Sniffed {
 /// with an error, followed by where the first is and why. A cached copy
 /// keeps it, so its next load says so too.
 const TRUNCATED: &str = "# turtle-lsp: the RDF/XML has an error at ";
+/// The same line for a converted OWL Functional document.
+const TRUNCATED_FUNCTIONAL: &str = "# turtle-lsp: the OWL Functional syntax has an error at ";
 
-/// `nt`, converted from RDF/XML, with the line that says where its first
-/// error is.
+/// `nt`, converted from RDF/XML or Functional syntax, with the line
+/// (starting with `marker`) that says where its first error is.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-fn marked(nt: String, truncated: Option<&str>) -> String {
+fn marked(nt: String, truncated: Option<&str>, marker: &str) -> String {
     match truncated {
-        Some(why) => format!("{TRUNCATED}{}\n{nt}", why.replace(['\r', '\n'], " ")),
+        Some(why) => format!("{marker}{}\n{nt}", why.replace(['\r', '\n'], " ")),
         None => nt,
     }
 }
@@ -647,17 +669,24 @@ pub(super) fn parse(
     guessed: bool,
 ) -> Result<Ontology, String> {
     let text = utf8(bytes)?.trim_start_matches('\u{feff}');
-    // Whatever the name or the content type says.
-    Sniffed::of(text).format()?;
+    // Whatever the name or the content type says: OWL/XML and Manchester
+    // are refused, and Functional syntax is read as such.
+    let format = match Sniffed::of(text).format()? {
+        Format::Functional => Format::Functional,
+        _ => format,
+    };
     let mut truncated = None;
     let text = match format {
         Format::Turtle | Format::TriG => {
-            // A cached copy of an RDF/XML document with an error: its
-            // header line, then this line.
+            // A cached copy of an RDF/XML or Functional document with an
+            // error: its header line, then this line.
             truncated = text
                 .lines()
                 .take(2)
-                .find_map(|l| l.strip_prefix(TRUNCATED))
+                .find_map(|l| {
+                    l.strip_prefix(TRUNCATED)
+                        .or_else(|| l.strip_prefix(TRUNCATED_FUNCTIONAL))
+                })
                 .map(str::to_string);
             // Relative IRIs resolve against the import IRI; on the first line,
             // so line numbers stay those of the file.
@@ -666,10 +695,14 @@ pub(super) fn parse(
                 Err(_) => text.to_string(),
             }
         }
-        // N-Triples and N-Quads have absolute IRIs only, no base to declare;
-        // a JSON-LD or RDF/XML document's base is the URL the analysis is
-        // named by.
-        Format::NTriples | Format::NQuads | Format::JsonLd | Format::RdfXml => text.to_string(),
+        // N-Triples, N-Quads and Functional syntax have absolute IRIs only,
+        // no base to declare; a JSON-LD or RDF/XML document's base is the
+        // URL the analysis is named by.
+        Format::NTriples
+        | Format::NQuads
+        | Format::JsonLd
+        | Format::RdfXml
+        | Format::Functional => text.to_string(),
     };
     let a = Analysis::with_syntax(
         base.to_string(),
@@ -678,7 +711,7 @@ pub(super) fn parse(
         false,
         format.syntax(),
     );
-    if format == Format::RdfXml {
+    if matches!(format, Format::RdfXml | Format::Functional) {
         // Read on past its errors; the first says where it went wrong.
         truncated = a.parsed.errors.first().map(|e| stopped_at(&text, e));
     }
@@ -763,7 +796,6 @@ mod tests {
                 "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>",
                 "OWL/XML",
             ),
-            ("Prefix(:=<http://example.org/o#>)", "OWL Functional syntax"),
             (
                 "Prefix: ex: <http://example.org/o#>",
                 "OWL Manchester syntax",
@@ -774,6 +806,61 @@ mod tests {
                 assert!(e.starts_with(&format!("it holds {name}, ")), "{e}");
             }
         }
+    }
+
+    /// A Functional text is read as Functional syntax whatever its name or
+    /// content type says: its axioms as triples, its own imports, and its
+    /// first error, as for a truncated RDF/XML document.
+    #[test]
+    fn functional_syntax_is_read_whatever_the_name_says() {
+        let base = "file:///w/o.ofn";
+        let text = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nImport(<http://example.org/b>)\nDeclaration(Class(:A))\nSubClassOf(:A :B)\n)\n";
+        for format in [
+            Format::Turtle,
+            Format::RdfXml,
+            Format::NTriples,
+            Format::Functional,
+        ] {
+            let o = parse(text.as_bytes(), format, base, false).unwrap();
+            assert_eq!(
+                o.analysis.parsed.syntax,
+                Syntax::OwlFunctional,
+                "{format:?}"
+            );
+            assert!(o.analysis.parsed.errors.is_empty());
+            assert_eq!(o.analysis.parsed.triples.len(), 4);
+            assert_eq!(o.imports, ["http://example.org/b"]);
+            assert_eq!(o.truncated, None);
+        }
+        let broken = text.replace("SubClassOf(:A :B)", "SubClassOf(:A nope:B)");
+        let o = parse(broken.as_bytes(), Format::Functional, base, false).unwrap();
+        assert_eq!(o.analysis.parsed.triples.len(), 3);
+        assert_eq!(
+            o.truncated.as_deref(),
+            Some("line 5, column 21: Undeclared prefix 'nope:'")
+        );
+        // An error and no triple: the import is not read, and says why.
+        let e = parse(
+            b"Prefix(:=<http://e/>) SubClassOf(",
+            Format::Functional,
+            base,
+            false,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            e,
+            "line 1, column 33: Expected 'Prefix(' or 'Ontology(', found 'SubClassOf'"
+        );
+        // Fetched, it is converted to N-Triples for the cache, which reads
+        // back to the same graph, its error noted on the first line.
+        let (nt, why) = functional_to_ntriples(broken.as_bytes(), base).unwrap();
+        assert_eq!(why.as_deref(), o.truncated.as_deref());
+        let marked = marked(nt, why.as_deref(), TRUNCATED_FUNCTIONAL);
+        let cached = parse(marked.as_bytes(), Format::Turtle, base, false).unwrap();
+        assert_eq!(cached.truncated, o.truncated);
+        assert_eq!(cached.imports, o.imports);
+        assert_eq!(cached.analysis.parsed.triples.len(), 3);
     }
 
     #[test]
@@ -859,7 +946,7 @@ mod tests {
         let (nt, stop) = rdf_xml_to_ntriples(xml.as_bytes(), base).unwrap();
         let cached = format!(
             "# turtle-lsp cache for {base}\n{}",
-            marked(nt, stop.as_deref())
+            marked(nt, stop.as_deref(), TRUNCATED)
         );
         let o = parse(cached.as_bytes(), Format::Turtle, base, false).unwrap();
         assert_eq!(o.truncated.as_deref(), Some(why.as_str()));
@@ -923,19 +1010,20 @@ mod tests {
         assert_eq!(of("/w/a.owl", ttl), (Format::Turtle, true));
         assert_eq!(of("/w/a", b"{\"@id\": \"x\"}"), (Format::JsonLd, true));
         assert_eq!(of("", ttl), (Format::Turtle, true));
-        assert!(format_of("/w/a.owl", b"Ontology(<http://e/>)").is_err());
-        assert!(format_of("/w/a.ttl", b"Ontology(<http://e/>)").is_ok());
-        // A `.ofn` name is Functional whatever its text: not read, and the
-        // reason is the one a Functional `.owl` gives.
-        for text in [&b"Ontology(<http://e/>)"[..], ttl] {
-            assert_eq!(
-                format_of("/w/a.ofn", text),
-                Err(format!("it {}", Sniffed::Functional.unread().unwrap()))
-            );
-        }
         assert_eq!(
-            format_of("/w/a.owl", b"Ontology(<http://e/>)"),
-            format_of("/w/a.OFN", b"")
+            of("/w/a.owl", b"Ontology(<http://e/>)"),
+            (Format::Functional, true)
+        );
+        assert!(format_of("/w/a.ttl", b"Ontology(<http://e/>)").is_ok());
+        // A `.ofn` name is Functional whatever its text.
+        for text in [&b"Ontology(<http://e/>)"[..], ttl] {
+            assert_eq!(of("/w/a.ofn", text), (Format::Functional, false));
+        }
+        assert_eq!(of("/w/a.OFN", b""), (Format::Functional, false));
+        // The registered type of Functional syntax.
+        assert_eq!(
+            format_of_type("text/owl-functional"),
+            Some(Format::Functional)
         );
         assert_eq!(format_of_type("application/trig"), Some(Format::TriG));
         assert_eq!(format_of_type("application/ld+json"), Some(Format::JsonLd));

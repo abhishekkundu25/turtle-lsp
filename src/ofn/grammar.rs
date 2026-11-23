@@ -447,6 +447,9 @@ struct Parser<'a> {
     buf: String,
     /// The text after the ontology is reported once.
     trailing: bool,
+    /// The item being read used a prefix whose declaration is in error:
+    /// its IRIs are not known.
+    tainted: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -481,6 +484,7 @@ impl<'a> Parser<'a> {
             checked: FxHashMap::default(),
             buf: String::new(),
             trailing: false,
+            tainted: false,
         }
     }
 
@@ -689,12 +693,22 @@ impl<'a> Parser<'a> {
         let start = self.tok.start;
         self.bump();
         let opened = self.expect(Kind::LParen, "'(' after 'Ontology'").is_ok();
-        if opened && token_in(self.tok.kind, Cat::Iri) {
-            self.doc.ontology_iri = Some(self.doc.nodes.len());
-            let _ = self.iri();
-            if token_in(self.tok.kind, Cat::Iri) {
-                self.doc.version_iri = Some(self.doc.nodes.len());
-                let _ = self.iri();
+        if opened {
+            let mut slots = 2;
+            while slots > 0 && token_in(self.tok.kind, Cat::Iri) {
+                let node = self.header_iri();
+                if slots == 2 {
+                    self.doc.ontology_iri = node;
+                } else {
+                    self.doc.version_iri = node;
+                }
+                slots -= 1;
+            }
+            // An IRI not finished (`<…` to the line end) in a slot still
+            // open is the header's IRI being typed: the header is broken,
+            // not an anonymous ontology, or one with no version IRI.
+            if slots > 0 && self.tok.kind == Kind::Bad && self.text_of(self.tok).starts_with('<') {
+                self.doc.header_broken = true;
             }
         }
         let level = self.parens;
@@ -707,6 +721,18 @@ impl<'a> Parser<'a> {
             }
         }
         self.doc.ontology = Some(Span::new(start, self.prev.end));
+    }
+
+    /// The ontology IRI or the version IRI, `tok` being an IRI: its node, if
+    /// it gives one. One that is not read whole marks the header broken.
+    fn header_iri(&mut self) -> Option<usize> {
+        let i = self.doc.nodes.len();
+        let whole = self.whole(|p| p.iri());
+        let pushed = self.doc.nodes.len() > i;
+        if !whole || !pushed || self.doc.broken.last() == Some(&(i as u32)) {
+            self.doc.header_broken = true;
+        }
+        pushed.then_some(i)
     }
 
     /// The items of the ontology, up to the `)` that closes it or the end:
@@ -745,7 +771,8 @@ impl<'a> Parser<'a> {
                     } else {
                         Phase::Annotations
                     };
-                    if phase > here {
+                    let misplaced = phase > here;
+                    if misplaced {
                         let message = if k == Keyword::Import {
                             "An 'Import' comes before the ontology's annotations and axioms"
                         } else {
@@ -754,7 +781,16 @@ impl<'a> Parser<'a> {
                         self.errors.error(at.span(), message);
                     }
                     phase = phase.max(here);
+                    let i = self.doc.nodes.len();
                     self.item(k);
+                    // Its error is reported before it is read: it is an
+                    // item with an error all the same.
+                    if misplaced
+                        && i < self.doc.nodes.len()
+                        && self.doc.broken.last() != Some(&(i as u32))
+                    {
+                        self.doc.broken.push(i as u32);
+                    }
                 }
                 (Kind::Keyword, Some(k)) if is_axiom(k) => {
                     phase = Phase::Axioms;
@@ -773,9 +809,30 @@ impl<'a> Parser<'a> {
     /// goes on after it.
     fn item(&mut self, k: Keyword) {
         let level = self.parens;
-        if self.construct(k).is_err() {
+        if !self.whole(|p| p.construct(k)) {
             self.recover(level);
         }
+    }
+
+    /// Read one top-level node with `read`, and record it in
+    /// [`Document::broken`] unless it was read whole: `read` stopped, or an
+    /// error was reported inside the node (one past the limit too), or it
+    /// used a prefix whose declaration is in error. An error after the node
+    /// (the lexer reads a token ahead) does not count. Whether it was read
+    /// to its end.
+    fn whole(&mut self, read: impl FnOnce(&mut Self) -> R) -> bool {
+        let i = self.doc.nodes.len();
+        let outer = self.errors.restart();
+        self.tainted = false;
+        let r = read(self);
+        let inside = self.errors.restart();
+        self.errors.resume(inside.min(outer));
+        let end = self.doc.nodes.get(i).map_or(0, |n| n.span.end);
+        let bad = r.is_err() || inside < end || self.tainted;
+        if bad && i < self.doc.nodes.len() {
+            self.doc.broken.push(i as u32);
+        }
+        r.is_ok()
     }
 
     /// Skip what is left of an item that started at `level` parentheses:
@@ -961,8 +1018,8 @@ impl<'a> Parser<'a> {
                         .errors
                         .error(t.span(), format!("Undeclared prefix '{prefix}:'")),
                     Some(p) if p.valid => self.check_expansion(written, p.iri, local, t.span()),
-                    // Its declaration is reported.
-                    Some(_) => {}
+                    // Its declaration is reported; the IRI is not known.
+                    Some(_) => self.tainted = true,
                 }
                 self.leaf(NodeKind::Iri {
                     prefix_len: Some(colon as u32),

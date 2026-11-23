@@ -46,14 +46,14 @@ the full W3C test suites and real public ontologies; see
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
 - **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
-- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints; definition and "Described in" on a term of a local RDF/XML import open its line in the real file. An import in OWL/XML, Functional or Manchester syntax gets a message naming the format and how to save it as RDF/XML or Turtle in Protégé, and an RDF/XML import with an error part way through gets an `import-truncated` warning with the line and column. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
+- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML or OWL Functional syntax, followed up to 5 levels deep) feed hover, completion and lints; definition and "Described in" on a term of a local RDF/XML or Functional import open its line in the real file. An import in OWL/XML or Manchester syntax gets a message naming the format and how to save it as RDF/XML or Turtle in Protégé, and an RDF/XML or Functional import with an error part way through gets an `import-truncated` warning with the line and column. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
 - **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace, read-only: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, outline, folding and diagnostics at the exact attribute or name. Nothing writes RDF/XML: no formatting, rename, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
-- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: Functional syntax files are checked for errors; their content is not yet read into the workspace. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`, as in the OBO edit files ROBOT and Protégé write. Nothing writes Functional syntax. See [OWL Functional syntax](#owl-functional-syntax-ofn).
-- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`); the Functional-Syntax inputs of the approved W3C OWL 2 test cases: 78/78 parse with no error (`src/ofn/tests.rs`).
+- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: the OBO edit files ROBOT and Protégé write are read as RDF/XML files are: their axioms become RDF triples by the W3C mapping, so their terms count in other files, and hover, definition, references, the outline, `query`, SHACL and reasoning see them. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`. Nothing writes Functional syntax. See [OWL Functional syntax](#owl-functional-syntax-ofn).
+- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`); the Functional-Syntax inputs of the approved W3C OWL 2 test cases: 78/78 parse with no error (`src/ofn/tests.rs`), and the 57 of them with an RDF/XML text of the same ontology give its graph, but for 6 where the two texts differ (`tests/ofn_oracle.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
 - **Reasoning** (on by default, with TurbOWL's default rules; `turtle.reasoning.rules` = `off` turns it off): TurbOWL, an OWL 2 RL reasoner, works out what the workspace and its imports imply, in the background after open, save and a pause in typing. Hover on a resource lists its inferred types under "Inferred", each with its proof: one W3C rule per step, each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on (off by default, since SHACL shapes often check the same rules), TurbOWL's findings, such as a member of two disjoint classes, are diagnostics on the term at fault, each triple of the proof a link to its line (`turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete` runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples` (default 2,000,000) is the most triples a run reads; past it, reasoning is skipped with a note. It also bounds the inferred triples read for hover: past it, hover says the list may be incomplete. An edit stops the run going on, and a run stops after 10 s; either way hover keeps the last result, and a stop at the time limit is reported (once as a message, then in the log) until a run finishes. Edits to SPARQL files do not rerun reasoning.
 
@@ -495,7 +495,7 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   `.owl` or `.rdf`, or one of white space only, is RDF/XML (no Turtle
   completion or formatting until Turtle is written in it), and an XML file
   with no root element is an `xml-syntax` error. A `.owl` in OWL
-  Functional syntax is checked as Functional syntax (see [OWL Functional
+  Functional syntax is read as Functional syntax (see [OWL Functional
   syntax](#owl-functional-syntax-ofn)). A `.owl` in OWL/XML or Manchester
   syntax is not read: it gets one `unsupported-syntax` diagnostic that
   names the format and says how to save it as RDF/XML or Turtle in Protégé
@@ -554,20 +554,30 @@ in attribute values.
 OWL 2 Functional-Style Syntax is what ROBOT and Protégé write for many OBO
 edit files (`cl-edit.owl`, `hp-edit.owl`, `ro-edit.owl`). turtle-lsp reads a
 `.ofn` file, and a `.owl` whose text starts with `Prefix(` or `Ontology(`,
-as Functional syntax.
+as Functional syntax, read-only, as it reads RDF/XML.
 
-- **Checked, not yet read**: Functional syntax files are checked for
-  errors; their content is not yet read into the workspace. Their classes
-  and properties do not count in other files, and `query`, reasoning,
-  SHACL, hover, navigation, completion and the outline do not see them yet.
-  An `owl:imports` of a Functional ontology stays unresolved, and its
-  `unresolved-import` says so. The imported Functional document gets an
-  `unsupported-syntax` error (the import lacks its axioms), so `check`
-  exits 1; one that nothing imports gets no such error.
+- **Read as RDF**: each axiom becomes the RDF triples the W3C [mapping to
+  RDF graphs](https://www.w3.org/TR/owl2-mapping-to-rdf/) gives it (an
+  annotated axiom with its `owl:Axiom` node, an n-ary axiom as the
+  specification's tables say, `owl:AllDisjointClasses` and the like for
+  more than two operands), so a Functional file is one more RDF document of
+  the workspace. Its classes and properties count in Turtle, JSON-LD and
+  SPARQL files (hover with their labels, completion, no `unknown-term`),
+  definition on one of its terms opens its `Declaration`, references
+  include its uses, and `query`, SHACL validation and reasoning read its
+  triples. SWRL rules are written as OWL API writes them (`swrl:Imp`).
+- **In the editor**: hover, definition, references, document highlight,
+  the outline (each term once, at its declaration; a term the file never
+  declares, at the first axiom about it), workspace symbols and folding,
+  as for an RDF/XML file; no semantic tokens or inlay hints (the editor's
+  grammar colours it). The lints that need no edit run on it, at the
+  exact text of each IRI: `invalid-literal`, `deprecated-term`,
+  `undescribed-term`.
 - **Errors**: every error has the code `ofn-syntax` and its exact span, in
   the editors and in `check` (same exit codes as any syntax: 1 for an
   error). The parse goes on at the next axiom after an error, so each typo
-  is one error. Besides the grammar of the [OWL 2
+  is one error, and an axiom with an error gives no triples (never a part
+  of one); the others are read. Besides the grammar of the [OWL 2
   specification](https://www.w3.org/TR/owl2-syntax/), it reports what the
   specification states that a parser can see: a prefix that is not
   declared or is declared twice with two IRIs, a prefix name with a `:`
@@ -575,26 +585,47 @@ as Functional syntax.
   absolute IRI, a language tag that is not BCP 47, a string with an escape
   other than `\"` and `\\`, too few operands (`ObjectIntersectionOf` with
   one class expression, an empty `ObjectOneOf`), a cardinality that is not
-  a non-negative integer, a `HasKey` with no property, and `Import` or an
-  ontology annotation after the axioms.
+  a non-negative integer, a `HasKey` with no property, an
+  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
+  an ontology annotation after the axioms.
+- **Imports**: an `owl:imports` of a Functional ontology resolves as any
+  other (in the workspace, through a catalog, a `file:` IRI, the cache or
+  the web), and a Functional file's own `Import`s are followed, in the
+  editor and in `check`. A fetched one is cached as N-Triples. A
+  Functional text is read as such whatever its name or content type says
+  (servers send `.owl` files as `application/rdf+xml` or `text/plain`; the
+  registered type is `text/owl-functional`, which a web request names last
+  in its `Accept` header). One with an error loads in part, with an
+  `import-truncated` warning.
 - **What OWL API writes**: `Prefix(owl:=…)` and the other standard
   prefixes, `#` comment lines, and SWRL rules (`DLSafeRule`) are read
   without error. The OBO edit files of CL, UO, RO and HP parse with no
-  error: the parse of `hp-edit.owl` (31 MB) takes about 30 ms, and
-  `turtle-lsp check` on it about 0.4 s.
-- **Nothing writes it**: no formatting, rename, completion, quick fixes or
-  `check --fix`; `format .` passes over it, and a named `format onto.ofn`
-  says "not formatted: OWL Functional syntax".
+  error, and their graphs are ROBOT's but for what OWL API writes
+  otherwise (`tests/ofn_oracle.rs`): the parse and mapping of
+  `hp-edit.owl` (31 MB, 435,917 triples) take about 60 ms, and
+  `turtle-lsp check` on it about 0.1 s and 300 MB.
+- **Nothing writes it**: no formatting, rename, completion, quick fixes
+  that edit the file or `check --fix`. An editor with static capabilities
+  (Neovim) gets the quick fix "Fetch `<IRI>` and cache it" on an
+  unresolved web import, which edits nothing; VS Code asks for no code
+  actions in it. `format .` passes over it, and a named `format onto.ofn`
+  says "not formatted: OWL Functional syntax". A rename of a term a
+  Functional file uses is refused, naming the file.
 - **Editors**: VS Code gives `.ofn` files the language "OWL Functional
   Syntax" (with its own highlighting), Neovim the file type `ofn`, and the
-  browser editor its own colouring; each shows the server's errors. A
+  browser editor its own colouring; each gets the features above. A
   Functional `.owl` keeps the editor's XML language.
-- **Limits**: constructs nest at most 256 deep (deeper is an error), and a
-  document reports at most 10,000 errors.
+- **Limits**: constructs nest at most 256 deep (deeper is an error), a
+  document reports at most 10,000 errors, and the mapping stops (with an
+  error) past 16 bytes of IRIs, 2 triples or 16 bytes of literals per byte
+  of text (an annotated n-ary axiom repeats its annotations for each pair).
 
-The parser is turtle-lsp's own; its departures from the W3C grammar are
-listed in `src/ofn/mod.rs`. It parses the 78 Functional-Syntax inputs of the
-approved W3C OWL 2 test cases with no error (`tests/w3c/owl2/`).
+The parser and the mapping are turtle-lsp's own; their departures from the
+W3C grammar and mapping are listed in `src/ofn/mod.rs` and
+`src/ofn/rdf.rs`. It parses the 78 Functional-Syntax inputs of the approved
+W3C OWL 2 test cases with no error (`tests/w3c/owl2/`), and maps the 57 that
+have an RDF/XML text to that text's graph, but for 6 whose two texts are not
+the same ontology (listed in `tests/ofn_oracle.rs`).
 
 ## Install
 
@@ -690,8 +721,9 @@ also brings:
   `turtle`, `.nq` as `nquads`, `.ofn` as `ofn` and `.jsonld` as `jsonld`, so plain `.json`
   buffers stay unattached (`.trig`, `.nt`, `.rq` and `.sparql` it already
   knows; `.ru` stays Ruby);
-- no modelines in Turtle, TriG and SPARQL files: `@prefix ex: <...>` looks
-  like one (" ex:") and would raise E518 on open.
+- no modelines in Turtle, TriG, SPARQL, `.ofn`, `.owl` and `.rdf` files:
+  `@prefix ex: <...>` or `SubClassOf(ex:A ex:B)` looks like one (" ex:")
+  and would raise E518 on open.
 
 To change a setting, extend the config: for example
 `vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
@@ -701,7 +733,7 @@ before `vim.lsp.enable`.
 the same client for them, so hover, definition, references, outline and
 diagnostics work there; formatting gives no edits and a rename is refused. See
 [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf). `.ofn`
-buffers get the file type `ofn` and the server's errors; nothing is written
+buffers get the file type `ofn` and the same features; nothing is written
 in them. See [OWL Functional syntax](#owl-functional-syntax-ofn).
 
 ### Reasoning, code lenses and queries in Neovim
@@ -777,11 +809,11 @@ vim.lsp.config("turtle_lsp", {
 })
 vim.lsp.enable("turtle_lsp")
 
--- "@prefix ex: <...>" and "PREFIX ex: <...>" look like a Vim modeline
--- (" ex:"), which raises E518 on open. Turn modelines off for Turtle, TriG
--- and SPARQL files.
+-- "@prefix ex: <...>", "PREFIX ex: <...>" and "SubClassOf(ex:A ex:B)" look
+-- like a Vim modeline (" ex:"), which raises E518 on open. Turn modelines
+-- off for Turtle, TriG, SPARQL, .ofn and .owl files.
 vim.api.nvim_create_autocmd("BufReadPre", {
-  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql" },
+  pattern = { "*.ttl", "*.turtle", "*.trig", "*.rq", "*.sparql", "*.ofn", "*.owl" },
   callback = function() vim.opt_local.modeline = false end,
 })
 ```
@@ -795,7 +827,7 @@ with `vim.lsp.config("turtle_lsp", ...)`.
 
 The extension in [`editors/vscode`](editors/vscode) bundles the server and adds
 syntax highlighting for Turtle, TriG, N-Triples, N-Quads, SPARQL and OWL
-Functional syntax (`.ofn`, which gets its errors and nothing that writes).
+Functional syntax (`.ofn`, which gets the features that read and nothing that writes).
 It also attaches the server to `.jsonld` files, which keep VS Code's JSON
 highlighting. Build and install it:
 

@@ -121,8 +121,8 @@ impl Row {
 }
 
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`,
-/// `.jsonld`, `.owl`, `.rdf` or `.ofn` (OWL Functional syntax, checked and
-/// not yet read), in any letter case.
+/// `.jsonld`, `.owl`, `.rdf` or `.ofn` (OWL Functional syntax, its axioms
+/// read as RDF), in any letter case.
 pub(crate) fn is_rdf_file(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),

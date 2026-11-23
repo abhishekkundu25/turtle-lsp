@@ -11,8 +11,8 @@
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
  * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
- * their content has) are read and watched as workspace files, and `.ofn`
- * (OWL Functional syntax) is checked for errors.
+ * their content has) are read and watched as workspace files, and so is
+ * `.ofn` (OWL Functional syntax), whose axioms the server reads as RDF.
  */
 export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}"
 
@@ -21,8 +21,10 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as c
 
 /**
  * The languages the extension contributes that the server reads and never
- * writes: `ofn`, OWL Functional syntax (`.ofn`), which it checks for errors.
- * The server registers nothing that writes for them (src/server/registrations.rs).
+ * writes: `ofn`, OWL Functional syntax (`.ofn`), which gets what an RDF/XML
+ * file gets (diagnostics, hover, definition, references, highlights,
+ * symbols, folding). The server registers nothing that writes for them
+ * (src/server/registrations.rs).
  */
 export const READ_ONLY_LANGUAGES = ["ofn"] as const
 

@@ -25,11 +25,17 @@ pub(crate) struct Document {
     pub(crate) ontology_iri: Option<usize>,
     /// The node of the version IRI, if written.
     pub(crate) version_iri: Option<usize>,
+    /// The ontology IRI or the version IRI has an error.
+    pub(crate) header_broken: bool,
     pub(crate) nodes: Vec<Node>,
     /// Every comment (`#` to the end of the line).
     pub(crate) comments: Vec<Span>,
     /// Every error, in text order.
     pub(crate) errors: Vec<SyntaxError>,
+    /// The top-level nodes that were not read whole, in text order: an
+    /// error inside, or a prefix whose declaration is in error. Nothing is
+    /// mapped from them.
+    pub(crate) broken: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +66,6 @@ pub(crate) enum NodeKind {
     Integer,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "only the tests read the tree"))]
 impl Document {
     /// The indexes of the children of node `i`.
     pub(crate) fn children(&self, i: usize) -> impl Iterator<Item = usize> + '_ {

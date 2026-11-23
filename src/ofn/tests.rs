@@ -407,7 +407,7 @@ fn keys_rules_and_annotations() {
 
 /// SWRL rules as ROBOT 1.9.11 (OWL API) writes them from a Manchester
 /// `Rule:` with an atom of each of the seven kinds.
-const ROBOT_RULE: &str = "Prefix(:=<http://example.org/r#>)
+pub(super) const ROBOT_RULE: &str = "Prefix(:=<http://example.org/r#>)
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
 Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
 Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
@@ -1289,7 +1289,7 @@ fn long_tokens_and_runs_end() {
 // ---- the parse the workspace sees ----
 
 #[test]
-fn the_parse_holds_the_errors_and_nothing_else() {
+fn the_parse_holds_the_axioms_and_the_errors() {
     let text = in_ontology(
         "Declaration(Class(:A))\nSubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"A\")",
     );
@@ -1298,8 +1298,13 @@ fn the_parse_holds_the_errors_and_nothing_else() {
     assert_eq!(p.document_base.as_deref(), Some("file:///w/o.ofn"));
     assert_eq!(p.errors.len(), 1);
     assert_eq!(p.errors[0].code, "ofn-syntax");
-    assert!(p.triples.is_empty() && p.refs.is_empty() && p.statements.is_empty());
-    assert!(p.prefixes.is_empty() && p.prefix_uses.is_empty() && p.tokens.is_empty());
+    // The header and the two axioms read whole, not the one in error.
+    assert_eq!(p.statements.len(), 3);
+    assert_eq!(p.triples.len(), 3);
+    assert_eq!(p.refs.len(), 4);
+    assert_eq!(p.prefixes.len(), 2);
+    // Nothing edits it: no tokens, comments or prefix uses.
+    assert!(p.prefix_uses.is_empty() && p.tokens.is_empty());
     assert!(p.comments.is_empty() && p.graphs.is_empty());
 }
 
@@ -1340,7 +1345,8 @@ fn w3c_owl2_functional_inputs_parse() {
 }
 
 /// The OBO files `tools/corpus/fetch-ofn.sh` downloads into
-/// `test/corpus-ofn/`: with `OFN_REAL=1`, each parses with no error.
+/// `test/corpus-ofn/`: with `OFN_REAL=1`, each parses with no error, and
+/// maps to RDF (the parse and the mapping timed apart).
 #[test]
 fn ofn_real_files() {
     if std::env::var("OFN_REAL").as_deref() != Ok("1") {
@@ -1378,11 +1384,23 @@ fn ofn_real_files() {
             "{name}: {} errors: {shown:#?}",
             d.errors.len()
         );
+        let (axioms, nodes) = (d.top().count(), d.nodes.len());
+        let header = usize::from(d.ontology_iri.is_some()) + usize::from(d.version_iri.is_some());
+        let start = std::time::Instant::now();
+        let p = super::rdf::map(&text, d, None);
+        let mapped = start.elapsed();
+        assert!(
+            p.errors.is_empty(),
+            "{name}: {:?}",
+            &p.errors[..p.errors.len().min(3)]
+        );
+        // One statement per item, and the header's.
+        assert_eq!(p.statements.len(), axioms - header + 1, "{name}");
         eprintln!(
-            "{name}: {} bytes, {} axioms, {} nodes, parsed in {took:?}",
+            "{name}: {} bytes, {axioms} axioms, {nodes} nodes, parsed in {took:?}; {} triples, {} references, mapped in {mapped:?}",
             text.len(),
-            d.top().count(),
-            d.nodes.len()
+            p.triples.len(),
+            p.refs.len(),
         );
     }
 }
@@ -1423,28 +1441,41 @@ fn timing_abbreviated_iris_with_a_long_namespace_check_in_linear_time() {
 }
 
 /// A generated document the size of `hp-edit.owl` (31 MB), in the shape
-/// OWL API writes, parses in release mode within the budget.
+/// OWL API writes, parses and maps to RDF in release mode within the budget.
 #[test]
 fn timing_a_large_document_parses_within_budget() {
     let text = large(32 << 20);
     let start = std::time::Instant::now();
     let d = doc(&text);
-    let took = start.elapsed();
+    let parsed = start.elapsed();
     assert!(
         d.errors.is_empty(),
         "{:?}",
         &d.errors[..d.errors.len().min(3)]
     );
-    eprintln!("{} bytes, {} nodes: {took:?}", text.len(), d.nodes.len());
+    let nodes = d.nodes.len();
+    let start = std::time::Instant::now();
+    let p = super::rdf::map(&text, d, None);
+    let mapped = start.elapsed();
+    assert!(p.errors.is_empty(), "{:?}", p.errors.first());
+    let took = parsed + mapped;
+    eprintln!(
+        "{} bytes, {nodes} nodes: parsed in {parsed:?}; {} triples, {} references, mapped in {mapped:?}",
+        text.len(),
+        p.triples.len(),
+        p.refs.len()
+    );
     assert!(took < LARGE_BUDGET, "{took:?} over {LARGE_BUDGET:?}");
 }
 
-/// The budget of [`timing_a_large_document_parses_within_budget`]. Measured
-/// on 2026-11-22, release build with the shipped profile, on an Apple
-/// M-series laptop at load average 2: 69 ms for 32 MiB (1.7 million nodes);
-/// `hp-edit.owl` itself (31 MB) took 30 ms. The budget leaves ten times
-/// that for a slower runner and a build without fat LTO.
-const LARGE_BUDGET: std::time::Duration = std::time::Duration::from_millis(750);
+/// The budget of [`timing_a_large_document_parses_within_budget`], the
+/// parse and the mapping together. Measured on 2026-11-22, release build
+/// with the shipped profile, on an Apple M-series laptop at load average
+/// 1.7: the parse 66 ms and the mapping 62 ms for 32 MiB (1.7 million
+/// nodes, 782,161 triples); `hp-edit.owl` itself (31 MB, 435,917 triples)
+/// took 28 ms and 28 ms. The budget leaves about ten times that for a
+/// slower runner and a build without fat LTO.
+const LARGE_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// A Functional document of about `bytes` bytes: classes with labels,
 /// definitions, cross-references, subclass and equivalence axioms.
@@ -1474,4 +1505,24 @@ fn large(bytes: usize) -> String {
     }
     out.push_str(")\n");
     out
+}
+
+/// An error the lexer raises right after an axiom's `)` (its token is read
+/// ahead) is after the axiom: the axiom stays whole.
+#[test]
+fn an_error_just_after_an_axiom_leaves_it_whole() {
+    for after in ["^", "@", "@12", "_:-x", "<urn:open", "\"open"] {
+        let text =
+            format!("Ontology(Declaration(Class(<urn:A>)){after} Declaration(Class(<urn:B>)))");
+        let d = doc(&text);
+        let first = d.top().next().unwrap();
+        assert_eq!(
+            at(&text, d.nodes[first].span),
+            "Declaration(Class(<urn:A>))"
+        );
+        assert!(
+            !d.broken.contains(&(first as u32)),
+            "{after}: the axiom before it is broken"
+        );
+    }
 }

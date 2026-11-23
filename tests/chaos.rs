@@ -1468,14 +1468,35 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
         let again = parse_doc(text, syntax, None, &PrefixMap::default());
         assert!(p == again, "two reads of one {syntax:?} text differ");
     }
-    // An OWL Functional parse holds its errors and nothing else.
+    // An OWL Functional parse: its errors under its code, and the mapping's
+    // shape, which the features rely on: references in text order, apart,
+    // each inside a statement; statements in order, apart, each subject
+    // inside its own; every triple in a statement. Its triples are RDF:
+    // they convert to N-Triples a line each, which read back.
     if syntax == Syntax::OwlFunctional {
-        assert!(p.triples.is_empty() && p.refs.is_empty() && p.statements.is_empty());
         assert!(
             p.errors.iter().all(|e| e.code == "ofn-syntax"),
             "{:?}",
             p.errors
         );
+        assert!(p.refs.windows(2).all(|w| w[0].span.end <= w[1].span.start));
+        let st = &p.statements;
+        assert!(st.windows(2).all(|w| w[0].span.end <= w[1].span.start));
+        for s in st {
+            if let Some((_, span)) = s.subject {
+                assert!(s.span.start <= span.start && span.end <= s.span.end);
+            }
+        }
+        assert!(p.triples.iter().all(|t| (t.statement as usize) < st.len()));
+        for r in &p.refs {
+            let i = st.partition_point(|s| s.span.start <= r.span.start);
+            assert!(i > 0 && r.span.end <= st[i - 1].span.end, "{r:?}");
+        }
+        let (nt, _) = imports::functional_to_ntriples(text.as_bytes(), "http://example.com/chaos")
+            .unwrap_or_default();
+        let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
+        assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
+        assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
     }
 
     // Import sources: catalogs and RDF/XML come from outside too.
@@ -3135,6 +3156,101 @@ fn mutated_functional_never_panics_3() {
 #[test]
 fn mutated_functional_never_panics_4() {
     mutated_functional(3);
+}
+
+#[test]
+fn edits_match_a_fresh_open_functional_1() {
+    edits_match_a_fresh_open_functional(0);
+}
+
+#[test]
+fn edits_match_a_fresh_open_functional_2() {
+    edits_match_a_fresh_open_functional(1);
+}
+
+#[test]
+fn edits_match_a_fresh_open_functional_3() {
+    edits_match_a_fresh_open_functional(2);
+}
+
+#[test]
+fn edits_match_a_fresh_open_functional_4() {
+    edits_match_a_fresh_open_functional(3);
+}
+
+/// The edit mode of [`edits_match_a_fresh_open`] on OWL Functional
+/// documents: the mutations as LSP changes to the previous text, one to
+/// four per batch, one to four batches, the analysis asked for after some;
+/// the edited document against a fresh open of the text the changes leave.
+/// One document in two is named `.owl`, and one edit in four there puts a
+/// line of another syntax before it or cuts its start, so the syntax is
+/// decided again at each change. The mapping is not spliced: each analysis
+/// reads the whole text.
+fn edits_match_a_fresh_open_functional(k: usize) {
+    let syntax = Syntax::OwlFunctional;
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 2000usize);
+    let seeds = functional_corpus();
+    let mut dog = Watchdog::new("edits-functional", seed, iters);
+    let mut owl = 0;
+    let mut sessions = 0;
+    for i in iterations(iters, k) {
+        sessions += 1;
+        let mut rng = Rng::at(seed, i ^ 0x0F17_0000);
+        let source = &seeds[rng.below(seeds.len())];
+        let as_owl = rng.below(2) == 0;
+        owl += usize::from(as_owl);
+        let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
+        let mut e = Edited::new(source, Some(enc));
+        let mut batches = Vec::new();
+        for _ in 0..1 + rng.below(4) {
+            for _ in 0..1 + rng.below(4) {
+                if as_owl && rng.below(4) == 0 {
+                    flip(&mut rng, &mut e);
+                } else {
+                    mutation(&mut rng, &mut e, FUNCTIONAL_SNIPPETS, true, Lexer::Turtle);
+                }
+            }
+            if rng.below(16) == 0 {
+                e.resend();
+            }
+            let analyse = rng.below(2) == 0;
+            batches.push(Batch {
+                changes: e.take(),
+                analyse,
+            });
+        }
+        // An `.owl` name: its syntax comes from its text at each change.
+        let named = if as_owl { Syntax::RdfXml } else { syntax };
+        let ext = if as_owl { "owl" } else { "ofn" };
+        dog.start(i, source, ext);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            oracle::check(named, source, batches, enc)
+        }));
+        let why = match r {
+            Err(e) => panic_message(&*e),
+            Ok(Err(diff)) => format!("differs from a fresh open ({enc:?}): {diff}"),
+            Ok(Ok(report)) if report.text != e.text => format!(
+                "the edits left another text than the mutations ({enc:?}): {}",
+                first_difference(&e.text, &report.text)
+            ),
+            // The workspace turns a panic in an analysis into a failed
+            // analysis, which a fresh open fails alike: the final text is
+            // analysed again outside it.
+            Ok(Ok(report)) => match std::panic::catch_unwind(|| {
+                let uri = format!("file:///chaos/doc.{ext}");
+                Analysis::new(uri, &report.text, Arc::default(), false)
+            }) {
+                Ok(_) => continue,
+                Err(e) => format!("the final text: {}", panic_message(&*e)),
+            },
+        };
+        panic!(
+            "{}",
+            failure_report("edits-functional", seed, iters, i, ext, source, &why)
+        );
+    }
+    eprintln!("functional edits shard {k}: {sessions} sessions, {owl} of them as .owl");
 }
 
 /// Mutated OWL Functional documents through every feature, as a `.ofn`

@@ -201,6 +201,51 @@ test("10,000 uses of 2,000 unknown terms are diagnosed within 1 s", async (t) =>
   assert.ok(took < 1000, `took ${took.toFixed(0)} ms`)
 })
 
+test("a keystroke in an OWL Functional document of 1 MB is diagnosed within 250 ms", async (t) => {
+  // The axioms OWL API writes for an OBO class, 3,000 times.
+  const classes = []
+  for (let i = 0; i < 3000; i++) {
+    const c = `obo:EX_${String(i).padStart(7, "0")}`
+    const p = `obo:EX_${String(i >> 1).padStart(7, "0")}`
+    classes.push(`# Class: ${c} (Class ${i})
+
+AnnotationAssertion(Annotation(oboInOwl:hasDbXref "PMID:${i}") obo:IAO_0000115 ${c} "A class numbered ${i}.")
+AnnotationAssertion(oboInOwl:hasExactSynonym ${c} "Synonym ${i}"@en)
+AnnotationAssertion(rdfs:label ${c} "Class ${i}"@en)
+SubClassOf(${c} ${p})
+${i % 4 === 0 ? `EquivalentClasses(${c} ObjectIntersectionOf(${p} ObjectSomeValuesFrom(obo:BFO_0000050 ${p})))\n` : ""}Declaration(Class(${c}))
+`)
+  }
+  let text = `Prefix(obo:=<http://purl.obolibrary.org/obo/>)
+Prefix(oboInOwl:=<http://www.geneontology.org/formats/oboInOwl#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://example.org/o>
+${classes.join("\n")})
+`
+  assert.ok(text.length > 1_000_000, `${text.length} bytes`)
+  const { s, at } = await session(t)
+  const uri = at("onto.ofn")
+  s.open(uri, text)
+  await s.diagnosticsFor(uri, 30_000)
+  const took = []
+  for (let i = 0; i < 10; i++) {
+    const from = `"Class ${i}"`
+    const k = text.indexOf(from)
+    const line = text.slice(0, k).split("\n").length - 1
+    const character = k - (text.lastIndexOf("\n", k - 1) + 1)
+    const t0 = performance.now()
+    s.edit(uri, { start: { line, character }, end: { line, character: character + from.length } }, `"Class ${i}x"`)
+    text = text.slice(0, k) + `"Class ${i}x"` + text.slice(k + from.length)
+    const d = await s.diagnosticsFor(uri, 30_000)
+    took.push(ms(t0))
+    assert.deepEqual(d.filter((x) => x.severity === 1), [])
+  }
+  took.sort((a, b) => a - b)
+  const median = took[took.length >> 1]
+  t.diagnostic(`OWL Functional, ${(text.length / 1e6).toFixed(2)} MB: keystroke -> diagnostics, median ${median.toFixed(0)} ms, max ${took.at(-1).toFixed(0)} ms`)
+  assert.ok(median < 250, `median ${median.toFixed(0)} ms: ${took.map((x) => x.toFixed(0)).join(", ")}`)
+})
+
 test("a 2,000-pattern query is formatted within 2 s", async (t) => {
   const body = Array.from({ length: 2000 }, (_, i) => `?s${i} <https://e.org/p> ?o${i} .`).join(" ")
   const text = `SELECT * WHERE { ${body} }\n`
