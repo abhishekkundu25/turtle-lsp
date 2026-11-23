@@ -11,6 +11,8 @@
 //! errors the reader will report, and the one the editor's note on a
 //! capped list of them carries.
 
+#[cfg(test)]
+mod annotation_tests;
 mod reader;
 mod source;
 #[cfg(test)]

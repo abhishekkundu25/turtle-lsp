@@ -11,6 +11,7 @@ use super::reader::{Term, Terms, Value};
 use crate::ofn::rdf::{IriValue, Key, Literal, Source};
 use crate::ofn::tree::Document;
 use crate::syntax::{Form, Span, Syntax};
+use std::borrow::Cow;
 
 pub(super) struct OwlXml<'a> {
     text: &'a str,
@@ -25,7 +26,9 @@ impl<'a> OwlXml<'a> {
     fn iri(&self, i: usize) -> (Value, Form) {
         match self.terms.terms[i] {
             Term::Iri { value, form } => (value, form),
-            Term::Construct { .. } => unreachable!("node {i} is no IRI"),
+            Term::Construct { .. } | Term::Label(_) | Term::Literal { .. } => {
+                unreachable!("node {i} is no IRI")
+            }
         }
     }
 
@@ -76,12 +79,32 @@ impl<'a> Source<'a> for OwlXml<'a> {
         self.iri(i).1
     }
 
+    /// The `nodeID` value.
     fn label(&self, _: &Document, i: usize) -> &'a str {
-        unreachable!("the reader makes no anonymous individual yet: node {i}")
+        match self.terms.terms[i] {
+            Term::Label(s) => self.str(s),
+            Term::Construct { .. } | Term::Iri { .. } | Term::Literal { .. } => {
+                unreachable!("node {i} is no anonymous individual")
+            }
+        }
     }
 
+    /// The element's content whole, and the `xml:lang` in scope.
     fn literal(&self, _: &Document, i: usize) -> Literal<'a> {
-        unreachable!("the reader makes no literal yet: node {i}")
+        match self.terms.terms[i] {
+            Term::Literal {
+                lexical,
+                lang,
+                string,
+            } => Literal {
+                lexical: Cow::Borrowed(self.str(lexical)),
+                lang: lang.map(|s| self.str(s)),
+                string,
+            },
+            Term::Construct { .. } | Term::Iri { .. } | Term::Label(_) => {
+                unreachable!("node {i} is no literal")
+            }
+        }
     }
 
     fn integer(&self, _: &Document, i: usize) -> &'a str {
@@ -92,7 +115,9 @@ impl<'a> Source<'a> for OwlXml<'a> {
     fn keyword(&self, _: &Document, i: usize) -> Span {
         match self.terms.terms[i] {
             Term::Construct { name } => name,
-            Term::Iri { .. } => unreachable!("node {i} is no construct"),
+            Term::Iri { .. } | Term::Label(_) | Term::Literal { .. } => {
+                unreachable!("node {i} is no construct")
+            }
         }
     }
 

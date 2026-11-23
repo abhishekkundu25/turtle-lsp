@@ -11,26 +11,26 @@ use super::{CODE, parse, reader};
 use crate::ofn::signature;
 use crate::syntax::{Form, Iri, Node, Parsed, Role, Span};
 
-const URL: &str = "file:///w/o.owx";
+pub(super) const URL: &str = "file:///w/o.owx";
 
 /// The start of the documents below: the ontology `<http://example.org/o>`
 /// and the prefixes `:` and `ex:`.
-const HEAD: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n<Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n<Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n";
+pub(super) const HEAD: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n<Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n<Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n";
 
 /// The same in Functional syntax.
-const OFN_HEAD: &str = "Prefix(:=<http://example.org/o#>)\nPrefix(ex:=<http://example.org/>)\nOntology(<http://example.org/o>\n";
+pub(super) const OFN_HEAD: &str = "Prefix(:=<http://example.org/o#>)\nPrefix(ex:=<http://example.org/>)\nOntology(<http://example.org/o>\n";
 
-fn owx(body: &str) -> String {
+pub(super) fn owx(body: &str) -> String {
     format!("{HEAD}{body}\n</Ontology>\n")
 }
 
-fn ofn(body: &str) -> String {
+pub(super) fn ofn(body: &str) -> String {
     format!("{OFN_HEAD}{body}\n)\n")
 }
 
 /// The parse of `text`, whose tree fills its signatures.
 #[track_caller]
-fn read(text: &str, base: Option<&str>) -> Parsed {
+pub(super) fn read(text: &str, base: Option<&str>) -> Parsed {
     let (doc, terms) = reader::read(text, base);
     if let Err(m) = signature::check(&doc) {
         panic!("{m:?}\n{:?}\n{text}", doc.nodes);
@@ -42,7 +42,7 @@ fn read(text: &str, base: Option<&str>) -> Parsed {
 
 /// The parse of `text`, which has no error.
 #[track_caller]
-fn clean(text: &str) -> Parsed {
+pub(super) fn clean(text: &str) -> Parsed {
     let p = read(text, Some(URL));
     assert!(p.errors.is_empty(), "{:#?}\n{text}", p.errors);
     p
@@ -50,17 +50,17 @@ fn clean(text: &str) -> Parsed {
 
 /// The parse of a Functional text, which has no error.
 #[track_caller]
-fn functional(text: &str) -> Parsed {
+pub(super) fn functional(text: &str) -> Parsed {
     let p = crate::ofn::parse(text, None);
     assert!(p.errors.is_empty(), "{:#?}\n{text}", p.errors);
     p
 }
 
-fn at(text: &str, span: Span) -> &str {
+pub(super) fn at(text: &str, span: Span) -> &str {
     &text[span.start as usize..span.end as usize]
 }
 
-fn triples(p: &Parsed) -> Vec<(Node, Iri, Node)> {
+pub(super) fn triples(p: &Parsed) -> Vec<(Node, Iri, Node)> {
     p.triples
         .iter()
         .map(|t| (t.s.clone(), t.p, t.o.clone()))
@@ -68,7 +68,7 @@ fn triples(p: &Parsed) -> Vec<(Node, Iri, Node)> {
 }
 
 /// The references: the text at each, its IRI, role and form.
-fn refs<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, &'static str, Role, Form)> {
+pub(super) fn refs<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, &'static str, Role, Form)> {
     p.refs
         .iter()
         .map(|r| (at(text, r.span), r.iri.as_str(), r.role, r.form))
@@ -76,7 +76,7 @@ fn refs<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, &'static str, Role, Form
 }
 
 /// The text of each statement, and of its subject's span.
-fn statements<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, Option<&'t str>)> {
+pub(super) fn statements<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, Option<&'t str>)> {
     p.statements
         .iter()
         .map(|s| (at(text, s.span), s.subject.map(|(_, span)| at(text, span))))
@@ -84,7 +84,7 @@ fn statements<'t>(text: &'t str, p: &Parsed) -> Vec<(&'t str, Option<&'t str>)> 
 }
 
 /// The errors: code, the text at each, message.
-fn errors<'t>(text: &'t str, p: &'t Parsed) -> Vec<(&'static str, &'t str, &'t str)> {
+pub(super) fn errors<'t>(text: &'t str, p: &'t Parsed) -> Vec<(&'static str, &'t str, &'t str)> {
     p.errors
         .iter()
         .map(|e| (e.code, at(text, e.span), e.message()))
@@ -94,7 +94,7 @@ fn errors<'t>(text: &'t str, p: &'t Parsed) -> Vec<(&'static str, &'t str, &'t s
 /// The IRIs and roles of the references, the subjects of the statements,
 /// and the triples of `ours` are those of `theirs`.
 #[track_caller]
-fn same_mapping(ours: &Parsed, theirs: &Parsed) {
+pub(super) fn same_mapping(ours: &Parsed, theirs: &Parsed) {
     assert_eq!(triples(ours), triples(theirs));
     let roles =
         |p: &Parsed| -> Vec<(Iri, Role)> { p.refs.iter().map(|r| (r.iri, r.role)).collect() };
@@ -109,9 +109,9 @@ fn same_mapping(ours: &Parsed, theirs: &Parsed) {
 }
 
 use Role::*;
-const IRI: Form = Form::Iri;
-const ANCHOR: Form = Form::Anchor;
-fn pn(prefix_len: u32) -> Form {
+pub(super) const IRI: Form = Form::Iri;
+pub(super) const ANCHOR: Form = Form::Anchor;
+pub(super) fn pn(prefix_len: u32) -> Form {
     Form::PName { prefix_len }
 }
 

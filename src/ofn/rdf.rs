@@ -316,7 +316,10 @@ pub(crate) struct Key<'a> {
 pub(crate) struct Literal<'a> {
     /// Its lexical form, its escapes read.
     pub(crate) lexical: Cow<'a, str>,
-    /// Its language tag as written, if it has one and no datatype.
+    /// Its language tag as written, if it has one. With a datatype, it is
+    /// used for `rdf:PlainLiteral` only, whose lexical form is then the
+    /// text whole (OWL/XML's `xml:lang` in scope); a Functional literal
+    /// has none with a datatype.
     pub(crate) lang: Option<&'a str>,
     /// Its string, where an error about its lexical form is.
     pub(crate) string: Span,
@@ -795,9 +798,13 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
             let datatype = self.iri(d)?;
             self.roles.insert(d as u32, Role::Datatype);
             if datatype == v.plain_literal {
-                // Its `@` was checked before the item was mapped
+                // With a language, the text whole; else its `@` was
+                // checked before the item was mapped
                 // ([`Mapper::invalid_literal`]).
-                let (lexical, tag) = value.rsplit_once('@').unwrap_or((&value, ""));
+                let (lexical, tag) = match lang {
+                    Some(tag) => (&*value, tag),
+                    None => value.rsplit_once('@').unwrap_or((&value, "")),
+                };
                 return Ok(lang_literal(v, lexical.into(), tag));
             }
             return Ok(Node::Literal {
@@ -818,10 +825,10 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
         }
     }
 
-    /// The error of the first `rdf:PlainLiteral` in item `item` that is not
-    /// of the form `"abc@langTag"`, at its quoted string (see the module
-    /// doc). Checked before the item is mapped, so an item with one gives
-    /// nothing and changes nothing.
+    /// The error of the first `rdf:PlainLiteral` in item `item` that has
+    /// no language and is not of the form `"abc@langTag"`, at its quoted
+    /// string (see the module doc). Checked before the item is mapped, so
+    /// an item with one gives nothing and changes nothing.
     fn invalid_literal(&mut self, item: usize) -> M<Option<SyntaxError>> {
         let end = self.doc.nodes[item].next as usize;
         for j in item..end {
@@ -835,8 +842,13 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
                 continue;
             }
             let Literal {
-                lexical, string, ..
+                lexical,
+                lang,
+                string,
             } = self.source.literal(self.doc, j);
+            if lang.is_some() {
+                continue;
+            }
             let message = match lexical.rsplit_once('@') {
                 None => "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string(),
                 Some((_, "")) => continue,

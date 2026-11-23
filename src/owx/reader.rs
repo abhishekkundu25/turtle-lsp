@@ -75,6 +75,15 @@ pub(super) enum Term {
     Construct { name: Span },
     /// An IRI, and how the text at its span spells it.
     Iri { value: Value, form: Form },
+    /// An anonymous individual's `nodeID`.
+    Label(Str),
+    /// A literal: its content whole, the `xml:lang` in scope, and the span
+    /// of its content (of its element when it is empty).
+    Literal {
+        lexical: Str,
+        lang: Option<Str>,
+        string: Span,
+    },
 }
 
 /// An IRI node's value.
@@ -138,6 +147,26 @@ enum Base {
     /// An `xml:base` in error: a relative IRI under it is not known.
     Broken,
     At(u32),
+}
+
+/// The language in scope (XML 1.0, section 2.12): the nearest `xml:lang`.
+#[derive(Clone, Copy)]
+enum Lang {
+    /// None written, or `xml:lang=""`.
+    None,
+    /// An `xml:lang` that is no language tag: a literal under it is not
+    /// known.
+    Broken,
+    Tag(Str),
+}
+
+/// What an element with an `xml:base` or an `xml:lang` puts in scope, to
+/// its end: its depth, and the base and the language in scope inside it.
+#[derive(Clone, Copy)]
+struct Scope {
+    depth: u32,
+    base: Base,
+    lang: Lang,
 }
 
 /// A declared prefix: its IRI's place in [`Terms::prefixes`], and what its
@@ -282,9 +311,9 @@ struct Reader<'a> {
     last: u32,
     /// The last end read.
     end: End,
-    /// The bases of the open elements that have an `xml:base`: the depth
-    /// of each, and its base.
-    scopes: Vec<(u32, Base)>,
+    /// The scopes of the open elements that have an `xml:base` or an
+    /// `xml:lang`, outermost first.
+    scopes: Vec<Scope>,
     /// The base outside every `xml:base`: the document's URL.
     outer: Base,
     prefixes: FxHashMap<Box<str>, Prefix>,
@@ -293,7 +322,7 @@ struct Reader<'a> {
     reported: usize,
     /// Where the first error past [`MAX_ERRORS`] is.
     dropped: Option<Span>,
-    /// The item being read used a base in error.
+    /// The item being read used a base or a language in error.
     tainted: bool,
     /// The bytes of the bases and prefix IRIs resolved, and the most
     /// allowed; past it, every item is broken.
@@ -382,15 +411,15 @@ impl<'a> Reader<'a> {
 
     // ---- events ----
 
-    /// The next event: an element's `xml:base` is read at its start, and
-    /// out of scope at its end.
+    /// The next event: an element's `xml:base` and `xml:lang` are read at
+    /// its start, and out of scope at its end.
     fn next(&mut self) -> Event<'a> {
         let e = self.scanner.next();
         match &e {
             Event::Start(tag) => {
                 self.depth += 1;
                 self.last = tag.span.end;
-                self.base_of(tag);
+                self.scope_of(tag);
             }
             Event::End(end) => {
                 self.depth = self.depth.saturating_sub(1);
@@ -398,7 +427,7 @@ impl<'a> Reader<'a> {
                     self.last = end.span.end;
                 }
                 self.end = *end;
-                while self.scopes.last().is_some_and(|s| s.0 > self.depth) {
+                while self.scopes.last().is_some_and(|s| s.depth > self.depth) {
                     self.scopes.pop();
                 }
             }
@@ -578,21 +607,62 @@ impl<'a> Reader<'a> {
     // ---- bases ----
 
     fn base(&self) -> Base {
-        self.scopes.last().map_or(self.outer, |s| s.1)
+        self.scopes.last().map_or(self.outer, |s| s.base)
     }
 
-    /// The `xml:base` of `tag`, if it has one, in scope from here to its
-    /// end: resolved against the base outside it.
-    fn base_of(&mut self, tag: &Tag<'a>) {
-        let Some(a) = tag
-            .attrs
-            .iter()
-            .find(|a| a.name.ns() == Some(xml::XML_NS) && a.name.local() == "base")
-        else {
-            return;
+    fn lang(&self) -> Lang {
+        self.scopes.last().map_or(Lang::None, |s| s.lang)
+    }
+
+    /// The scope of `tag`, if it has an `xml:base` or an `xml:lang`, from
+    /// here to its end.
+    fn scope_of(&mut self, tag: &Tag<'a>) {
+        let xml = |local: &str| {
+            tag.attrs
+                .iter()
+                .find(|a| a.name.ns() == Some(xml::XML_NS) && a.name.local() == local)
         };
+        let (base, lang) = (xml("base"), xml("lang"));
+        if base.is_none() && lang.is_none() {
+            return;
+        }
+        let base = match base {
+            Some(a) => self.base_of(a),
+            None => self.base(),
+        };
+        let lang = match lang {
+            Some(a) => self.lang_of(a),
+            None => self.lang(),
+        };
+        let depth = self.depth;
+        self.scopes.push(Scope { depth, base, lang });
+    }
+
+    /// The language `xml:lang` attribute `a` puts in scope: a language tag
+    /// (BCP 47) or empty.
+    fn lang_of(&mut self, a: &Attr<'a>) -> Lang {
         let v = Written::of(&a.value);
-        let base = match self.base() {
+        if v.text.is_empty() {
+            return Lang::None;
+        }
+        match oxilangtag::LanguageTag::parse(&*v.text) {
+            Ok(_) => match self.keep(&v) {
+                Ok(s) => Lang::Tag(s),
+                Err(Stop) => Lang::Broken,
+            },
+            Err(e) => {
+                let message = format!("Invalid language tag '{}': {e}", shown(&v.text));
+                self.error(v.span, message);
+                Lang::Broken
+            }
+        }
+    }
+
+    /// The base the `xml:base` attribute `a` puts in scope: resolved
+    /// against the base outside it.
+    fn base_of(&mut self, a: &Attr<'a>) -> Base {
+        let v = Written::of(&a.value);
+        match self.base() {
             Base::At(b) => match oxiri::IriRef::parse(&*v.text) {
                 Ok(r) => match self.resolve(b, &r, v.span) {
                     Some(at) => Base::At(at),
@@ -618,8 +688,7 @@ impl<'a> Reader<'a> {
                     Base::Broken
                 }
             },
-        };
-        self.scopes.push((self.depth, base));
+        }
     }
 
     /// `reference` resolved against base `b`, kept as a new base; `None`
@@ -763,13 +832,22 @@ impl<'a> Reader<'a> {
             Form::PName { prefix_len } => Some(prefix_len),
             _ => None,
         };
+        self.leaf(
+            NodeKind::Iri { prefix_len },
+            w.span,
+            Term::Iri { value, form },
+        )
+    }
+
+    /// A node with no child, of `kind` at `span`.
+    fn leaf(&mut self, kind: NodeKind, span: Span, term: Term) -> usize {
         let i = self.doc.nodes.len();
         self.doc.nodes.push(Node {
-            kind: NodeKind::Iri { prefix_len },
-            span: w.span,
+            kind,
+            span,
             next: i as u32 + 1,
         });
-        self.terms.terms.push(Term::Iri { value, form });
+        self.terms.terms.push(term);
         i
     }
 
@@ -808,15 +886,20 @@ impl<'a> Reader<'a> {
 
     // ---- constructs ----
 
+    /// The node of construct `k`, element `tag`, to close.
     fn open(&mut self, k: Keyword, tag: &Tag<'a>) -> usize {
+        let name = tag.name.span;
+        self.open_node(NodeKind::Construct(k), tag, Term::Construct { name })
+    }
+
+    /// The node of `kind` at element `tag`, to close.
+    fn open_node(&mut self, kind: NodeKind, tag: &Tag<'a>, term: Term) -> usize {
         self.doc.nodes.push(Node {
-            kind: NodeKind::Construct(k),
+            kind,
             span: Span::new(tag.span.start, tag.span.start),
             next: 0,
         });
-        self.terms.terms.push(Term::Construct {
-            name: tag.name.span,
-        });
+        self.terms.terms.push(term);
         self.doc.nodes.len() - 1
     }
 
@@ -937,13 +1020,144 @@ impl<'a> Reader<'a> {
                 self.entity_iri(child)?;
                 self.empty(child)?;
             }
-            Element::Leaf(leaf) if takes(cat, leaf) => {
-                let message = format!("<{}> is not read yet", child.name.raw);
-                return self.stop(child.name.span, message);
-            }
+            Element::Leaf(leaf) if takes(cat, leaf) => match leaf {
+                Leaf::Literal => self.literal(child)?,
+                Leaf::AnonymousIndividual => self.anonymous(child)?,
+                Leaf::Iri => self.iri_element(false, child)?,
+                Leaf::AbbreviatedIri => self.iri_element(true, child)?,
+                Leaf::FacetRestriction => {
+                    let message = format!("<{}> is not read yet", child.name.raw);
+                    return self.stop(child.name.span, message);
+                }
+            },
             Element::Keyword(_) | Element::Leaf(_) => return Ok(false),
         }
         Ok(true)
+    }
+
+    // ---- literals, anonymous individuals, IRI elements ----
+
+    /// `Literal`: a literal node over the element, its `datatypeIRI` its
+    /// one child, its content whole, the language the one in scope.
+    fn literal(&mut self, tag: &Tag<'a>) -> R {
+        let empty = Span::new(tag.span.end, tag.span.end);
+        let term = Term::Literal {
+            lexical: Str::Text(empty),
+            lang: None,
+            string: empty,
+        };
+        let kind = NodeKind::Literal {
+            string_end: tag.span.end,
+        };
+        let i = self.open_node(kind, tag, term);
+        let r = self.literal_body(i, tag);
+        self.close(i, r.is_ok());
+        r
+    }
+
+    fn literal_body(&mut self, i: usize, tag: &Tag<'a>) -> R {
+        // The scope of the element's own start tag, out of scope at its end.
+        let lang = match self.lang() {
+            Lang::None => None,
+            Lang::Tag(s) => Some(s),
+            Lang::Broken => {
+                self.tainted = true;
+                None
+            }
+        };
+        let [datatype] = self.attrs(tag, ["datatypeIRI"])?;
+        if let Some(a) = datatype {
+            let w = Written::of(&a.value);
+            let value = self.any_uri(&w, self.base())?;
+            self.iri_node(&w, value);
+        }
+        let mut parts: Vec<(Span, Cow<'a, str>)> = Vec::new();
+        loop {
+            match self.next() {
+                Event::Start(child) => {
+                    let message = format!(
+                        "<{}> holds text and no element, found <{}>",
+                        tag.name.raw, child.name.raw
+                    );
+                    return self.stop(child.name.span, message);
+                }
+                Event::End(_) | Event::Eof => break,
+                Event::Text { span, text } => parts.push((span, text)),
+                Event::Pi(..) => {}
+            }
+        }
+        if self.end.implied {
+            // The scanner reported why.
+            return Err(Stop);
+        }
+        let content = Span::new(tag.span.end, self.end.span.start.max(tag.span.end));
+        let lexical = match &parts[..] {
+            [] => Str::Text(Span::new(content.start, content.start)),
+            [(span, t)] if self.at(*span) == t.as_ref() => Str::Text(*span),
+            _ => {
+                let all: String = parts.iter().map(|(_, t)| t.as_ref()).collect();
+                self.stash(&all, content)?
+            }
+        };
+        let string = if content.start < content.end {
+            content
+        } else {
+            Span::new(tag.span.start, self.end.span.end)
+        };
+        self.doc.nodes[i].kind = NodeKind::Literal {
+            string_end: string.end,
+        };
+        self.terms.terms[i] = Term::Literal {
+            lexical,
+            lang,
+            string,
+        };
+        Ok(())
+    }
+
+    /// `AnonymousIndividual`: a node-id node at its `nodeID` value, an
+    /// `NCName`.
+    fn anonymous(&mut self, tag: &Tag<'a>) -> R {
+        let [node_id] = self.attrs(tag, ["nodeID"])?;
+        let Some(a) = node_id else {
+            let message = format!("<{}> needs the attribute nodeID", tag.name.raw);
+            return self.stop(tag.name.span, message);
+        };
+        let w = Written::of(&a.value);
+        if !xml::is_nc_name(&w.text) {
+            let message = format!(
+                "'{}' is no nodeID: a nodeID is an NCName (a name without ':')",
+                shown(&w.text)
+            );
+            return self.stop(w.span, message);
+        }
+        let label = self.keep(&w)?;
+        self.leaf(NodeKind::NodeId, w.span, Term::Label(label));
+        self.empty(tag)
+    }
+
+    /// `IRI`, or `AbbreviatedIRI` if `abbreviated`: an IRI node at its
+    /// trimmed content.
+    fn iri_element(&mut self, abbreviated: bool, tag: &Tag<'a>) -> R {
+        self.attrs(tag, [])?;
+        // The element's own, out of scope once its end is read.
+        let base = self.base();
+        let Some(w) = self.content(tag)? else {
+            let what = if abbreviated {
+                "an abbreviated IRI"
+            } else {
+                "an IRI"
+            };
+            let message = format!("Expected {what}, found </{}>", tag.name.raw);
+            return self.stop(self.end.span, message);
+        };
+        let value = if abbreviated {
+            self.abbreviated(&w)?
+        } else {
+            self.any_uri(&w, base)?
+        };
+        self.iri_node(&w, value);
+        Ok(())
     }
 
     // ---- the document ----

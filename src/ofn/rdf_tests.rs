@@ -1336,3 +1336,55 @@ fn base_resolved_iris_are_charged_to_the_iri_budget() {
     let c = format!("{dir}#C");
     assert!(p.refs.iter().any(|r| r.iri.as_str() == c));
 }
+
+/// A source may give a literal both a language and a datatype (OWL/XML's
+/// `xml:lang` in scope over a `datatypeIRI`): with `rdf:PlainLiteral`, the
+/// text is taken whole under the language, `@` or not, and is no error;
+/// with any other datatype the language is not used. A Functional literal
+/// with a datatype has no language, so its rule is as before.
+#[test]
+fn a_plain_literal_with_a_language_from_its_source_is_its_text_whole() {
+    let plain = || Some(pname("rdf:PlainLiteral"));
+    let assertion = |value: Hand<'static>| {
+        construct(
+            K::AnnotationAssertion,
+            vec![pname("rdfs:label"), pname(":A"), value],
+        )
+    };
+    let (doc, source) = hand_built(
+        full("http://example.org/o"),
+        vec![
+            assertion(literal("Bonn", Some("EN"), plain())),
+            assertion(literal("Bonn@de", Some("en"), plain())),
+            assertion(literal("Bonn@de", None, plain())),
+            assertion(literal("1", Some("en"), Some(pname("xsd:integer")))),
+        ],
+    );
+    let ours = rdf::map_with(&source, doc, None);
+    assert!(ours.errors.is_empty(), "{:?}", ours.errors);
+    let theirs = parse(
+        &in_ontology(
+            "AnnotationAssertion(rdfs:label :A \"Bonn\"@en)\nAnnotationAssertion(rdfs:label :A \"Bonn@de\"@en)\nAnnotationAssertion(rdfs:label :A \"Bonn\"@de)\nAnnotationAssertion(rdfs:label :A \"1\"^^xsd:integer)",
+        ),
+        None,
+    );
+    assert!(theirs.errors.is_empty(), "{:?}", theirs.errors);
+    assert_eq!(
+        difference(&graph_of(&ours), &graph_of(&theirs), "Functional"),
+        None
+    );
+    // In Functional syntax, the tag after the last `@`, and no `@` an
+    // error, as before.
+    let p = parse(
+        &in_ontology(
+            "AnnotationAssertion(rdfs:label :A \"Bonn@de\"^^rdf:PlainLiteral)\nAnnotationAssertion(rdfs:label :A \"Bonn\"^^rdf:PlainLiteral)",
+        ),
+        None,
+    );
+    let first = parse(
+        &in_ontology("AnnotationAssertion(rdfs:label :A \"Bonn\"@de)"),
+        None,
+    );
+    assert_eq!(graph_of(&p), graph_of(&first));
+    assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+}
