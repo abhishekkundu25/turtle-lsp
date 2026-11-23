@@ -16,7 +16,8 @@
 //! schema type `xsd:anyURI` resolves against the base in scope (the nearest
 //! `xml:base`, resolved against the one outside it, else the document's
 //! URL), and must be an absolute IRI: the reader checks the reference, the
-//! mapper resolves it ([`crate::ofn::rdf::IriValue::Based`]). An
+//! mapper resolves it ([`crate::ofn::rdf::IriValue::Based`]). An empty
+//! value is the empty reference, the base itself. An
 //! `abbreviatedIRI` is `prefix:local`, its prefix declared by a `Prefix`
 //! element of this document; no name is built in. The reader resolves only
 //! the bases and the prefix IRIs, and charges them to a budget of
@@ -547,6 +548,24 @@ impl<'a> Reader<'a> {
             spelled: self.at(span) == text,
             text,
         }))
+    }
+
+    /// The content of `tag`, an `xsd:anyURI`: empty or white space, the
+    /// empty relative reference (the base in scope), written as the whole
+    /// element, which does not spell it.
+    fn uri_content(&mut self, tag: &Tag<'a>) -> R<Written<'a>> {
+        if let Some(w) = self.content(tag)? {
+            return Ok(w);
+        }
+        if self.end.implied {
+            // The scanner reported why.
+            return Err(Stop);
+        }
+        Ok(Written {
+            span: Span::new(tag.span.start, self.end.span.end),
+            text: Cow::Borrowed(""),
+            spelled: false,
+        })
     }
 
     fn at(&self, span: Span) -> &'a str {
@@ -1336,24 +1355,26 @@ impl<'a> Reader<'a> {
     }
 
     /// `IRI`, or `AbbreviatedIRI` if `abbreviated`: an IRI node at its
-    /// trimmed content.
+    /// trimmed content. An empty `IRI` is the base in scope; an empty
+    /// `AbbreviatedIRI` is an error.
     fn iri_element(&mut self, abbreviated: bool, tag: &Tag<'a>) -> R {
         self.attrs(tag, [])?;
         // The element's own, out of scope once its end is read.
         let base = self.base();
-        let Some(w) = self.content(tag)? else {
-            let what = if abbreviated {
-                "an abbreviated IRI"
-            } else {
-                "an IRI"
+        let (w, value) = if abbreviated {
+            let Some(w) = self.content(tag)? else {
+                let message = format!(
+                    "Expected an abbreviated IRI, found </{}>",
+                    shown(tag.name.raw)
+                );
+                return self.stop(self.end.span, message);
             };
-            let message = format!("Expected {what}, found </{}>", shown(tag.name.raw));
-            return self.stop(self.end.span, message);
-        };
-        let value = if abbreviated {
-            self.abbreviated(&w)?
+            let value = self.abbreviated(&w)?;
+            (w, value)
         } else {
-            self.any_uri(&w, base)?
+            let w = self.uri_content(tag)?;
+            let value = self.any_uri(&w, base)?;
+            (w, value)
         };
         self.iri_node(&w, value);
         Ok(())
@@ -1534,17 +1555,15 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `Import`: its IRI, the element's trimmed content.
+    /// `Import`: its IRI, the element's trimmed content (empty, the base in
+    /// scope).
     fn import(&mut self, tag: &Tag<'a>) -> R {
         let i = self.open(Keyword::Import, tag);
         let r = (|| {
             self.attrs(tag, [])?;
             // The element's own, out of scope once its end is read.
             let base = self.base();
-            let Some(w) = self.content(tag)? else {
-                let message = format!("Expected an IRI, found </{}>", shown(tag.name.raw));
-                return self.stop(self.end.span, message);
-            };
+            let w = self.uri_content(tag)?;
             let value = self.any_uri(&w, base)?;
             self.iri_node(&w, value);
             Ok(())

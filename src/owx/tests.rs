@@ -878,6 +878,62 @@ fn an_import_is_its_trimmed_content_resolved_against_the_base() {
     );
 }
 
+/// An empty `xsd:anyURI` is the empty relative reference: an `IRI` or an
+/// `Import` with no content is the base in scope (XML Base, RFC 3986),
+/// as ROBOT writes the ontology's own IRI. Its node is the whole element,
+/// which does not spell it. With no base, it is the relative-IRI error.
+#[test]
+fn an_empty_iri_or_import_is_the_base() {
+    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/lib\" ontologyIRI=\"http://example.org/lib\">\n<Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n<Import xml:base=\"http://example.org/other\"></Import>\n<Declaration><Class IRI=\"\"/></Declaration>\n<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><IRI></IRI><Literal>the library</Literal></AnnotationAssertion>\n<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:comment\"/><IRI/><Literal>empty</Literal></AnnotationAssertion>\n</Ontology>";
+    let p = clean(text);
+    let lib = "http://example.org/lib";
+    assert_eq!(
+        refs(text, &p),
+        [
+            (lib, lib, Subject, IRI),
+            (
+                "<Import xml:base=\"http://example.org/other\"></Import>",
+                "http://example.org/other",
+                Object,
+                ANCHOR
+            ),
+            ("", lib, Subject, IRI),
+            (
+                "rdfs:label",
+                "http://www.w3.org/2000/01/rdf-schema#label",
+                Predicate,
+                pn(4)
+            ),
+            ("<IRI></IRI>", lib, About, ANCHOR),
+            (
+                "rdfs:comment",
+                "http://www.w3.org/2000/01/rdf-schema#comment",
+                Predicate,
+                pn(4)
+            ),
+            ("<IRI/>", lib, About, ANCHOR),
+        ]
+    );
+    same_mapping(
+        &p,
+        &functional(&format!(
+            "Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\nOntology(<{lib}>\nImport(<http://example.org/other>)\nDeclaration(Class(<{lib}>))\nAnnotationAssertion(rdfs:label <{lib}> \"the library\")\nAnnotationAssertion(rdfs:comment <{lib}> \"empty\"))"
+        )),
+    );
+    // Without a base, the relative-IRI error at the element.
+    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">\n<Import></Import>\n<AnnotationAssertion><AnnotationProperty IRI=\"http://example.org/p\"/><IRI/><Literal>x</Literal></AnnotationAssertion>\n</Ontology>";
+    let p = read(text, None);
+    let relative = "<> is a relative IRI, and no base is in scope to resolve it against";
+    assert_eq!(
+        errors(text, &p),
+        [
+            (CODE, "<Import></Import>", relative),
+            (CODE, "<IRI/>", relative)
+        ]
+    );
+    assert!(p.refs.is_empty());
+}
+
 #[test]
 fn declarations_of_the_six_kinds() {
     let kinds = [

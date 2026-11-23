@@ -538,7 +538,8 @@ fn an_iri_element_is_its_trimmed_content() {
     assert_eq!(at(&text, t.o_span), "ex:v");
 }
 
-/// An undeclared prefix, empty content and an element inside are errors.
+/// An undeclared prefix, an empty `AbbreviatedIRI` and an element inside
+/// are errors; an empty `IRI` is the base (here the document's URL).
 #[test]
 fn iri_elements_in_error() {
     let text = doc(&[
@@ -553,14 +554,13 @@ fn iri_elements_in_error() {
     let p = read(&text, Some(URL));
     let e = errors(&text, &p);
     assert_eq!(
-        e[..5],
+        e[..4],
         [
             (
                 CODE,
                 "nope:s",
                 "Undeclared prefix 'nope:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"nope\" IRI=\"…\"/>"
             ),
-            (CODE, "</IRI>", "Expected an IRI, found </IRI>"),
             (
                 CODE,
                 "<AbbreviatedIRI/>",
@@ -578,10 +578,15 @@ fn iri_elements_in_error() {
             ),
         ]
     );
-    assert_eq!((e[5].0, e[5].1), (CODE, ":A"), "{e:?}");
-    assert!(e[5].2.starts_with("Invalid IRI: "), "{e:?}");
-    assert_eq!(e.len(), 6);
-    assert_eq!(p.triples.len(), 1);
+    assert_eq!((e[4].0, e[4].1), (CODE, ":A"), "{e:?}");
+    assert!(e[4].2.starts_with("Invalid IRI: "), "{e:?}");
+    assert_eq!(e.len(), 5);
+    assert_eq!(p.triples.len(), 2);
+    assert!(
+        p.refs
+            .iter()
+            .any(|r| at(&text, r.span) == "<IRI>  </IRI>" && r.iri.as_str() == URL)
+    );
 }
 
 // ---- annotations ----
