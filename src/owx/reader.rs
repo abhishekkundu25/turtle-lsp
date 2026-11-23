@@ -36,7 +36,7 @@
 
 use super::CODE;
 use crate::ofn::rdf::{IRI_BYTES_PER_BYTE, MIN_IRI_BYTES};
-use crate::ofn::signature::{Cat, Entity, Rep, is_axiom, keyword_in, signature};
+use crate::ofn::signature::{Cat, Entity, Rep, Slot, is_axiom, keyword_in, signature};
 use crate::ofn::tree::{Document, Keyword, Node, NodeKind};
 use crate::ofn::{MAX_ERRORS, shown};
 use crate::rdfxml::xml::{self, Attr, End, Event, Ns, Prolog, Refs, Scanner, Tag};
@@ -84,6 +84,10 @@ pub(super) enum Term {
         lang: Option<Str>,
         string: Span,
     },
+    /// A `cardinality`, its white space collapsed.
+    Integer(Str),
+    /// The object or the data properties of a `HasKey`.
+    Group,
 }
 
 /// An IRI node's value.
@@ -242,19 +246,50 @@ fn takes(cat: Cat, leaf: Leaf) -> bool {
     }
 }
 
-/// Whether construct `k` has a slot of a shape the reader does not read
-/// yet.
-fn not_read_yet(k: Keyword) -> bool {
-    signature(k).iter().any(|&(cat, _)| {
-        matches!(
-            cat,
-            Cat::Integer
-                | Cat::Facets
-                | Cat::ObjectKeys
-                | Cat::DataKeys
-                | Cat::DataPropertiesThenRange
-        )
+/// The slots of `k` as its child elements fill them, each with the slot of
+/// the signature it is part of: the signature's own, but that the data
+/// properties and the data range of `DataPropertiesThenRange` are two (at
+/// least one `DataProperty`, then a data range), the facets are at least
+/// one `FacetRestriction`, and a key list is any number of properties,
+/// under a group node. A `cardinality` is no child: the first slot, read
+/// from the attribute.
+fn element_slots(k: Keyword) -> impl Iterator<Item = (Slot, Slot)> {
+    signature(k).iter().flat_map(|&slot| {
+        let (first, second) = match slot.0 {
+            Cat::DataPropertiesThenRange => (
+                (Cat::DataProperty, Rep::AtLeast(1)),
+                Some((Cat::DataRange, Rep::One)),
+            ),
+            Cat::Facets => ((Cat::Facets, Rep::AtLeast(1)), None),
+            Cat::ObjectKeys => ((Cat::ObjectProperty, Rep::AtLeast(0)), None),
+            Cat::DataKeys => ((Cat::DataProperty, Rep::AtLeast(0)), None),
+            _ => (slot, None),
+        };
+        std::iter::once((slot, first)).chain(second.map(|s| (slot, s)))
     })
+}
+
+/// Whether a slot that takes `rep` holds enough with `taken`.
+fn filled(rep: Rep, taken: usize) -> bool {
+    match rep {
+        Rep::One => taken == 1,
+        Rep::Optional => true,
+        Rep::AtLeast(n) => taken >= n as usize,
+    }
+}
+
+/// Whether `s` is in the lexical space of `xsd:nonNegativeInteger` (XML
+/// Schema 1.1 Part 2, 3.4.20): digits after an optional sign, `-` only
+/// before a zero.
+fn is_non_negative_integer(s: &str) -> bool {
+    let (sign, digits) = match s.as_bytes().first() {
+        Some(b'+') => (b'+', &s[1..]),
+        Some(b'-') => (b'-', &s[1..]),
+        _ => (b'+', s),
+    };
+    !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (sign == b'+' || digits.bytes().all(|b| b == b'0'))
 }
 
 /// What a slot of `cat` is called in an error.
@@ -926,86 +961,199 @@ impl<'a> Reader<'a> {
     }
 
     fn construct_body(&mut self, k: Keyword, tag: &Tag<'a>) -> R {
-        if not_read_yet(k) {
-            let message = format!("<{}> is not read yet", tag.name.raw);
-            return self.stop(tag.name.span, message);
-        }
         if Entity::of(k).is_some() {
             // Inside `Declaration`: the entity and its IRI.
             self.entity_iri(tag)?;
             return self.empty(tag);
         }
-        self.attrs(tag, [])?;
-        let slots = signature(k);
-        let (mut s, mut taken) = (0, 0);
+        let faults = self.scanner.faults();
+        let mut group = None;
+        let r = self.operands(k, tag, faults, &mut group);
+        if let Some(g) = group {
+            self.leave(g, self.last);
+        }
+        r
+    }
+
+    /// The operands of construct `k`, element `tag`, in the slots of its
+    /// signature ([`element_slots`]); `group` the key list open.
+    fn operands(
+        &mut self,
+        k: Keyword,
+        tag: &Tag<'a>,
+        faults: usize,
+        group: &mut Option<usize>,
+    ) -> R {
+        let mut parts = element_slots(k);
+        let mut part = parts.next();
+        if let Some(((Cat::Integer, _), _)) = part {
+            self.cardinality(tag)?;
+            part = parts.next();
+        } else {
+            self.attrs(tag, [])?;
+        }
+        *group = self.enter(part);
+        // The slot left last, if it would have taken more.
+        let mut open: Option<Cat> = None;
+        let (mut taken, mut keys) = (0, 0);
         while let Some(child) = self.child(tag)? {
             let el = self.element_of(&child)?;
             loop {
-                let Some(&(cat, rep)) = slots.get(s) else {
-                    let message = format!(
-                        "Expected the end of <{}>, found <{}>",
-                        tag.name.raw, child.name.raw
-                    );
+                let Some((slot, (cat, rep))) = part else {
+                    let message = match open {
+                        Some(cat) => format!(
+                            "Expected {} or </{}>, found <{}>",
+                            expected(cat),
+                            tag.name.raw,
+                            child.name.raw
+                        ),
+                        None => format!(
+                            "Expected the end of <{}>, found <{}>",
+                            tag.name.raw, child.name.raw
+                        ),
+                    };
                     return self.stop(child.name.span, message);
                 };
-                let open = matches!(rep, Rep::AtLeast(_)) || taken == 0;
-                if open && self.operand(cat, el, &child)? {
+                let more = matches!(rep, Rep::AtLeast(_)) || taken == 0;
+                if more && self.operand(cat, el, &child)? {
                     taken += 1;
+                    keys += usize::from(group.is_some());
                     break;
                 }
-                let filled = match rep {
-                    Rep::One => taken == 1,
-                    Rep::Optional => true,
-                    Rep::AtLeast(n) => taken >= n as usize,
-                };
-                if !filled {
-                    return self.unfilled(tag, cat, rep, taken, Some(&child));
+                if !filled(rep, taken) {
+                    return self.unfilled(tag, slot, (cat, rep), taken, Some(&child), faults);
                 }
-                (s, taken) = (s + 1, 0);
+                if let Some(g) = group.take() {
+                    self.leave(g, child.span.start);
+                }
+                let more = matches!(rep, Rep::AtLeast(_)) || (rep == Rep::Optional && taken == 0);
+                open = more.then_some(cat);
+                (part, taken) = (parts.next(), 0);
+                *group = self.enter(part);
             }
         }
         if self.end.implied {
             // The scanner reported why.
             return Err(Stop);
         }
-        for &(cat, rep) in &slots[s.min(slots.len())..] {
-            let filled = match rep {
-                Rep::One => taken == 1,
-                Rep::Optional => true,
-                Rep::AtLeast(n) => taken >= n as usize,
-            };
-            if !filled {
-                return self.unfilled(tag, cat, rep, taken, None);
+        while let Some((slot, (cat, rep))) = part {
+            if !filled(rep, taken) {
+                return self.unfilled(tag, slot, (cat, rep), taken, None, faults);
             }
-            taken = 0;
+            if let Some(g) = group.take() {
+                self.leave(g, self.end.span.start);
+            }
+            (part, taken) = (parts.next(), 0);
+            *group = self.enter(part);
+        }
+        if k == Keyword::HasKey && keys == 0 {
+            let message = format!(
+                "<{}> needs at least one object or data property expression",
+                tag.name.raw
+            );
+            return self.stop(tag.name.span, message);
         }
         Ok(())
     }
 
-    /// The error of a slot left unfilled before `child`, or before the end.
+    /// The group node of `part`, open, if it is a key list.
+    fn enter(&mut self, part: Option<(Slot, Slot)>) -> Option<usize> {
+        let ((Cat::ObjectKeys | Cat::DataKeys, _), _) = part? else {
+            return None;
+        };
+        let i = self.doc.nodes.len();
+        self.doc.nodes.push(Node {
+            kind: NodeKind::Group,
+            span: Span::new(0, 0),
+            next: 0,
+        });
+        self.terms.terms.push(Term::Group);
+        Some(i)
+    }
+
+    /// Close group `g`: from its first property to its last, or empty at
+    /// `at`, where the element after it starts.
+    fn leave(&mut self, g: usize, at: u32) {
+        let next = self.doc.nodes.len();
+        let span = if next == g + 1 {
+            Span::new(at, at)
+        } else {
+            let mut last = g + 1;
+            while (self.doc.nodes[last].next as usize) < next {
+                last = self.doc.nodes[last].next as usize;
+            }
+            Span::new(
+                self.doc.nodes[g + 1].span.start,
+                self.doc.nodes[last].span.end,
+            )
+        };
+        self.doc.nodes[g].span = span;
+        self.doc.nodes[g].next = next as u32;
+    }
+
+    /// The `cardinality` of `tag`: an integer node at its value.
+    fn cardinality(&mut self, tag: &Tag<'a>) -> R {
+        let [cardinality] = self.attrs(tag, ["cardinality"])?;
+        let Some(a) = cardinality else {
+            let message = format!("<{}> needs the attribute cardinality", tag.name.raw);
+            return self.stop(tag.name.span, message);
+        };
+        let w = Written::of(&a.value);
+        // The schema's type collapses white space.
+        let text = w.text.trim_matches(WHITE);
+        let span = if w.spelled {
+            self.trimmed(w.span)
+        } else {
+            w.span
+        };
+        if !is_non_negative_integer(text) {
+            let message = format!("Expected a non-negative integer, found '{}'", shown(text));
+            return self.stop(span, message);
+        }
+        let value = if w.spelled {
+            Str::Text(span)
+        } else {
+            self.stash(text, span)?
+        };
+        self.leaf(NodeKind::Integer, span, Term::Integer(value));
+        Ok(())
+    }
+
+    /// The error of a slot left unfilled before `child`, or before the end:
+    /// `part` of the signature's `slot`. Not reported when the scanner met
+    /// a fault since `faults` (an element it skipped): that is the error.
     fn unfilled(
         &mut self,
         tag: &Tag<'a>,
-        cat: Cat,
-        rep: Rep,
+        slot: Slot,
+        part: Slot,
         taken: usize,
         child: Option<&Tag<'a>>,
+        faults: usize,
     ) -> R {
-        if let Rep::AtLeast(n) = rep {
+        if self.scanner.faults() != faults {
+            return Err(Stop);
+        }
+        let name = &tag.name;
+        if let Rep::AtLeast(n) = slot.1 {
             let message = format!(
                 "<{}> needs at least {}, found {taken}",
-                tag.name.raw,
-                cat.counted(n)
+                name.raw,
+                slot.0.counted(n)
             );
-            return self.stop(tag.name.span, message);
+            return self.stop(name.span, message);
+        }
+        if slot.0 == Cat::DataPropertiesThenRange && part.0 == Cat::DataProperty {
+            let message = format!("<{}> needs a data property and a data range", name.raw);
+            return self.stop(name.span, message);
         }
         match child {
             Some(c) => {
-                let message = format!("Expected {}, found <{}>", expected(cat), c.name.raw);
+                let message = format!("Expected {}, found <{}>", expected(part.0), c.name.raw);
                 self.stop(c.name.span, message)
             }
             None => {
-                let message = format!("Expected {}, found </{}>", expected(cat), tag.name.raw);
+                let message = format!("Expected {}, found </{}>", expected(part.0), name.raw);
                 self.stop(self.end.span, message)
             }
         }
@@ -1025,10 +1173,7 @@ impl<'a> Reader<'a> {
                 Leaf::AnonymousIndividual => self.anonymous(child)?,
                 Leaf::Iri => self.iri_element(false, child)?,
                 Leaf::AbbreviatedIri => self.iri_element(true, child)?,
-                Leaf::FacetRestriction => {
-                    let message = format!("<{}> is not read yet", child.name.raw);
-                    return self.stop(child.name.span, message);
-                }
+                Leaf::FacetRestriction => self.facet(child)?,
             },
             Element::Keyword(_) | Element::Leaf(_) => return Ok(false),
         }
@@ -1134,6 +1279,44 @@ impl<'a> Reader<'a> {
         let label = self.keep(&w)?;
         self.leaf(NodeKind::NodeId, w.span, Term::Label(label));
         self.empty(tag)
+    }
+
+    /// `FacetRestriction`: an IRI node at its `facet` value, then its one
+    /// `Literal`, the flat pair of Functional syntax.
+    fn facet(&mut self, tag: &Tag<'a>) -> R {
+        let [facet] = self.attrs(tag, ["facet"])?;
+        let Some(a) = facet else {
+            let message = format!("<{}> needs the attribute facet", tag.name.raw);
+            return self.stop(tag.name.span, message);
+        };
+        let w = Written::of(&a.value);
+        let value = self.any_uri(&w, self.base())?;
+        self.iri_node(&w, value);
+        let Some(child) = self.child(tag)? else {
+            if self.end.implied {
+                return Err(Stop);
+            }
+            let message = format!("Expected a literal, found </{}>", tag.name.raw);
+            return self.stop(self.end.span, message);
+        };
+        match self.element_of(&child)? {
+            Element::Leaf(Leaf::Literal) => self.literal(&child)?,
+            Element::Keyword(_) | Element::Leaf(_) => {
+                let message = format!("Expected a literal, found <{}>", child.name.raw);
+                return self.stop(child.name.span, message);
+            }
+        }
+        if let Some(extra) = self.child(tag)? {
+            let message = format!(
+                "Expected the end of <{}>, found <{}>",
+                tag.name.raw, extra.name.raw
+            );
+            return self.stop(extra.name.span, message);
+        }
+        if self.end.implied {
+            return Err(Stop);
+        }
+        Ok(())
     }
 
     /// `IRI`, or `AbbreviatedIRI` if `abbreviated`: an IRI node at its

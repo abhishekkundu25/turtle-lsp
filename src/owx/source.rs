@@ -26,9 +26,11 @@ impl<'a> OwlXml<'a> {
     fn iri(&self, i: usize) -> (Value, Form) {
         match self.terms.terms[i] {
             Term::Iri { value, form } => (value, form),
-            Term::Construct { .. } | Term::Label(_) | Term::Literal { .. } => {
-                unreachable!("node {i} is no IRI")
-            }
+            Term::Construct { .. }
+            | Term::Label(_)
+            | Term::Literal { .. }
+            | Term::Integer(_)
+            | Term::Group => unreachable!("node {i} is no IRI"),
         }
     }
 
@@ -83,9 +85,11 @@ impl<'a> Source<'a> for OwlXml<'a> {
     fn label(&self, _: &Document, i: usize) -> &'a str {
         match self.terms.terms[i] {
             Term::Label(s) => self.str(s),
-            Term::Construct { .. } | Term::Iri { .. } | Term::Literal { .. } => {
-                unreachable!("node {i} is no anonymous individual")
-            }
+            Term::Construct { .. }
+            | Term::Iri { .. }
+            | Term::Literal { .. }
+            | Term::Integer(_)
+            | Term::Group => unreachable!("node {i} is no anonymous individual"),
         }
     }
 
@@ -101,23 +105,35 @@ impl<'a> Source<'a> for OwlXml<'a> {
                 lang: lang.map(|s| self.str(s)),
                 string,
             },
-            Term::Construct { .. } | Term::Iri { .. } | Term::Label(_) => {
-                unreachable!("node {i} is no literal")
-            }
+            Term::Construct { .. }
+            | Term::Iri { .. }
+            | Term::Label(_)
+            | Term::Integer(_)
+            | Term::Group => unreachable!("node {i} is no literal"),
         }
     }
 
+    /// The `cardinality` value, its white space collapsed.
     fn integer(&self, _: &Document, i: usize) -> &'a str {
-        unreachable!("the reader makes no integer yet: node {i}")
+        match self.terms.terms[i] {
+            Term::Integer(s) => self.str(s),
+            Term::Construct { .. }
+            | Term::Iri { .. }
+            | Term::Label(_)
+            | Term::Literal { .. }
+            | Term::Group => unreachable!("node {i} is no integer"),
+        }
     }
 
     /// The element's name as written.
     fn keyword(&self, _: &Document, i: usize) -> Span {
         match self.terms.terms[i] {
             Term::Construct { name } => name,
-            Term::Iri { .. } | Term::Label(_) | Term::Literal { .. } => {
-                unreachable!("node {i} is no construct")
-            }
+            Term::Iri { .. }
+            | Term::Label(_)
+            | Term::Literal { .. }
+            | Term::Integer(_)
+            | Term::Group => unreachable!("node {i} is no construct"),
         }
     }
 

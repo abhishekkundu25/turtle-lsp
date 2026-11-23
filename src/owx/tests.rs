@@ -115,9 +115,7 @@ pub(super) fn pn(prefix_len: u32) -> Form {
     Form::PName { prefix_len }
 }
 
-/// The example of section 2 of the Recommendation, its names neutral, its
-/// `ObjectAllValuesFrom` replaced by a named class until the reader reads
-/// class expressions.
+/// The example of section 2 of the Recommendation, its names neutral.
 const EXAMPLE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <Ontology xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.w3.org/2002/07/owl# http://www.w3.org/2009/09/owl2-xml.xsd"
@@ -143,7 +141,10 @@ const EXAMPLE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
     <SubClassOf>
         <Class abbreviatedIRI="myOnt:Animal"/>
-        <Class IRI="#Tabloid"/>
+        <ObjectAllValuesFrom>
+            <ObjectProperty IRI="#reads"/>
+            <Class IRI="#Tabloid"/>
+        </ObjectAllValuesFrom>
     </SubClassOf>
 
 </Ontology>
@@ -153,10 +154,10 @@ const EXAMPLE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 fn the_recommendation_s_example_reads() {
     let p = clean(EXAMPLE);
     let theirs = functional(
-        "Prefix(myOnt:=<http://example.org/myOntology#>)\nOntology(<http://example.org/myOntology>\nImport(<http://example.org/someOtherOntology>)\nDeclaration(Class(<http://example.org/myOntology#Animal>))\nDeclaration(Class(myOnt:Tabloid))\nDeclaration(ObjectProperty(<http://example.org/myOntology#eats>))\nDeclaration(ObjectProperty(<http://example.org/myOntology#reads>))\nSubClassOf(myOnt:Animal <http://example.org/myOntology#Tabloid>)\n)\n",
+        "Prefix(myOnt:=<http://example.org/myOntology#>)\nOntology(<http://example.org/myOntology>\nImport(<http://example.org/someOtherOntology>)\nDeclaration(Class(<http://example.org/myOntology#Animal>))\nDeclaration(Class(myOnt:Tabloid))\nDeclaration(ObjectProperty(<http://example.org/myOntology#eats>))\nDeclaration(ObjectProperty(<http://example.org/myOntology#reads>))\nSubClassOf(myOnt:Animal ObjectAllValuesFrom(<http://example.org/myOntology#reads> <http://example.org/myOntology#Tabloid>))\n)\n",
     );
     same_mapping(&p, &theirs);
-    assert_eq!(p.triples.len(), 7);
+    assert_eq!(p.triples.len(), 10);
     let o = "http://example.org/myOntology";
     assert_eq!(
         refs(EXAMPLE, &p),
@@ -193,6 +194,7 @@ fn the_recommendation_s_example_reads() {
                 About,
                 pn(5)
             ),
+            ("#reads", "http://example.org/myOntology#reads", Object, IRI),
             (
                 "#Tabloid",
                 "http://example.org/myOntology#Tabloid",
@@ -232,7 +234,7 @@ fn the_recommendation_s_example_reads() {
                 Some("#reads")
             ),
             (
-                "<SubClassOf>\n        <Class abbreviatedIRI=\"myOnt:Animal\"/>\n        <Class IRI=\"#Tabloid\"/>\n    </SubClassOf>",
+                "<SubClassOf>\n        <Class abbreviatedIRI=\"myOnt:Animal\"/>\n        <ObjectAllValuesFrom>\n            <ObjectProperty IRI=\"#reads\"/>\n            <Class IRI=\"#Tabloid\"/>\n        </ObjectAllValuesFrom>\n    </SubClassOf>",
                 None
             ),
         ]
@@ -244,6 +246,16 @@ fn the_recommendation_s_example_reads() {
         .find(|t| t.p.as_str().ends_with("subClassOf"))
         .unwrap();
     assert_eq!(at(EXAMPLE, ty.p_span), "SubClassOf");
+    assert!(at(EXAMPLE, ty.o_span).starts_with("<ObjectAllValuesFrom>"));
+    let all = p
+        .triples
+        .iter()
+        .find(|t| t.p.as_str().ends_with("#allValuesFrom"))
+        .unwrap();
+    assert_eq!(
+        (at(EXAMPLE, all.p_span), at(EXAMPLE, all.o_span)),
+        ("ObjectAllValuesFrom", "#Tabloid")
+    );
     let header = &p.triples[0];
     assert_eq!(at(EXAMPLE, header.p_span), "Ontology");
     let declared = &p.triples[2];

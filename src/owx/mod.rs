@@ -13,6 +13,10 @@
 
 #[cfg(test)]
 mod annotation_tests;
+#[cfg(test)]
+mod axiom_tests;
+#[cfg(test)]
+mod printer;
 mod reader;
 mod source;
 #[cfg(test)]

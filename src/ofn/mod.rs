@@ -83,6 +83,12 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     rdf::map(text, grammar::parse(text), base)
 }
 
+/// The grammar's tree of `text`, for the tests of another producer.
+#[cfg(test)]
+pub(crate) fn tree(text: &str) -> tree::Document {
+    grammar::parse(text)
+}
+
 /// The errors of a parse, at most [`MAX_ERRORS`].
 pub(crate) struct Errors {
     errors: Vec<SyntaxError>,
