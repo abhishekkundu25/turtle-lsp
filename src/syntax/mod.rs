@@ -439,6 +439,16 @@ impl SyntaxError {
     }
 }
 
+/// `s` as an error quotes it: at most 60 characters, then `…`. A name or
+/// value quoted in many errors costs bytes linear in the text.
+pub(crate) fn shown(s: &str) -> Cow<'_, str> {
+    const MAX: usize = 60;
+    match s.char_indices().nth(MAX) {
+        None => Cow::Borrowed(s),
+        Some((i, _)) => Cow::Owned(format!("{}…", &s[..i])),
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parsed {
     pub syntax: Syntax,

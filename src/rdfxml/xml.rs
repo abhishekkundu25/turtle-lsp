@@ -64,7 +64,7 @@
 //! reader (`owx`), which reads this scanner too, compares the count before
 //! and after an axiom to know whether it read the axiom whole.
 
-use crate::syntax::{Severity, Span, SyntaxError};
+use crate::syntax::{Severity, Span, SyntaxError, shown};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -639,7 +639,10 @@ impl<'a> Scanner<'a> {
                 None => {
                     self.error(
                         span,
-                        format!("the entity &{name}; refers to itself: it is not expanded"),
+                        format!(
+                            "the entity &{}; refers to itself: it is not expanded",
+                            shown(name)
+                        ),
                     );
                     (false, true)
                 }
@@ -679,7 +682,10 @@ impl<'a> Scanner<'a> {
         if self.open[entity.index] {
             self.error(
                 here,
-                format!("the entity &{name}; refers to itself: it is not expanded"),
+                format!(
+                    "the entity &{}; refers to itself: it is not expanded",
+                    shown(name)
+                ),
             );
             return false;
         }
@@ -731,7 +737,8 @@ impl<'a> Scanner<'a> {
                 open.name_span,
                 format!(
                     "<{}> is not closed in the entity &{};",
-                    open.raw, frame.name
+                    shown(open.raw),
+                    shown(frame.name)
                 ),
             );
             self.unscope(open.ns_len);
@@ -819,7 +826,10 @@ impl<'a> Scanner<'a> {
         let end = self.span(self.b.len(), self.b.len());
         self.skip = 0;
         while let Some(open) = self.stack.pop() {
-            self.error(open.name_span, format!("<{}> is not closed", open.raw));
+            self.error(
+                open.name_span,
+                format!("<{}> is not closed", shown(open.raw)),
+            );
             self.unscope(open.ns_len);
             self.pending.push_back(Event::End(End {
                 span: end,
@@ -1431,14 +1441,20 @@ impl<'a> Scanner<'a> {
             }
             let entity = match entities.get(name) {
                 None => {
-                    self.error(here, format!("the entity &{name}; is not declared"));
+                    self.error(
+                        here,
+                        format!("the entity &{}; is not declared", shown(name)),
+                    );
                     out.push_str(&raw[j..=semi]);
                     continue;
                 }
                 Some(e) if e.refused => {
                     self.error(
                         here,
-                        format!("the entity &{name}; is not expanded: see its declaration"),
+                        format!(
+                            "the entity &{}; is not expanded: see its declaration",
+                            shown(name)
+                        ),
                     );
                     out.push_str(&raw[j..=semi]);
                     continue;
@@ -1453,7 +1469,10 @@ impl<'a> Scanner<'a> {
                 // XML 1.0, 3.1, "No < in Attribute Values".
                 self.error(
                     here,
-                    format!("the entity &{name}; puts `<` in an attribute value"),
+                    format!(
+                        "the entity &{}; puts `<` in an attribute value",
+                        shown(name)
+                    ),
                 );
             }
             self.open[entity.index] = true;
@@ -1570,7 +1589,10 @@ impl<'a> Scanner<'a> {
                 !seen.insert(aname)
             };
             if twice {
-                self.error(aspan, format!("the attribute {aname} is written twice"));
+                self.error(
+                    aspan,
+                    format!("the attribute {} is written twice", shown(aname)),
+                );
             }
             attrs.push((
                 aname,
@@ -1700,8 +1722,9 @@ impl<'a> Scanner<'a> {
                 self.error(
                     a.name.span,
                     format!(
-                        "the attributes {first} and {} have one namespace and local name",
-                        a.name.raw
+                        "the attributes {} and {} have one namespace and local name",
+                        shown(first),
+                        shown(a.name.raw)
                     ),
                 );
             }
@@ -1808,7 +1831,7 @@ impl<'a> Scanner<'a> {
         else {
             self.error(
                 if raw.is_empty() { span } else { name_span },
-                format!("</{raw}> closes no open element"),
+                format!("</{}> closes no open element", shown(raw)),
             );
             return None;
         };
@@ -1818,7 +1841,11 @@ impl<'a> Scanner<'a> {
             let open = self.stack.pop().expect("deeper than k");
             self.error(
                 open.name_span,
-                format!("<{}> is not closed before </{raw}>", open.raw),
+                format!(
+                    "<{}> is not closed before </{}>",
+                    shown(open.raw),
+                    shown(raw)
+                ),
             );
             self.unscope(open.ns_len);
             self.pending.push_back(Event::End(End {
@@ -2357,6 +2384,27 @@ mod tests {
         }
         assert_eq!(s.faults(), 3);
         assert_eq!(s.finish().0.len(), 1);
+    }
+
+    /// An error quotes at most the first characters of a name, so a long
+    /// name quoted in many errors costs bytes linear in the text: the
+    /// first of two attributes with one expanded name, and the end tag
+    /// that closes many elements.
+    #[test]
+    fn an_error_quotes_a_long_name_cut() {
+        let long = "p".repeat(100_000);
+        let others: String = (0..120)
+            .map(|i| format!(" xmlns:b{i}=\"http://example.org/\" b{i}:x=\"\""))
+            .collect();
+        let duplicates = format!("<r xmlns:{long}=\"http://example.org/\" {long}:x=\"\"{others}/>");
+        let nested = format!("<{long}>{}</{long}>", "<a>".repeat(120));
+        for text in [duplicates, nested] {
+            let (_, errors) = events(&text);
+            assert!(errors.len() >= 90, "{:?}", messages(&errors));
+            let bytes: usize = errors.iter().map(|e| e.message().len()).sum();
+            assert!(bytes <= text.len(), "{bytes} bytes of messages");
+            assert!(messages(&errors).iter().any(|m| m.contains("ppp…")));
+        }
     }
 
     /// A document in ASCII means the same in any encoding that extends

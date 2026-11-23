@@ -73,6 +73,7 @@ pub(crate) mod tree;
 
 #[cfg(test)]
 use crate::syntax::Syntax;
+pub(crate) use crate::syntax::shown;
 use crate::syntax::{Parsed, Severity, Span, SyntaxError};
 use std::borrow::Cow;
 
@@ -152,15 +153,6 @@ impl Errors {
             ));
         }
         errors
-    }
-}
-
-/// `s` as an error quotes it: at most 60 characters.
-pub(crate) fn shown(s: &str) -> Cow<'_, str> {
-    const MAX: usize = 60;
-    match s.char_indices().nth(MAX) {
-        None => Cow::Borrowed(s),
-        Some((i, _)) => Cow::Owned(format!("{}…", &s[..i])),
     }
 }
 

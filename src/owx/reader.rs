@@ -482,8 +482,10 @@ impl<'a> Reader<'a> {
                 Event::Start(tag) => return Ok(Some(tag)),
                 Event::End(_) | Event::Eof => return Ok(None),
                 Event::Text { span, text } if !xml::is_whitespace(&text) => {
-                    let message =
-                        format!("Text in <{}>, which holds elements only", parent.name.raw);
+                    let message = format!(
+                        "Text in <{}>, which holds elements only",
+                        shown(parent.name.raw)
+                    );
                     return self.stop(self.trimmed(span), message);
                 }
                 Event::Text { .. } | Event::Pi(..) => {}
@@ -497,7 +499,8 @@ impl<'a> Reader<'a> {
         if let Some(child) = self.child(tag)? {
             let message = format!(
                 "<{}> holds no element, found <{}>",
-                tag.name.raw, child.name.raw
+                shown(tag.name.raw),
+                shown(child.name.raw)
             );
             return self.stop(child.name.span, message);
         }
@@ -514,7 +517,8 @@ impl<'a> Reader<'a> {
                 Event::Start(child) => {
                     let message = format!(
                         "<{}> holds text and no element, found <{}>",
-                        tag.name.raw, child.name.raw
+                        shown(tag.name.raw),
+                        shown(child.name.raw)
                     );
                     return self.stop(child.name.span, message);
                 }
@@ -580,8 +584,9 @@ impl<'a> Reader<'a> {
                     self.error(
                         n.span,
                         format!(
-                            "The prefix '{prefix}:' of the attribute {} is not declared",
-                            n.raw
+                            "The prefix '{}:' of the attribute {} is not declared",
+                            shown(prefix),
+                            shown(n.raw)
                         ),
                     );
                     bad = true;
@@ -591,7 +596,11 @@ impl<'a> Reader<'a> {
                         out[k] = out[k].or(Some(a));
                     }
                     None => {
-                        let message = format!("<{}> has no attribute {}", tag.name.raw, n.raw);
+                        let message = format!(
+                            "<{}> has no attribute {}",
+                            shown(tag.name.raw),
+                            shown(n.raw)
+                        );
                         self.error(n.span, message);
                         bad = true;
                     }
@@ -607,18 +616,21 @@ impl<'a> Reader<'a> {
         let message = match &n.ns {
             Ns::Bound(ns) if &**ns == OWL => match element(n.local()) {
                 Some(e) => return Ok(e),
-                None => format!("<{}> is no element of OWL/XML", n.raw),
+                None => format!("<{}> is no element of OWL/XML", shown(n.raw)),
             },
             Ns::Bound(ns) => format!(
                 "<{}> is in the namespace {}, not in OWL's ({OWL})",
-                n.raw,
+                shown(n.raw),
                 shown(ns)
             ),
-            Ns::Unbound => format!("<{}> is in no namespace: OWL/XML's are in {OWL}", n.raw),
+            Ns::Unbound => format!(
+                "<{}> is in no namespace: OWL/XML's are in {OWL}",
+                shown(n.raw)
+            ),
             Ns::Unknown => format!(
                 "The prefix '{}:' of <{}> is not declared",
                 n.prefix().unwrap_or(""),
-                n.raw
+                shown(n.raw)
             ),
         };
         self.stop(n.span, message)
@@ -821,7 +833,8 @@ impl<'a> Reader<'a> {
         let Some(p) = self.prefixes.get(name) else {
             let iri = STANDARD.iter().find(|s| s.0 == name).map_or("…", |s| s.1);
             let message = format!(
-                "Undeclared prefix '{name}:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"{name}\" IRI=\"{iri}\"/>"
+                "Undeclared prefix '{name}:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"{name}\" IRI=\"{iri}\"/>",
+                name = shown(name)
             );
             return self.stop(w.span, message);
         };
@@ -889,14 +902,14 @@ impl<'a> Reader<'a> {
             (Some(_), Some(a)) => {
                 let message = format!(
                     "<{}> has an IRI and an abbreviatedIRI: one of them, not both",
-                    tag.name.raw
+                    shown(tag.name.raw)
                 );
                 return self.stop(a.name.span, message);
             }
             (None, None) => {
                 let message = format!(
                     "<{}> needs the attribute IRI or abbreviatedIRI",
-                    tag.name.raw
+                    shown(tag.name.raw)
                 );
                 return self.stop(tag.name.span, message);
             }
@@ -992,12 +1005,13 @@ impl<'a> Reader<'a> {
                         Some(cat) => format!(
                             "Expected {} or </{}>, found <{}>",
                             expected(cat),
-                            tag.name.raw,
-                            child.name.raw
+                            shown(tag.name.raw),
+                            shown(child.name.raw)
                         ),
                         None => format!(
                             "Expected the end of <{}>, found <{}>",
-                            tag.name.raw, child.name.raw
+                            shown(tag.name.raw),
+                            shown(child.name.raw)
                         ),
                     };
                     return self.stop(child.name.span, message);
@@ -1037,7 +1051,7 @@ impl<'a> Reader<'a> {
         if k == Keyword::HasKey && keys == 0 {
             let message = format!(
                 "<{}> needs at least one object or data property expression",
-                tag.name.raw
+                shown(tag.name.raw)
             );
             return self.stop(tag.name.span, message);
         }
@@ -1083,7 +1097,7 @@ impl<'a> Reader<'a> {
     fn cardinality(&mut self, tag: &Tag<'a>) -> R {
         let [cardinality] = self.attrs(tag, ["cardinality"])?;
         let Some(a) = cardinality else {
-            let message = format!("<{}> needs the attribute cardinality", tag.name.raw);
+            let message = format!("<{}> needs the attribute cardinality", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
         let w = Written::of(&a.value);
@@ -1126,22 +1140,33 @@ impl<'a> Reader<'a> {
         if let Rep::AtLeast(n) = slot.1 {
             let message = format!(
                 "<{}> needs at least {}, found {taken}",
-                name.raw,
+                shown(name.raw),
                 slot.0.counted(n)
             );
             return self.stop(name.span, message);
         }
         if slot.0 == Cat::DataPropertiesThenRange && part.0 == Cat::DataProperty {
-            let message = format!("<{}> needs a data property and a data range", name.raw);
+            let message = format!(
+                "<{}> needs a data property and a data range",
+                shown(name.raw)
+            );
             return self.stop(name.span, message);
         }
         match child {
             Some(c) => {
-                let message = format!("Expected {}, found <{}>", expected(part.0), c.name.raw);
+                let message = format!(
+                    "Expected {}, found <{}>",
+                    expected(part.0),
+                    shown(c.name.raw)
+                );
                 self.stop(c.name.span, message)
             }
             None => {
-                let message = format!("Expected {}, found </{}>", expected(part.0), name.raw);
+                let message = format!(
+                    "Expected {}, found </{}>",
+                    expected(part.0),
+                    shown(name.raw)
+                );
                 self.stop(self.end.span, message)
             }
         }
@@ -1210,7 +1235,8 @@ impl<'a> Reader<'a> {
                 Event::Start(child) => {
                     let message = format!(
                         "<{}> holds text and no element, found <{}>",
-                        tag.name.raw, child.name.raw
+                        shown(tag.name.raw),
+                        shown(child.name.raw)
                     );
                     return self.stop(child.name.span, message);
                 }
@@ -1254,7 +1280,7 @@ impl<'a> Reader<'a> {
     fn anonymous(&mut self, tag: &Tag<'a>) -> R {
         let [node_id] = self.attrs(tag, ["nodeID"])?;
         let Some(a) = node_id else {
-            let message = format!("<{}> needs the attribute nodeID", tag.name.raw);
+            let message = format!("<{}> needs the attribute nodeID", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
         let w = Written::of(&a.value);
@@ -1275,7 +1301,7 @@ impl<'a> Reader<'a> {
     fn facet(&mut self, tag: &Tag<'a>) -> R {
         let [facet] = self.attrs(tag, ["facet"])?;
         let Some(a) = facet else {
-            let message = format!("<{}> needs the attribute facet", tag.name.raw);
+            let message = format!("<{}> needs the attribute facet", shown(tag.name.raw));
             return self.stop(tag.name.span, message);
         };
         let w = Written::of(&a.value);
@@ -1285,20 +1311,21 @@ impl<'a> Reader<'a> {
             if self.end.implied {
                 return Err(Stop);
             }
-            let message = format!("Expected a literal, found </{}>", tag.name.raw);
+            let message = format!("Expected a literal, found </{}>", shown(tag.name.raw));
             return self.stop(self.end.span, message);
         };
         match self.element_of(&child)? {
             Element::Leaf(Leaf::Literal) => self.literal(&child)?,
             Element::Keyword(_) | Element::Leaf(_) => {
-                let message = format!("Expected a literal, found <{}>", child.name.raw);
+                let message = format!("Expected a literal, found <{}>", shown(child.name.raw));
                 return self.stop(child.name.span, message);
             }
         }
         if let Some(extra) = self.child(tag)? {
             let message = format!(
                 "Expected the end of <{}>, found <{}>",
-                tag.name.raw, extra.name.raw
+                shown(tag.name.raw),
+                shown(extra.name.raw)
             );
             return self.stop(extra.name.span, message);
         }
@@ -1320,7 +1347,7 @@ impl<'a> Reader<'a> {
             } else {
                 "an IRI"
             };
-            let message = format!("Expected {what}, found </{}>", tag.name.raw);
+            let message = format!("Expected {what}, found </{}>", shown(tag.name.raw));
             return self.stop(self.end.span, message);
         };
         let value = if abbreviated {
@@ -1364,15 +1391,15 @@ impl<'a> Reader<'a> {
             let message = match root.name.ns() {
                 Some(RDF) if root.name.local() == "RDF" => format!(
                     "The root element is <{}>: the text is RDF/XML, not OWL/XML, whose root is <Ontology> in {OWL}",
-                    root.name.raw
+                    shown(root.name.raw)
                 ),
                 _ if root.name.local() == "Ontology" => format!(
                     "The root element <{}> is not in OWL's namespace: OWL/XML's root is <Ontology> in {OWL}",
-                    root.name.raw
+                    shown(root.name.raw)
                 ),
                 _ => format!(
                     "The root element is <{}>: the text is XML but not OWL/XML, whose root is <Ontology> in {OWL}",
-                    root.name.raw
+                    shown(root.name.raw)
                 ),
             };
             self.error(root.name.span, message);
@@ -1401,7 +1428,10 @@ impl<'a> Reader<'a> {
                 Event::Start(tag) => self.top(&tag, before, &mut phase),
                 Event::End(_) | Event::Eof => break,
                 Event::Text { span, text } if !xml::is_whitespace(&text) => {
-                    let message = format!("Text in <{}>, which holds elements only", root.name.raw);
+                    let message = format!(
+                        "Text in <{}>, which holds elements only",
+                        shown(root.name.raw)
+                    );
                     self.error(self.trimmed(span), message);
                 }
                 Event::Text { .. } | Event::Pi(..) => {}
@@ -1462,7 +1492,7 @@ impl<'a> Reader<'a> {
             Element::Keyword(_) | Element::Leaf(_) => {
                 let message = format!(
                     "Expected <Prefix>, <Import>, <Annotation> or an axiom, found <{}>",
-                    tag.name.raw
+                    shown(tag.name.raw)
                 );
                 self.error(tag.name.span, message);
                 self.skip_to(depth);
@@ -1512,7 +1542,7 @@ impl<'a> Reader<'a> {
             // The element's own, out of scope once its end is read.
             let base = self.base();
             let Some(w) = self.content(tag)? else {
-                let message = format!("Expected an IRI, found </{}>", tag.name.raw);
+                let message = format!("Expected an IRI, found </{}>", shown(tag.name.raw));
                 return self.stop(self.end.span, message);
             };
             let value = self.any_uri(&w, base)?;
@@ -1530,7 +1560,7 @@ impl<'a> Reader<'a> {
             let missing = if name.is_none() { "name" } else { "IRI" };
             self.error(
                 tag.name.span,
-                format!("<{}> needs the attribute {missing}", tag.name.raw),
+                format!("<{}> needs the attribute {missing}", shown(tag.name.raw)),
             );
             return None;
         };
@@ -1545,7 +1575,10 @@ impl<'a> Reader<'a> {
         if self.prefixes.contains_key(written) {
             self.error(
                 name.value.span,
-                format!("The prefix '{written}:' is declared twice: the first declaration holds"),
+                format!(
+                    "The prefix '{}:' is declared twice: the first declaration holds",
+                    shown(written)
+                ),
             );
             return None;
         }

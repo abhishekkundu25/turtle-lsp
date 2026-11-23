@@ -1374,3 +1374,33 @@ fn the_mapper_s_iri_budget_holds_under_owx_syntax() {
     assert_eq!(p.refs.len(), at);
     assert_eq!(p.refs[0].iri.as_str(), format!("{long}#C0"));
 }
+
+/// An error quotes at most the first characters of an element's name, so
+/// one long name in many errors costs bytes linear in the text: unknown
+/// attributes of one element, and text runs in a long-named root.
+#[test]
+fn an_error_quotes_a_long_name_cut() {
+    let long = "p".repeat(20_000);
+    let attrs: String = (0..2_000).map(|i| format!(" a{i}=\"\"")).collect();
+    let runs = "t<!---->".repeat(2_000);
+    let text = format!(
+        "<{long}:Ontology xmlns:{long}=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n<{long}:Declaration{attrs}><{long}:Class IRI=\"http://example.org/A\"/></{long}:Declaration>\n{runs}\n</{long}:Ontology>\n"
+    );
+    let p = read(&text, Some(URL));
+    assert_eq!(p.errors.len(), 4_000);
+    assert!(p.errors.iter().all(|e| e.message().len() < 200));
+    let bytes: usize = p.errors.iter().map(|e| e.message().len()).sum();
+    assert!(bytes <= 4 * text.len(), "{bytes} bytes of messages");
+    let first = p.errors[0].message();
+    assert!(
+        first.starts_with("<ppp") && first.ends_with("…> has no attribute a0"),
+        "{first}"
+    );
+    let run = p.errors.iter().find(|e| at(&text, e.span) == "t").unwrap();
+    assert!(
+        run.message().starts_with("Text in <ppp"),
+        "{}",
+        run.message()
+    );
+    assert!(run.message().len() < 200);
+}
