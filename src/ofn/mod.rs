@@ -58,9 +58,10 @@
 //! an `Ontology`).
 //!
 //! Limits: constructs nest at most [`grammar::MAX_NESTING`] deep (deeper is
-//! an error, never a deep stack), and at most [`MAX_ERRORS`] errors and
-//! warnings are reported, then one more error that says so. Time is
-//! linear in the text.
+//! an error, never a deep stack), and at most [`MAX_ERRORS`] errors are
+//! reported, then one more error that says so, and apart from them at
+//! most [`MAX_WARNINGS`] warnings, then one more warning. Time is linear
+//! in the text.
 
 mod grammar;
 mod lexer;
@@ -83,6 +84,21 @@ pub(crate) const CODE: &str = "ofn-syntax";
 
 /// The most errors one document reports.
 pub(crate) const MAX_ERRORS: usize = 10_000;
+
+/// The most warnings one document reports, apart from its errors: past
+/// it, one warning says so ([`more_warnings`]).
+pub(crate) const MAX_WARNINGS: usize = 10_000;
+
+/// The warning that says the warnings past [`MAX_WARNINGS`] are not
+/// reported, at the first of them.
+pub(crate) fn more_warnings(span: Span, code: &'static str) -> SyntaxError {
+    SyntaxError::new(
+        span,
+        format!("More than {MAX_WARNINGS} warnings; the rest are not reported"),
+        Severity::Warning,
+        code,
+    )
+}
 
 /// Parse an OWL Functional document into the shared parse model: its
 /// axioms as RDF triples ([`rdf`]), with their references, statements and

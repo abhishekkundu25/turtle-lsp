@@ -30,7 +30,8 @@
 //! fault count moves while it is read (from its start tag to its end tag),
 //! when its end is implied, or when it uses a base in error. The errors
 //! are one list in text order, `xml-syntax` and `owx-syntax`, at most
-//! [`MAX_ERRORS`] with the warnings, then one more that says so.
+//! [`MAX_ERRORS`], then one more that says so; the warnings, at most
+//! [`MAX_WARNINGS`] apart from them, then one more that says so.
 //!
 //! What OWL API writes beyond the Recommendation (the departures the
 //! module `owx` lists) is read in the same walk: the SWRL elements are
@@ -43,7 +44,7 @@ use super::CODE;
 use crate::ofn::rdf::{IRI_BYTES_PER_BYTE, MIN_IRI_BYTES};
 use crate::ofn::signature::{Cat, Entity, Rep, Slot, is_axiom, keyword_in, signature};
 use crate::ofn::tree::{Document, Keyword, Node, NodeKind};
-use crate::ofn::{MAX_ERRORS, shown};
+use crate::ofn::{MAX_ERRORS, MAX_WARNINGS, more_warnings, shown};
 use crate::rdfxml::xml::{self, Attr, End, Event, Ns, Prolog, Refs, Scanner, Tag};
 use crate::syntax::{Form, Iri, PrefixDecl, Severity, Span, SyntaxError, has_scheme};
 use rustc_hash::FxHashMap;
@@ -432,6 +433,10 @@ struct Reader<'a> {
     reported: usize,
     /// Where the first error past [`MAX_ERRORS`] is.
     dropped: Option<Span>,
+    /// The warnings, apart from the errors, at most [`MAX_WARNINGS`], and
+    /// where the first past it is.
+    warnings: Vec<SyntaxError>,
+    dropped_warning: Option<Span>,
     /// The item being read used a base or a language in error.
     tainted: bool,
     /// The bytes of the bases and prefix IRIs resolved, and the most
@@ -474,6 +479,8 @@ impl<'a> Reader<'a> {
             errors: Vec::new(),
             reported: 0,
             dropped: None,
+            warnings: Vec::new(),
+            dropped_warning: None,
             tainted: false,
             resolved: 0,
             budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
@@ -490,6 +497,8 @@ impl<'a> Reader<'a> {
             terms,
             errors,
             dropped,
+            mut warnings,
+            dropped_warning,
             ..
         } = self;
         let (xml_errors, _) = scanner.finish();
@@ -506,26 +515,33 @@ impl<'a> Reader<'a> {
                 CODE,
             ));
         }
+        if let Some(span) = dropped_warning {
+            warnings.push(more_warnings(span, CODE));
+        }
+        // In text order; at one start, the error first.
+        all.extend(warnings);
+        all.sort_by_key(|e| e.span.start);
         doc.errors = all;
         (doc, terms)
     }
 
     fn error(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
         self.reported += 1;
-        self.report(span, message, Severity::Error);
-    }
-
-    /// A warning: it breaks no item.
-    fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
-        self.report(span, message, Severity::Warning);
-    }
-
-    fn report(&mut self, span: Span, message: impl Into<Cow<'static, str>>, severity: Severity) {
         if self.errors.len() < MAX_ERRORS {
             self.errors
-                .push(SyntaxError::new(span, message, severity, CODE));
+                .push(SyntaxError::new(span, message, Severity::Error, CODE));
         } else if self.dropped.is_none() {
             self.dropped = Some(span);
+        }
+    }
+
+    /// A warning: it breaks no item, and has a cap of its own.
+    fn warning(&mut self, span: Span, message: impl Into<Cow<'static, str>>) {
+        if self.warnings.len() < MAX_WARNINGS {
+            self.warnings
+                .push(SyntaxError::new(span, message, Severity::Warning, CODE));
+        } else if self.dropped_warning.is_none() {
+            self.dropped_warning = Some(span);
         }
     }
 

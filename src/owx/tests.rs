@@ -1614,3 +1614,34 @@ fn a_warning_names_a_long_base_cut() {
         "Read as <http://example.org/B> (XML Base); OWL API reads <http://example.org/xxxxxxxxxxx…xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/B>"
     );
 }
+
+/// Warnings have a cap of their own: past 10,000, one warning says so, and
+/// they never push out an error or add one. A valid file with more
+/// warnings has no error; an error after them is reported.
+#[test]
+fn warnings_have_a_cap_of_their_own() {
+    let max = crate::ofn::MAX_WARNINGS;
+    let body: String = (0..max + 1)
+        .map(|i| format!("<Declaration><Class IRI=\"/B{i}\"/></Declaration>\n"))
+        .collect();
+    let open =
+        "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/lib\">\n";
+    let text = format!("{open}{body}</Ontology>\n");
+    let p = read(&text, Some(URL));
+    let error = |e: &&crate::syntax::SyntaxError| e.severity == crate::syntax::Severity::Error;
+    assert_eq!(p.errors.iter().filter(error).count(), 0);
+    assert_eq!(p.errors.len(), max + 1);
+    let last = p.errors.last().unwrap();
+    assert_eq!(
+        (last.code, last.message(), at(&text, last.span)),
+        (
+            CODE,
+            &*format!("More than {max} warnings; the rest are not reported"),
+            &*format!("/B{max}")
+        )
+    );
+    let text = format!("{open}{body}<Declaration><Klass/></Declaration>\n</Ontology>\n");
+    let p = read(&text, Some(URL));
+    let errors: Vec<_> = p.errors.iter().filter(error).map(|e| e.message()).collect();
+    assert_eq!(errors, ["<Klass> is no element of OWL/XML"]);
+}

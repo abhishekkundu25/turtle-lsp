@@ -126,7 +126,7 @@
 //!   `owx-syntax`).
 
 use super::tree::{Document, Keyword as K, NodeKind};
-use super::{CODE, MAX_ERRORS};
+use super::{CODE, MAX_ERRORS, MAX_WARNINGS, more_warnings};
 use crate::syntax::{
     BlankId, Form, Iri, Node, Parsed, PrefixDecl, RDF, Ref, Role, Severity, Span, Statement,
     Syntax, SyntaxError, Triple, XSD,
@@ -360,14 +360,33 @@ pub(crate) fn map_with<'a, S: Source<'a>>(source: &S, doc: Document, base: Optio
         refs,
         statements,
         limit,
-        mut invalid,
+        invalid,
         ..
     } = m;
+    // The errors and the warnings have a cap each.
+    let (mut invalid, mut warnings): (Vec<_>, Vec<_>) = invalid
+        .into_iter()
+        .partition(|e| e.severity == Severity::Error);
     let at =
         invalid.partition_point(|x| limit.as_ref().is_none_or(|e| x.span.start <= e.span.start));
     invalid.splice(at..at, limit);
-    invalid.truncate(MAX_ERRORS.saturating_sub(doc.errors.len()));
-    let errors = merge(doc.errors, invalid);
+    let doc_errors = doc
+        .errors
+        .iter()
+        .filter(|e| e.severity == Severity::Error)
+        .count();
+    invalid.truncate(MAX_ERRORS.saturating_sub(doc_errors));
+    let doc_warnings = doc.errors.len() - doc_errors;
+    let room = MAX_WARNINGS.saturating_sub(doc_warnings);
+    if warnings.len() > room {
+        let span = warnings[room].span;
+        warnings.truncate(room);
+        // Unless the source's own warnings said so.
+        if doc_warnings <= MAX_WARNINGS {
+            warnings.push(more_warnings(span, S::CODE));
+        }
+    }
+    let errors = merge(doc.errors, merge(invalid, warnings));
     Parsed {
         syntax: S::SYNTAX,
         prefixes: doc.prefixes,

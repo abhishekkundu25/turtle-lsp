@@ -389,6 +389,34 @@ fn an_invalid_plain_literal_is_an_error_and_gives_nothing() {
     assert_eq!(shown, ["nope:B", "\"x@ y\"", "nope:C"], "{:?}", p.errors);
 }
 
+/// The mapping's warnings have a cap of their own, apart from the errors:
+/// past it, one warning says so, and an error after them is reported.
+#[test]
+fn the_mapping_s_warnings_have_a_cap_of_their_own() {
+    let max = super::MAX_WARNINGS;
+    let body = "AnnotationAssertion(rdfs:label :A \"x\"^^rdf:PlainLiteral)\n".repeat(max + 1);
+    let text = in_ontology(&format!(
+        "{body}AnnotationAssertion(rdfs:label :B \"y@ z\"^^rdf:PlainLiteral)"
+    ));
+    let p = parse(&text, None);
+    let errors: Vec<_> = p
+        .errors
+        .iter()
+        .filter(|e| e.severity == Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{:?}", errors);
+    assert_eq!(at(&text, errors[0].span), "\"y@ z\"");
+    assert_eq!(p.errors.len(), max + 2);
+    let note = &p.errors[max];
+    assert_eq!(
+        (note.severity, note.message()),
+        (
+            Severity::Warning,
+            &*format!("More than {max} warnings; the rest are not reported")
+        )
+    );
+}
+
 /// An `rdf:PlainLiteral` with no `@` is outside the datatype's lexical
 /// space and has no row in Table 1. It is read as OWL API (ROBOT 1.9.11)
 /// reads it: a plain string (`xsd:string`), its text whole, with a
