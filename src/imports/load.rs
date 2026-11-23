@@ -21,7 +21,7 @@ use super::catalog::{Catalog, Target};
 use super::rdfxml::stopped_at;
 // Fetching converts; the browser build fetches nothing.
 #[cfg(not(target_arch = "wasm32"))]
-use super::rdfxml::{functional_to_ntriples, rdf_xml_to_ntriples};
+use super::rdfxml::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
 use super::worker::{Memo, Ontology, RETRY_FETCH_AFTER};
 use super::*;
 use crate::syntax::Syntax;
@@ -278,14 +278,15 @@ pub(super) fn load(
 /// Functional syntax, which is read too, last: a server with an RDF form
 /// of the same ontology sends that.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8, text/owl-functional;q=0.7";
+const ACCEPT: &str = "text/turtle, application/trig;q=0.9, application/n-triples;q=0.9, application/n-quads;q=0.9, application/ld+json;q=0.8, application/rdf+xml;q=0.8, text/owl-functional;q=0.7, application/owl+xml;q=0.7";
 
 /// A fetched document, as [`parse`] reads it.
 struct Fetched {
     /// Its text, whose relative IRIs, if any, resolve against where the
-    /// document was finally found; RDF/XML becomes N-Triples ([`marked`]).
+    /// document was finally found; RDF/XML, Functional syntax and OWL/XML
+    /// become N-Triples ([`marked`]).
     text: String,
-    /// The format the text is read in: RDF/XML is read as Turtle.
+    /// The format the text is read in: a converted text is read as Turtle.
     format: Format,
     /// Where the document was finally found, after redirects.
     final_url: String,
@@ -316,15 +317,12 @@ fn fetch_document(
     };
     let lossy = utf8(&r.body).map_err(unread)?;
     let lossy = lossy.trim_start_matches('\u{feff}');
-    // Whatever the content type says: `application/owl+xml` is XML, and a
-    // Functional text is Functional.
     let sniffed = Sniffed::of(lossy).format().map_err(unread)?;
     let by_type = r
         .content_type
         .as_deref()
         .and_then(|ct| format_of_type(&ct.to_ascii_lowercase()));
     let (format, guessed) = match by_type {
-        _ if sniffed == Format::Functional => (Format::Functional, false),
         Some(format) => (format, false),
         None => {
             let path = url::Url::parse(&r.final_url)
@@ -333,6 +331,8 @@ fn fetch_document(
             format_of(&path, &r.body).map_err(unread)?
         }
     };
+    // Whatever the content type or the name says ([`by_content`]).
+    let format = by_content(sniffed, format);
     let text = match format {
         Format::Turtle | Format::TriG => match oxiri::Iri::parse(r.final_url.as_str()) {
             Ok(_) => format!("@base <{}> .\n{lossy}", r.final_url),
@@ -347,11 +347,9 @@ fn fetch_document(
             let (nt, truncated) = functional_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
             marked(nt, truncated.as_deref(), TRUNCATED_FUNCTIONAL)
         }
-        // No reader yet: the RDF/XML frontend's answer, which names the
-        // syntax and gives no triples.
         Format::OwlXml => {
-            let (nt, truncated) = rdf_xml_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
-            marked(nt, truncated.as_deref(), TRUNCATED)
+            let (nt, truncated) = owl_xml_to_ntriples(&r.body, &r.final_url).map_err(unread)?;
+            marked(nt, truncated.as_deref(), TRUNCATED_OWL_XML)
         }
     };
     let format = match format {
@@ -389,6 +387,8 @@ fn format_of_type(content_type: &str) -> Option<Format> {
     let ct = content_type.split(';').next().unwrap_or("").trim();
     if ct == "text/owl-functional" {
         Some(Format::Functional)
+    } else if ct == "application/owl+xml" {
+        Some(Format::OwlXml)
     } else if ct.contains("xml") {
         Some(Format::RdfXml)
     } else if ct.ends_with("json") {
@@ -558,8 +558,8 @@ pub enum Format {
     RdfXml,
     /// OWL 2 Functional-Style Syntax, its axioms mapped to RDF.
     Functional,
-    /// The OWL 2 XML Serialization. Nothing names or sniffs a document so
-    /// yet: an OWL/XML text is refused as today ([`Sniffed::format`]).
+    /// The OWL 2 XML Serialization, its axioms mapped to RDF as
+    /// Functional syntax's are.
     OwlXml,
 }
 
@@ -578,8 +578,8 @@ impl Format {
         }
     }
 
-    /// The syntax the analysis reads it in. (A fetched RDF/XML or
-    /// Functional document is converted to N-Triples first, and read as
+    /// The syntax the analysis reads it in. (A fetched RDF/XML, Functional
+    /// or OWL/XML document is converted to N-Triples first, and read as
     /// Turtle.)
     pub(crate) fn syntax(self) -> Syntax {
         match self {
@@ -610,7 +610,7 @@ impl Format {
 /// The format of the document called `name` (a path or URL path) whose bytes
 /// are `bytes`: by the extension if it is one of ours, else by [`sniff`]; and
 /// whether it was sniffed. An error says the content is in an OWL syntax that
-/// is not read.
+/// is not read (Manchester).
 pub(crate) fn format_of(name: &str, bytes: &[u8]) -> Result<(Format, bool), String> {
     match Syntax::from_extension(name) {
         Some(syntax) => Ok((Format::of_syntax(syntax), false)),
@@ -626,19 +626,32 @@ pub fn sniff(bytes: &[u8]) -> Result<Format, String> {
 }
 
 impl Sniffed {
-    /// The format turtle-lsp reads it in, or why it reads none: OWL/XML and
-    /// Manchester are OWL syntaxes that are not read. (Functional syntax's
-    /// axioms are mapped to RDF.)
+    /// The format turtle-lsp reads it in, or why it reads none: Manchester
+    /// is an OWL syntax that is not read. (The axioms of Functional syntax
+    /// and OWL/XML are mapped to RDF.)
     pub(crate) fn format(self) -> Result<Format, String> {
         match self {
             Sniffed::Turtle => Ok(Format::Turtle),
             Sniffed::JsonLd => Ok(Format::JsonLd),
             Sniffed::RdfXml => Ok(Format::RdfXml),
             Sniffed::Functional => Ok(Format::Functional),
-            Sniffed::OwlXml | Sniffed::Manchester => {
-                Err(format!("it {}", self.unread().unwrap_or_default()))
-            }
+            Sniffed::OwlXml => Ok(Format::OwlXml),
+            Sniffed::Manchester => Err(format!("it {}", self.unread().unwrap_or_default())),
         }
+    }
+}
+
+/// The format to read a document in, `format` by its name or content type
+/// and `sniffed` by its text: a Functional or an OWL/XML text is read as
+/// such whatever the name or the type says (servers send `.owl` files as
+/// `application/rdf+xml`, `application/xml` or `text/plain`, whatever their
+/// syntax), and between the two XML formats the text decides, so an RDF/XML
+/// text is RDF/XML under an OWL/XML name or type.
+fn by_content(sniffed: Format, format: Format) -> Format {
+    match (sniffed, format) {
+        (Format::Functional | Format::OwlXml, _) => sniffed,
+        (Format::RdfXml, Format::OwlXml) => Format::RdfXml,
+        _ => format,
     }
 }
 
@@ -648,8 +661,10 @@ impl Sniffed {
 const TRUNCATED: &str = "# turtle-lsp: the RDF/XML has an error at ";
 /// The same line for a converted OWL Functional document.
 const TRUNCATED_FUNCTIONAL: &str = "# turtle-lsp: the OWL Functional syntax has an error at ";
+/// The same line for a converted OWL/XML document.
+const TRUNCATED_OWL_XML: &str = "# turtle-lsp: the OWL/XML has an error at ";
 
-/// `nt`, converted from RDF/XML or Functional syntax, with the line
+/// `nt`, converted from RDF/XML, Functional syntax or OWL/XML, with the line
 /// (starting with `marker`) that says where its first error is.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn marked(nt: String, truncated: Option<&str>, marker: &str) -> String {
@@ -680,23 +695,21 @@ pub(super) fn parse(
     guessed: bool,
 ) -> Result<Ontology, String> {
     let text = utf8(bytes)?.trim_start_matches('\u{feff}');
-    // Whatever the name or the content type says: OWL/XML and Manchester
-    // are refused, and Functional syntax is read as such.
-    let format = match Sniffed::of(text).format()? {
-        Format::Functional => Format::Functional,
-        _ => format,
-    };
+    // Whatever the name or the content type says: Manchester is refused,
+    // and the text decides for the OWL syntaxes ([`by_content`]).
+    let format = by_content(Sniffed::of(text).format()?, format);
     let mut truncated = None;
     let text = match format {
         Format::Turtle | Format::TriG => {
-            // A cached copy of an RDF/XML or Functional document with an
-            // error: its header line, then this line.
+            // A cached copy of a converted document with an error: its
+            // header line, then this line.
             truncated = text
                 .lines()
                 .take(2)
                 .find_map(|l| {
-                    l.strip_prefix(TRUNCATED)
-                        .or_else(|| l.strip_prefix(TRUNCATED_FUNCTIONAL))
+                    [TRUNCATED, TRUNCATED_FUNCTIONAL, TRUNCATED_OWL_XML]
+                        .iter()
+                        .find_map(|m| l.strip_prefix(m))
                 })
                 .map(str::to_string);
             // Relative IRIs resolve against the import IRI; on the first line,
@@ -707,8 +720,8 @@ pub(super) fn parse(
             }
         }
         // N-Triples, N-Quads and Functional syntax have absolute IRIs only,
-        // no base to declare; a JSON-LD or RDF/XML document's base is the
-        // URL the analysis is named by.
+        // no base to declare; a JSON-LD, RDF/XML or OWL/XML document's base
+        // is the URL the analysis is named by.
         Format::NTriples
         | Format::NQuads
         | Format::JsonLd
@@ -793,31 +806,133 @@ mod tests {
         assert_eq!(sniff(big.as_bytes()), Ok(Format::Turtle));
         // An `Ontology` root in no namespace is not RDF/XML (whose elements
         // need one): it is taken for OWL/XML.
-        let e = sniff(b"<Ontology>\n  <Prefix/>").unwrap_err();
+        assert_eq!(sniffed(b"<Ontology>\n  <Prefix/>"), Format::OwlXml);
+        // OWL/XML past a declaration, a DOCTYPE and a byte order mark.
+        let owx = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\"/>";
+        let declared = format!("<?xml version=\"1.0\"?>\n{owx}");
+        let doctype = format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE Ontology [\n  <!ENTITY ex \"http://example.org/\">\n]>\n{owx}"
+        );
+        let bom = format!("\u{feff}{doctype}");
+        for text in [owx, &declared, &doctype, &bom] {
+            assert_eq!(sniffed(text.as_bytes()), Format::OwlXml, "{text}");
+        }
+        // Manchester syntax is refused, and says how to make RDF of it.
         assert_eq!(
-            e,
-            "it holds OWL/XML, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
+            sniff(b"Prefix: ex: <http://example.org/o#>").unwrap_err(),
+            "it holds OWL Manchester syntax, which turtle-lsp does not read. In Protégé: File > Save as > RDF/XML or Turtle"
         );
     }
 
     #[test]
-    fn owl_syntaxes_are_not_read_whatever_the_name_says() {
+    fn manchester_syntax_is_not_read_whatever_the_name_says() {
         let base = "http://example.org/o";
-        for (text, name) in [
-            (
-                "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>",
-                "OWL/XML",
-            ),
-            (
-                "Prefix: ex: <http://example.org/o#>",
-                "OWL Manchester syntax",
-            ),
+        let text = "Prefix: ex: <http://example.org/o#>";
+        for format in [
+            Format::Turtle,
+            Format::RdfXml,
+            Format::NTriples,
+            Format::OwlXml,
         ] {
-            for format in [Format::Turtle, Format::RdfXml, Format::NTriples] {
-                let e = parse(text.as_bytes(), format, base, false).err().unwrap();
-                assert!(e.starts_with(&format!("it holds {name}, ")), "{e}");
-            }
+            let e = parse(text.as_bytes(), format, base, false).err().unwrap();
+            assert!(
+                e.starts_with("it holds OWL Manchester syntax, "),
+                "{format:?}: {e}"
+            );
         }
+    }
+
+    /// An OWL/XML text is read as OWL/XML whatever its name or content type
+    /// says (a `.owl` name and an `application/rdf+xml` type give
+    /// `Format::RdfXml`): its axioms as triples, its own imports, and its
+    /// first error, as for a Functional text. Between the two XML formats
+    /// the text decides, so RDF/XML under an OWL/XML name is RDF/XML.
+    #[test]
+    fn an_owl_xml_text_is_read_as_such_whatever_its_name_or_type_says() {
+        let base = "file:///w/o.owx";
+        let text = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n<Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n<Import>http://example.org/b</Import>\n<Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n<SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\":B\"/></SubClassOf>\n</Ontology>\n";
+        for format in [
+            Format::Turtle,
+            Format::RdfXml,
+            Format::NTriples,
+            Format::Functional,
+            Format::OwlXml,
+        ] {
+            let o = parse(text.as_bytes(), format, base, false).unwrap();
+            assert_eq!(o.analysis.parsed.syntax, Syntax::OwlXml, "{format:?}");
+            assert!(
+                o.analysis.parsed.errors.is_empty(),
+                "{:?}",
+                o.analysis.parsed.errors
+            );
+            assert_eq!(o.analysis.parsed.triples.len(), 4);
+            assert_eq!(o.imports, ["http://example.org/b"]);
+            assert_eq!(o.truncated, None);
+        }
+        // The same graph as its Functional form.
+        let functional = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nImport(<http://example.org/b>)\nDeclaration(Class(:A))\nSubClassOf(:A :B)\n)\n";
+        assert_eq!(
+            owl_xml_to_ntriples(text.as_bytes(), base),
+            functional_to_ntriples(functional.as_bytes(), base)
+        );
+        // RDF/XML under an OWL/XML name or type is RDF/XML.
+        let rdf = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:owl=\"http://www.w3.org/2002/07/owl#\">\n<owl:Ontology rdf:about=\"http://example.org/r\"><owl:imports rdf:resource=\"http://example.org/c\"/></owl:Ontology>\n</rdf:RDF>\n";
+        let o = parse(rdf.as_bytes(), Format::OwlXml, base, false).unwrap();
+        assert_eq!(o.analysis.parsed.syntax, Syntax::RdfXml);
+        assert!(o.analysis.parsed.errors.is_empty());
+        assert_eq!(o.imports, ["http://example.org/c"]);
+        // An axiom with an error gives nothing; the rest is read, and the
+        // first error says where it is.
+        let broken = text.replace("\":B\"", "\"nope:B\"");
+        let o = parse(broken.as_bytes(), Format::RdfXml, base, false).unwrap();
+        assert_eq!(o.analysis.parsed.triples.len(), 3);
+        assert_eq!(o.imports, ["http://example.org/b"]);
+        let why = o.truncated.clone().expect("truncated");
+        assert!(
+            why.starts_with("line 6, column 70: Undeclared prefix 'nope:'"),
+            "{why}"
+        );
+        // An error and no triple: the import is not read, and says why.
+        let e = parse(
+            b"<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" versionIRI=\"http://example.org/v\"/>",
+            Format::OwlXml,
+            base,
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(e.starts_with("line 1, column "), "{e}");
+        // Fetched, it is converted to N-Triples for the cache, which reads
+        // back to the same graph, its error noted on the first line.
+        let (nt, why) = owl_xml_to_ntriples(broken.as_bytes(), base).unwrap();
+        assert_eq!(why.as_deref(), o.truncated.as_deref());
+        let marked = marked(nt, why.as_deref(), TRUNCATED_OWL_XML);
+        assert!(marked.starts_with("# turtle-lsp: the OWL/XML has an error at line 6, "));
+        let cached = format!("# turtle-lsp cache for {base}\n{marked}");
+        let cached = parse(cached.as_bytes(), Format::Turtle, base, false).unwrap();
+        assert_eq!(cached.truncated, o.truncated);
+        assert_eq!(cached.imports, o.imports);
+        assert_eq!(cached.analysis.parsed.triples.len(), 3);
+    }
+
+    /// The content type and the text, as a fetch weighs them: a Functional
+    /// or an OWL/XML text is itself whatever it is served as, and an
+    /// RDF/XML text is RDF/XML under the OWL/XML type.
+    #[test]
+    fn the_text_decides_between_the_xml_formats_and_for_functional_syntax() {
+        use Format::*;
+        for format in [
+            Turtle, TriG, NTriples, NQuads, JsonLd, RdfXml, Functional, OwlXml,
+        ] {
+            assert_eq!(by_content(OwlXml, format), OwlXml, "{format:?}");
+            assert_eq!(by_content(Functional, format), Functional, "{format:?}");
+        }
+        assert_eq!(by_content(RdfXml, OwlXml), RdfXml);
+        assert_eq!(by_content(RdfXml, RdfXml), RdfXml);
+        assert_eq!(by_content(Turtle, OwlXml), OwlXml);
+        assert_eq!(by_content(Turtle, RdfXml), RdfXml);
+        assert_eq!(by_content(Turtle, TriG), TriG);
+        assert_eq!(by_content(JsonLd, Turtle), Turtle);
     }
 
     /// A Functional text is read as Functional syntax whatever its name or
@@ -1044,6 +1159,21 @@ mod tests {
             Some(Format::RdfXml)
         );
         assert_eq!(format_of_type("text/plain"), None);
+        // The type the OWL/XML Recommendation names (section 6); the other
+        // XML types are RDF/XML.
+        assert_eq!(format_of_type("application/owl+xml"), Some(Format::OwlXml));
+        assert_eq!(
+            format_of_type("application/owl+xml; charset=utf-8"),
+            Some(Format::OwlXml)
+        );
+        assert_eq!(format_of_type("application/rdf+xml"), Some(Format::RdfXml));
+        assert_eq!(format_of_type("application/xml"), Some(Format::RdfXml));
+        // A `.owx` name is OWL/XML whatever its text; a `.owl` that holds
+        // OWL/XML is sniffed so.
+        let owx = b"<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>";
+        assert_eq!(of("/w/a.owx", ttl), (Format::OwlXml, false));
+        assert_eq!(of("/w/a.OWX", owx), (Format::OwlXml, false));
+        assert_eq!(of("/w/a.owl", owx), (Format::OwlXml, true));
     }
 
     #[test]

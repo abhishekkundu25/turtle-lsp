@@ -1,5 +1,5 @@
-// owl:imports: resolved through a local catalog (Turtle and RDF/XML, with a
-// transitive cycle), unresolved imports diagnosed, and network access only
+// owl:imports: resolved through a local catalog (Turtle, RDF/XML and
+// OWL/XML, with a transitive cycle), unresolved imports diagnosed, and network access only
 // when turtle.imports.network is on, fetched once and cached. With it off, a
 // quick fix fetches one import on request; its cached copy opens read-only.
 //
@@ -43,9 +43,11 @@ before(async () => {
     } else if (req.url === "/latin1.rdf") {
       res.writeHead(200, { "content-type": "application/rdf+xml" })
       res.end(LATIN1_RDF)
-    } else if (req.url === "/onto.owx") {
-      res.writeHead(200, { "content-type": "application/owl+xml" })
-      res.end(`<?xml version="1.0"?>\n<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="${base}/onto.owx"/>\n`)
+    } else if (OWL_XML_SERVED[req.url]) {
+      // OWL/XML as servers send it: the type its Recommendation names, an
+      // RDF/XML type a `.owl` name gets, or plain text.
+      res.writeHead(200, { "content-type": OWL_XML_SERVED[req.url] })
+      res.end(req.url.startsWith("/cut") ? CUT_OWL_XML : owlXmlAt(req.url))
     } else if (FUNCTIONAL_SERVED[req.url]) {
       // OWL Functional syntax as servers send it: its registered type, an
       // RDF/XML type a `.owl` name gets, or plain text (raw GitHub files).
@@ -84,6 +86,30 @@ Ontology(<http://example.org/cut-fn>
 SubClassOf(:First nope:Thing)
 AnnotationAssertion(rdfs:label :Second "Second functional")
 )
+`
+
+// OWL/XML documents served by type, and one with an error on line 5.
+const OWL_XML_SERVED = {
+  "/onto.owx": "application/owl+xml",
+  "/rdfxml-type-ox.owl": "application/rdf+xml",
+  "/plain-ox.owl": "text/plain; charset=utf-8",
+  "/cut.owx": "application/owl+xml",
+}
+const owlXmlAt = (url) => `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/ox${url}">
+    <Prefix name="" IRI="http://example.org/ox${url.replace(/\W/g, "_")}#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class abbreviatedIRI=":Remote"/></Declaration>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>:Remote</AbbreviatedIRI><Literal>Remote OWL/XML ${url}</Literal></AnnotationAssertion>
+</Ontology>
+`
+const CUT_OWL_XML = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/cut-ox">
+    <Prefix name="" IRI="http://example.org/cut-ox#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <SubClassOf><Class abbreviatedIRI=":First"/><Class abbreviatedIRI="nope:Thing"/></SubClassOf>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>:Second</AbbreviatedIRI><Literal>Second OWL/XML</Literal></AnnotationAssertion>
+</Ontology>
 `
 
 // RDF/XML with an error on line 5: the first class is read, the second not.
@@ -261,7 +287,7 @@ test("with the setting on, an import is fetched once (following redirects) and t
   }
   const fetched = hits.slice(before)
   assert.deepEqual(fetched.map((h) => h.url), ["/old", "/onto.ttl"])
-  assert.match(fetched[0].accept, /^text\/turtle, application\/trig;q=0\.9, .*application\/ld\+json;q=0\.8, application\/rdf\+xml;q=0\.8, text\/owl-functional;q=0\.7$/)
+  assert.match(fetched[0].accept, /^text\/turtle, application\/trig;q=0\.9, .*application\/ld\+json;q=0\.8, application\/rdf\+xml;q=0\.8, text\/owl-functional;q=0\.7, application\/owl\+xml;q=0\.7$/)
   assert.equal(fs.readdirSync(path.join(w.cache, "imports")).length, 1)
 
   // A new session, with or without the network: the cached copy is used.
@@ -623,7 +649,7 @@ test("imports in TriG and JSON-LD are read in their own syntax, whatever their I
 // see the fetched RDF/XML below). functional.owl, in OWL Functional syntax,
 // is read: its import resolves. owlxml.owl, in OWL/XML, is read as a
 // workspace file and states its ontology IRI, so its import resolves in the
-// workspace too, with no loader.
+// workspace too, with no loader (the loader reads it in the test after).
 const UNREAD = "which turtle-lsp does not read\\. In Protégé: File > Save as > RDF/XML or Turtle"
 const FORMATS = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix t: <http://example.org/onto/truncated#> .
@@ -773,6 +799,139 @@ test("an import in an OWL syntax is named and not read, but for OWL Functional s
   assert.match(own.stdout, /^vendor\/truncated\.owl:13:\d+: error\[xml-syntax\] /m)
 })
 
+// The OWL/XML catalog targets in a folder the index skips, so no workspace
+// document covers them: the loader reads vendor/owlxml.owl (an OWL/XML
+// `.owl`) and a `.owx` that it imports by its `<Import>`.
+const OWL_XML_CATALOG = `<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://example.org/onto/owlxml" uri="node_modules/owlxml.owl"/>
+  <uri name="http://example.org/onto/deep" uri="node_modules/deep.owx"/>
+</catalog>
+`
+const DEEP_OWX = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/onto/deep">
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class IRI="http://example.org/onto/deep#Cat"/></Declaration>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><IRI>http://example.org/onto/deep#Cat</IRI><Literal>Deep cat</Literal></AnnotationAssertion>
+</Ontology>
+`
+const OWL_XML_APP = `@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix ox: <http://example.org/onto/owlxml#> .
+@prefix deep: <http://example.org/onto/deep#> .
+<http://example.org/app> a owl:Ontology ;
+    owl:imports <http://example.org/onto/owlxml> .
+<http://example.org/app#x> a ox:Dog, deep:Cat .
+`
+
+test("an OWL/XML catalog target that no workspace document covers is read through the loader: its terms are known, its <Import> followed, and no unresolved-import", async () => {
+  const root = tempDir("owlxml-catalog")
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(path.join(ws, "node_modules"), { recursive: true })
+  fs.copyFileSync(path.join(fixtures, "imports", "ws", "vendor", "owlxml.owl"), path.join(ws, "node_modules", "owlxml.owl"))
+  // owlxml.owl imports deep.
+  const owlxml = path.join(ws, "node_modules", "owlxml.owl")
+  fs.writeFileSync(owlxml, fs.readFileSync(owlxml, "utf8").replace("    <Declaration>", "    <Import>http://example.org/onto/deep</Import>\n    <Declaration>"))
+  fs.writeFileSync(path.join(ws, "node_modules", "deep.owx"), DEEP_OWX)
+  fs.writeFileSync(path.join(ws, "catalog-v001.xml"), OWL_XML_CATALOG)
+  const file = path.join(ws, "app.ttl")
+  fs.writeFileSync(file, OWL_XML_APP)
+  const uri = uriOf(file)
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    s.open(uri, OWL_XML_APP)
+    const dog = positionOf(OWL_XML_APP, "ox:Dog", 3)
+    const hover = await hoverUntil(s, uri, dog, "owl:Class")
+    // At the line of its declaration in the file the loader read, one
+    // further down for the `<Import>`.
+    assert.match(hover, /Described in \[owlxml\.owl:15\]\(file:[^)]*owlxml\.owl#L15\)/)
+    const def = await s.request("textDocument/definition", { textDocument: { uri }, position: dog })
+    assert.deepEqual(def.map((l) => [l.uri.replace(/.*\/ws\//, ""), l.range.start]), [["node_modules/owlxml.owl", { line: 14, character: 20 }]])
+    await hoverUntil(s, uri, positionOf(OWL_XML_APP, "deep:Cat", 5), "Deep cat")
+    const diags = await diagnosticsUntil(s, uri, (d) => d.length === 0)
+    assert.deepEqual(diags, [])
+    // Nothing of the imported files is in the index.
+    const symbols = await s.request("workspace/symbol", { query: "Dog" })
+    assert.ok(!symbols.some((x) => x.location.uri.includes("/node_modules/")), JSON.stringify(symbols))
+  } finally {
+    await s.stop()
+  }
+  const r = spawnSync(serverPath, ["check", "app.ttl"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(root, "cache"), NO_COLOR: "1" },
+  })
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.stdout, "")
+})
+
+// An OWL/XML file writes `<Import>`, never owl:imports: its imports are
+// followed all the same, and an unresolved one is noted at the element's
+// content.
+const IMPORT_CATALOG = `<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://example.org/dep" uri="node_modules/dep.owx"/>
+  <uri name="http://example.org/tdep" uri="node_modules/tdep.ttl"/>
+</catalog>
+`
+const DEP_OWX = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/dep">
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class IRI="http://example.org/One"/></Declaration>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><IRI>http://example.org/One</IRI><Literal>Thing one</Literal></AnnotationAssertion>
+</Ontology>
+`
+const TDEP = `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<http://example.org/Two> rdfs:label "Thing two" .
+`
+const APP_OWX = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/app">
+    <Import>http://example.org/dep</Import>
+    <Import>http://example.org/tdep</Import>
+    <Import>http://example.org/absent</Import>
+    <Declaration><Class IRI="http://example.org/One"/></Declaration>
+    <Declaration><Class IRI="http://example.org/Two"/></Declaration>
+</Ontology>
+`
+
+test("an OWL/XML file's <Import> loads in the editor and in check", async () => {
+  const root = tempDir("owx-import")
+  const ws = path.join(root, "ws")
+  fs.mkdirSync(path.join(ws, "node_modules"), { recursive: true })
+  fs.writeFileSync(path.join(ws, "catalog-v001.xml"), IMPORT_CATALOG)
+  fs.writeFileSync(path.join(ws, "node_modules", "dep.owx"), DEP_OWX)
+  fs.writeFileSync(path.join(ws, "node_modules", "tdep.ttl"), TDEP)
+  const file = path.join(ws, "app.owx")
+  fs.writeFileSync(file, APP_OWX)
+  const uri = uriOf(file)
+  const absent = positionOf(APP_OWX, "http://example.org/absent", 0)
+  const unresolved = (d) => d.filter((x) => x.code === "unresolved-import")
+  const s = await start(ws, path.join(root, "cache"))
+  try {
+    s.open(uri, APP_OWX, "xml")
+    const d = unresolved(await diagnosticsUntil(s, uri, (d) => unresolved(d).length > 0))
+    assert.equal(d.length, 1, JSON.stringify(d))
+    assert.match(d[0].message, /<http:\/\/example\.org\/absent>/)
+    assert.deepEqual(d[0].range, { start: absent, end: { line: absent.line, character: absent.character + "http://example.org/absent".length } })
+    await hoverUntil(s, uri, positionOf(APP_OWX, "http://example.org/One\"", 1), "Thing one")
+    await hoverUntil(s, uri, positionOf(APP_OWX, "http://example.org/Two\"", 1), "Thing two")
+    const def = await s.request("textDocument/definition", { textDocument: { uri }, position: positionOf(APP_OWX, "http://example.org/One\"", 1) })
+    assert.ok(def.some((l) => /\/node_modules\/dep\.owx$/.test(l.uri) && l.range.start.line === 3), JSON.stringify(def))
+  } finally {
+    await s.stop()
+  }
+  const r = spawnSync(serverPath, ["check", "app.owx"], {
+    cwd: ws,
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, TURTLE_LSP_CACHE_DIR: path.join(root, "cache"), NO_COLOR: "1" },
+  })
+  assert.equal(r.status, 0, r.stderr)
+  const lines = r.stdout.split("\n").filter(Boolean)
+  assert.equal(lines.length, 1, r.stdout)
+  assert.match(lines[0], new RegExp(`^app\\.owx:${absent.line + 1}:${absent.character + 1}: info\\[unresolved-import\\] .*<http://example\\.org/absent>`))
+})
+
 test("an owl:imports of a workspace .owl that states its ontology IRI needs no catalog", async () => {
   const root = tempDir("no-catalog")
   const ws = path.join(root, "ws")
@@ -820,7 +979,7 @@ test("an owl:imports of a workspace .owl that states its ontology IRI needs no c
   assert.equal(r.stdout, "")
 })
 
-test("a fetched RDF/XML with an error warns, from the web and from the cache; a fetched OWL/XML is named", async () => {
+test("a fetched RDF/XML with an error warns, from the web and from the cache", async () => {
   const w = remoteWorkspace("cut", `${base}/cut.rdf`)
   const at = positionOf(w.text, `<${base}/cut.rdf>`, 0)
   const truncated = (d) => d.find((x) => x.code === "import-truncated")
@@ -842,17 +1001,6 @@ test("a fetched RDF/XML with an error warns, from the web and from the cache; a 
   const cached = fs.readdirSync(path.join(w.cache, "imports"))
   assert.equal(cached.length, 1, JSON.stringify(cached))
   assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the RDF\/XML has an error at line 5, /)
-
-  const o = remoteWorkspace("owx", `${base}/onto.owx`)
-  const s = await start(o.ws, o.cache, { imports: { network: true } })
-  try {
-    s.open(o.uri, o.text)
-    const unresolved = (d) => d.find((x) => x.code === "unresolved-import")
-    const d = unresolved(await diagnosticsUntil(s, o.uri, (d) => unresolved(d) !== undefined))
-    assert.match(d.message, new RegExp(`was fetched from ${base}/onto\\.owx but could not be read: it holds OWL/XML, ${UNREAD}$`))
-  } finally {
-    await s.stop()
-  }
 })
 
 test("a fetched OWL Functional document is read whatever type it is served as, cached as N-Triples, and one with an error warns", async () => {
@@ -892,6 +1040,45 @@ test("a fetched OWL Functional document is read whatever type it is served as, c
   }
   const cached = fs.readdirSync(path.join(w.cache, "imports"))
   assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the OWL Functional syntax has an error at line 4, /)
+})
+
+test("a fetched OWL/XML document is read whatever type it is served as, cached as N-Triples, and one with an error warns", async () => {
+  for (const url of ["/onto.owx", "/rdfxml-type-ox.owl", "/plain-ox.owl"]) {
+    const w = remoteWorkspace(`ox${url.replace(/\W/g, "-")}`, `${base}${url}`)
+    const text = `${w.text}<http://example.org/x> a <http://example.org/ox${url.replace(/\W/g, "_")}#Remote> .\n`
+    const s = await start(w.ws, w.cache, { imports: { network: true } })
+    try {
+      s.open(w.uri, text)
+      await hoverUntil(s, w.uri, positionOf(text, "#Remote>", 1), `Remote OWL/XML ${url}`)
+      const ours = (d) => d.filter((x) => x.code === "unresolved-import" || x.code === "import-truncated")
+      assert.deepEqual(ours(await s.diagnosticsFor(w.uri, 10000)), [], url)
+    } finally {
+      await s.stop()
+    }
+    const cached = fs.readdirSync(path.join(w.cache, "imports"))
+    assert.equal(cached.length, 1, JSON.stringify(cached))
+    assert.match(cached[0], /\.ttl$/)
+    const nt = fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8")
+    assert.match(nt, new RegExp(`^<http://example.org/ox${url.replace(/\W/g, "_")}#Remote> <http://www.w3.org/2000/01/rdf-schema#label> "Remote OWL/XML ${url}" \\.$`, "m"), url)
+  }
+  // With an error: loaded up to what it breaks, from the web and from the cache.
+  const w = remoteWorkspace("ox-cut", `${base}/cut.owx`)
+  const text = `${w.text}<http://example.org/x> a <http://example.org/cut-ox#Second> .\n`
+  const truncated = (d) => d.find((x) => x.code === "import-truncated")
+  for (const network of [true, false]) {
+    const s = await start(w.ws, w.cache, { imports: { network } })
+    try {
+      s.open(w.uri, text)
+      const d = truncated(await diagnosticsUntil(s, w.uri, (d) => truncated(d) !== undefined))
+      assert.equal(d.severity, 2)
+      assert.match(d.message, /has an error at line 5, column 82: Undeclared prefix 'nope:'.*\. What its errors break is not loaded$/)
+      await hoverUntil(s, w.uri, positionOf(text, "#Second>", 1), "Second OWL/XML")
+    } finally {
+      await s.stop()
+    }
+  }
+  const cached = fs.readdirSync(path.join(w.cache, "imports"))
+  assert.match(fs.readFileSync(path.join(w.cache, "imports", cached[0]), "utf8"), /^# turtle-lsp cache for .*\n# turtle-lsp: the OWL\/XML has an error at line 5, /)
 })
 
 test("a fetched RDF/XML that is not UTF-8 is not read, and the import says why", async () => {

@@ -100,6 +100,7 @@
 //! use turtle_lsp::imports::Status as _; // tests
 //! use turtle_lsp::imports::diagnostics_with as _; // tests
 //! use turtle_lsp::imports::functional_to_ntriples as _; // tests
+//! use turtle_lsp::imports::owl_xml_to_ntriples as _; // tests
 //! use turtle_lsp::imports::parse_catalog as _; // tests
 //! use turtle_lsp::imports::rdf_xml_to_ntriples as _; // tests
 //! use turtle_lsp::imports::sniff as _; // tests
