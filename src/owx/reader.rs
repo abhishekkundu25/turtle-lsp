@@ -695,8 +695,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The value `v` of an attribute whose schema type collapses white
-    /// space (`xsd:anyURI`, `xsd:NCName`, `xsd:nonNegativeInteger`; and
-    /// `abbreviatedIRI`, read as the content of `AbbreviatedIRI` is): its
+    /// space (`xsd:anyURI`, `xsd:NCName`, `xsd:nonNegativeInteger`): its
     /// text and its span without the XML white space at their ends.
     fn collapsed(&self, v: &xml::Value<'a>) -> Written<'a> {
         let text = match &v.text {
@@ -709,6 +708,17 @@ impl<'a> Reader<'a> {
             spelled: self.at(span) == text,
             span,
             text,
+        }
+    }
+
+    /// The value `v` of an attribute whose schema type keeps white space
+    /// (`abbreviatedIRI`, an `xsd:string` restricted to a pattern), as
+    /// written.
+    fn as_written(&self, v: &xml::Value<'a>) -> Written<'a> {
+        Written {
+            spelled: self.at(v.span) == v.text,
+            span: v.span,
+            text: v.text.clone(),
         }
     }
 
@@ -1126,7 +1136,7 @@ impl<'a> Reader<'a> {
                 (w, value)
             }
             (None, Some(a)) => {
-                let w = self.collapsed(&a.value);
+                let w = self.as_written(&a.value);
                 let value = self.abbreviated(&w)?;
                 (w, value)
             }

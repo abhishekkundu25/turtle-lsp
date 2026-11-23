@@ -952,7 +952,7 @@ fn an_empty_iri_or_import_is_the_base() {
 /// `xsd:string`, keeps it.
 #[test]
 fn white_space_around_an_attribute_value_is_trimmed() {
-    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\" http://example.org/o \" versionIRI=\"\thttp://example.org/v\n\">\n<Prefix name=\"ex\" IRI=\" http://example.org/ \"/>\n<Declaration><Class IRI=\"  http://example.org/A  \"/></Declaration>\n<Declaration><Class abbreviatedIRI=\" ex:B \"/></Declaration>\n<ClassAssertion><Class IRI=\"http://example.org/A\"/><AnonymousIndividual nodeID=\" n1 \"/></ClassAssertion>\n<DataPropertyAssertion><DataProperty IRI=\"http://example.org/p\"/><NamedIndividual IRI=\"http://example.org/i\"/><Literal datatypeIRI=\" http://www.w3.org/2001/XMLSchema#integer \">1</Literal></DataPropertyAssertion>\n<DatatypeDefinition><Datatype IRI=\"http://example.org/d\"/><DatatypeRestriction><Datatype IRI=\"http://www.w3.org/2001/XMLSchema#integer\"/><FacetRestriction facet=\" http://www.w3.org/2001/XMLSchema#minInclusive \"><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#integer\">0</Literal></FacetRestriction></DatatypeRestriction></DatatypeDefinition>\n</Ontology>";
+    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\" http://example.org/o \" versionIRI=\"\thttp://example.org/v\n\">\n<Prefix name=\"ex\" IRI=\" http://example.org/ \"/>\n<Declaration><Class IRI=\"  http://example.org/A  \"/></Declaration>\n<Declaration><Class abbreviatedIRI=\"ex:B\"/></Declaration>\n<ClassAssertion><Class IRI=\"http://example.org/A\"/><AnonymousIndividual nodeID=\" n1 \"/></ClassAssertion>\n<DataPropertyAssertion><DataProperty IRI=\"http://example.org/p\"/><NamedIndividual IRI=\"http://example.org/i\"/><Literal datatypeIRI=\" http://www.w3.org/2001/XMLSchema#integer \">1</Literal></DataPropertyAssertion>\n<DatatypeDefinition><Datatype IRI=\"http://example.org/d\"/><DatatypeRestriction><Datatype IRI=\"http://www.w3.org/2001/XMLSchema#integer\"/><FacetRestriction facet=\" http://www.w3.org/2001/XMLSchema#minInclusive \"><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#integer\">0</Literal></FacetRestriction></DatatypeRestriction></DatatypeDefinition>\n</Ontology>";
     let p = clean(text);
     same_mapping(
         &p,
@@ -978,6 +978,43 @@ fn white_space_around_an_attribute_value_is_trimmed() {
     assert_eq!(
         errors(&text, &p),
         [(CODE, " p", "' p' is no prefix name (PN_PREFIX)")]
+    );
+}
+
+/// `abbreviatedIRI` is an `xsd:string` restricted to a pattern: its white
+/// space is kept, so spaces around the name are an error, as ROBOT reads
+/// it too, and the item gives nothing.
+#[test]
+fn white_space_around_an_abbreviated_iri_attribute_is_an_error() {
+    let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n<Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n<Declaration><Class abbreviatedIRI=\" ex:B \"/></Declaration>\n<Declaration><Class abbreviatedIRI=\"ex:C\"/></Declaration>\n</Ontology>";
+    let p = crate::owx::parse(text, Some(URL));
+    let errors: Vec<_> = p
+        .errors
+        .iter()
+        .filter(|e| e.severity == crate::syntax::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{:?}", p.errors);
+    assert_eq!(at(text, errors[0].span), " ex:B ");
+    assert!(
+        errors[0].message.contains("is no abbreviated IRI"),
+        "{}",
+        errors[0].message
+    );
+    let classes: Vec<_> = p
+        .triples
+        .iter()
+        .filter_map(|t| match &t.s {
+            crate::syntax::Node::Iri(i) => Some(i.as_str().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        classes.contains(&"http://example.org/C".to_string()),
+        "{classes:?}"
+    );
+    assert!(
+        !classes.contains(&"http://example.org/B".to_string()),
+        "{classes:?}"
     );
 }
 
