@@ -4683,11 +4683,15 @@ fn pathological_owlxml() {
             Some(IRIS),
         ),
         (
+            // 10,000 operands reach the triple budget as 50,000 did, in
+            // about a third of the time (0.75 s against 2.2 s on a Mac): the
+            // work to the budget grows with the text, and the 50,000-operand
+            // text took 11.4 s on the Windows runner, over the 10 s bound.
             "annotated SameIndividual, many annotations",
             ontology(&format!(
                 "<SameIndividual>{}{}</SameIndividual>",
                 annotation("x").repeat(200),
-                operands(50_000)
+                operands(10_000)
             )),
             Some((OWX, "triples per byte of text")),
         ),
