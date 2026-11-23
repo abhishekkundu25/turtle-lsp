@@ -5,12 +5,22 @@ Copied without the generated reports so the conformance tests run offline.
 | Suite | Source | Commit |
 |---|---|---|
 | `rdf-tests/` (Turtle, TriG, N-Triples, N-Quads; RDF 1.1 and 1.2) | https://github.com/w3c/rdf-tests | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
+| `rdf-tests/rdf11/rdf-xml/` (RDF/XML 1.1; without the report generator `convert-manifest.rb` and `template.haml` and the archives `TESTS.zip` and `TESTS.tar.gz`) | https://github.com/w3c/rdf-tests (`rdf/rdf11/rdf-xml`) | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
 | `sparql-tests/` (SPARQL 1.1 `syntax-query`, `syntax-update-1`, `syntax-update-2`, `syntax-fed`; SPARQL 1.2 without reports) | https://github.com/w3c/rdf-tests (`sparql/`) | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
 | `sparql-tests/sparql11/{aggregates,bind,construct,exists,functions,grouping,negation,property-path,subquery}` (SPARQL 1.1 query evaluation: `.rq`, `.ttl`, `.srx`, `.srj`, manifests and one empty `.nt`; 510 files, 275 KB) | https://github.com/w3c/rdf-tests (`sparql/sparql11/`) | `d5d930b03ee6b63b388d0bb28fdb29ee78a59ec0` |
 | `shacl/core/` (SHACL Core) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/core`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 | `shacl/sparql/` (SHACL-SPARQL) | https://github.com/w3c/data-shapes (`data-shapes-test-suite/tests/sparql`) | `8c9d0f6a20667fbfc24bbcd18e919da6b5ffac53` |
 
 Each directory keeps its upstream licence (`LICENSE.md`).
+
+## RDF/XML 1.1
+
+The parser is private to the crate, so its runner is a unit test beside it
+(`rdfxml_w3c_suite` in `src/rdfxml/grammar.rs`), and `tests/w3c_conformance.rs`
+skips the directory. An evaluation test passes when the graph is isomorphic
+to the expected N-Triples; a negative syntax test when at least one error is
+reported. The manifest's commented-out entries are not run. Result at the
+commit above: 166 of 166 pass.
 
 ## SPARQL 1.1 query evaluation
 

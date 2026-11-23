@@ -19,10 +19,13 @@
 //! below a workspace import, cycles stop) and join the knowledge index as
 //! read-only external sources: hover, completion and lints know their terms,
 //! but they are never diagnosed. Each is read in its own syntax (Turtle, TriG,
-//! N-Triples, N-Quads, JSON-LD) with our parser, chosen by the file's
-//! extension, else by what it starts with, never by the import IRI; RDF/XML is
-//! converted to N-Triples text first, so every source is an [`Analysis`] like
-//! any other.
+//! N-Triples, N-Quads, JSON-LD, RDF/XML) with our parser, chosen by the
+//! file's extension, else by what it starts with, never by the import IRI, so
+//! every source is an [`Analysis`] like any other. A local RDF/XML file is
+//! analysed over its own text, so locations point into it; a fetched one is
+//! converted to N-Triples text first, which is what the cache keeps. A document in OWL/XML, Functional or Manchester syntax is not
+//! read, and the import says so; one whose RDF/XML has errors is loaded but for
+//! what they break, with a warning on the import that says where the first is.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.
@@ -37,7 +40,7 @@ use crate::knowledge::{DocFacts, Knowledge, Source};
 use crate::server::worker::Fed;
 use crate::server::worker::{Feed, Spawn};
 use crate::syntax::{self, Iri, Node, PrefixMap};
-use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, path_to_uri};
+use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, canonical, path_to_uri, uri_to_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::RecvError;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -63,6 +66,10 @@ const KEY_PREFIX: &str = "import:";
 /// Command that fetches one import (arguments: `[iri]`), offered as a quick fix
 /// on its unresolved-import diagnostic.
 pub(crate) const FETCH_COMMAND: &str = "turtle.fetchImport";
+/// The code of the diagnostic on an import that is not loaded.
+const UNRESOLVED: &str = "unresolved-import";
+/// The code of the diagnostic on an import with an error in it.
+const TRUNCATED: &str = "import-truncated";
 
 /// How an import was resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +78,9 @@ pub enum Status {
     Local,
     /// Loaded from this file or URL.
     Loaded(String),
+    /// Loaded from this file or URL but for what its errors break; the
+    /// message says where the first is.
+    Truncated(String, String),
     /// Not loaded; the message says why and how to fix it.
     Unresolved(String),
 }
@@ -112,6 +122,9 @@ pub(crate) struct Done {
     generation: u64,
     status: Vec<(String, Status)>,
     loaded: Vec<Loaded>,
+    /// The workspace files the imports were read from, or failed to be
+    /// read from (canonical): see [`imports_file`].
+    files: FxHashSet<PathBuf>,
 }
 
 /// What one workspace document says about ontologies.
@@ -185,6 +198,8 @@ pub(crate) fn unresolved_without_loading(k: &Knowledge) -> Vec<String> {
 pub(crate) struct Resolved {
     pub(crate) status: FxHashMap<String, Status>,
     pub(crate) loaded: Vec<(String, Arc<Analysis>)>,
+    /// See [`Done::files`].
+    pub(crate) files: FxHashSet<PathBuf>,
 }
 
 impl Resolved {
@@ -237,7 +252,16 @@ pub(crate) fn resolve_now(k: &Knowledge, roots: &[PathBuf], network: bool) -> Re
             .into_iter()
             .map(|l| (l.key, l.analysis))
             .collect(),
+        files: done.files,
     }
+}
+
+/// Whether the workspace file at `uri` is what an import is read from:
+/// `files` is [`Done::files`] (through [`Imports::files`] or
+/// [`Resolved::files`]). A catalog entry or a `file:` IRI names it; an
+/// import, direct or through another import, asks for it.
+pub(crate) fn imports_file(files: &FxHashSet<PathBuf>, uri: &str) -> bool {
+    !files.is_empty() && uri_to_path(uri).is_some_and(|p| files.contains(&canonical(&p)))
 }
 
 #[cfg(test)]
@@ -262,6 +286,8 @@ pub(crate) struct Imports {
     /// Knowledge generation and network setting the last request was built from.
     seen: Option<(u64, bool)>,
     status: FxHashMap<String, Status>,
+    /// See [`Done::files`].
+    files: FxHashSet<PathBuf>,
     /// External source keys registered with the knowledge index.
     registered: FxHashSet<String>,
     /// Workspace URI -> its analysis when [`DocOnto`] was computed.
@@ -301,6 +327,7 @@ impl Imports {
             last: None,
             seen: None,
             status: FxHashMap::default(),
+            files: FxHashSet::default(),
             registered: FxHashSet::default(),
             per_doc: FxHashMap::default(),
             cache: match spawn {
@@ -415,6 +442,7 @@ impl Imports {
                 generation: self.generation,
                 status: vec![],
                 loaded: vec![],
+                files: FxHashSet::default(),
             });
         }
         if self.spawn == Spawn::Inline {
@@ -435,6 +463,7 @@ impl Imports {
                 generation: self.generation,
                 status,
                 loaded: vec![],
+                files: FxHashSet::default(),
             });
         }
         let job = Job {
@@ -513,7 +542,16 @@ impl Imports {
             self.status = status;
             changed = true;
         }
+        if done.files != self.files {
+            self.files = done.files;
+            changed = true;
+        }
         changed
+    }
+
+    /// The workspace files the imports are read from ([`imports_file`]).
+    pub(crate) fn files(&self) -> &FxHashSet<PathBuf> {
+        &self.files
     }
 
     /// The status of every import asked for so far, by IRI.
@@ -522,8 +560,9 @@ impl Imports {
     }
 }
 
-/// Information diagnostics on the unresolved imports of `a`, with the
-/// status of each import looked up by `status`.
+/// Diagnostics on the imports of `a`: information on one not loaded
+/// (`unresolved-import`), a warning on one with an error in it
+/// (`import-truncated`). The status of each import is looked up by `status`.
 pub fn diagnostics_with<'s>(
     a: &Analysis,
     enc: Encoding,
@@ -539,13 +578,15 @@ pub fn diagnostics_with<'s>(
         .filter(|t| t.p == p.imports)
         .filter_map(|t| {
             let Node::Iri(o) = &t.o else { return None };
-            let Some(Status::Unresolved(message)) = status(o) else {
-                return None;
+            let (severity, code, message) = match status(o)? {
+                Status::Unresolved(m) => (DiagnosticSeverity::INFORMATION, UNRESOLVED, m),
+                Status::Truncated(_, m) => (DiagnosticSeverity::WARNING, TRUNCATED, m),
+                Status::Local | Status::Loaded(_) => return None,
             };
             Some(Diagnostic {
                 range: a.range(enc, t.o_span),
-                severity: Some(DiagnosticSeverity::INFORMATION),
-                code: Some(NumberOrString::String("unresolved-import".into())),
+                severity: Some(severity),
+                code: Some(NumberOrString::String(code.into())),
                 source: Some(SOURCE.to_string()),
                 message: message.clone(),
                 ..Default::default()
@@ -569,7 +610,7 @@ pub(crate) fn fetch_actions(
     let mut out = Vec::new();
     for d in &params.context.diagnostics {
         if d.source.as_deref() != Some(SOURCE)
-            || d.code != Some(NumberOrString::String("unresolved-import".into()))
+            || d.code != Some(NumberOrString::String(UNRESOLVED.into()))
         {
             continue;
         }
@@ -750,6 +791,36 @@ mod tests {
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::INFORMATION));
         assert_eq!(d[0].range.start.character, 31);
         assert_eq!(d[0].message, "nope");
+    }
+
+    #[test]
+    fn an_import_loaded_in_part_gets_a_warning_and_no_fetch() {
+        let text =
+            format!("<http://ex.com/me> <{OWL_IMPORTS}> <http://ex.com/x>, <http://ex.com/y> .\n");
+        let a = Analysis::new("file:///d.ttl".into(), &text, Arc::default(), false);
+        let part = Status::Truncated("/w/x.owl".into(), "cut".into());
+        let whole = Status::Loaded("/w/y.owl".into());
+        let d = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(if i.ends_with('x') { &part } else { &whole })
+        });
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(d[0].code, Some(NumberOrString::String(TRUNCATED.into())));
+        assert_eq!(d[0].message, "cut");
+        assert_eq!(d[0].range.start.character, 59);
+        let params = CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier {
+                uri: "file:///d.ttl".parse().unwrap(),
+            },
+            range: d[0].range,
+            context: lsp_types::CodeActionContext {
+                diagnostics: d,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        assert!(fetch_actions(&a, Encoding::Utf16, &params).is_empty());
     }
 
     #[test]

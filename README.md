@@ -5,7 +5,8 @@
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust. It also
-reads TriG, N-Triples, N-Quads and JSON-LD, and SPARQL queries and updates.
+reads TriG, N-Triples, N-Quads, JSON-LD and RDF/XML (Protégé's `.owl`), and
+SPARQL queries and updates.
 
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
@@ -45,12 +46,13 @@ the full W3C test suites and real public ontologies; see
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
 - **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
 - **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
-- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
+- **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD or RDF/XML, followed up to 5 levels deep) feed hover, completion and lints; definition and "Described in" on a term of a local RDF/XML import open its line in the real file. An import in OWL/XML, Functional or Manchester syntax gets a message naming the format and how to save it as RDF/XML or Turtle in Protégé, and an RDF/XML import with an error part way through gets an `import-truncated` warning with the line and column. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
-- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)).
+- **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace, read-only: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, outline, folding and diagnostics at the exact attribute or name. Nothing writes RDF/XML: no formatting, rename, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
+- **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
 - **Reasoning** (on by default, with TurbOWL's default rules; `turtle.reasoning.rules` = `off` turns it off): TurbOWL, an OWL 2 RL reasoner, works out what the workspace and its imports imply, in the background after open, save and a pause in typing. Hover on a resource lists its inferred types under "Inferred", each with its proof: one W3C rule per step, each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on (off by default, since SHACL shapes often check the same rules), TurbOWL's findings, such as a member of two disjoint classes, are diagnostics on the term at fault, each triple of the proof a link to its line (`turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete` runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples` (default 2,000,000) is the most triples a run reads; past it, reasoning is skipped with a note. It also bounds the inferred triples read for hover: past it, hover says the list may be incomplete. An edit stops the run going on, and a run stops after 10 s; either way hover keeps the last result, and a stop at the time limit is reported (once as a message, then in the log) until a run finishes. Edits to SPARQL files do not rerun reasoning.
 
@@ -71,11 +73,13 @@ fails. A file whose SHA-256 differs from the checksum recorded in
 | W3C SHACL-SPARQL suite | 23 / 23 |
 | W3C JSON-LD 1.1 suites: toRdf, expand, remote-doc | 443, 365 and 6 pass; 2 known failures; the rest out of scope ³ |
 | JSON-LD on 364 public documents (schema.org examples, ActivityStreams, Verifiable Credentials 1.0 and 2.0, IIIF, DCAT-US, Croissant, GS1, DID) vs. [oxjsonld](https://crates.io/crates/oxjsonld) | Same graph for 339; the other 25 are known differences where oxjsonld departs from JSON-LD 1.1 ⁴ |
+| W3C RDF/XML suite (RDF 1.1) | 166 / 166 |
+| RDF/XML parser vs. [oxrdfxml](https://crates.io/crates/oxrdfxml) on FOAF, BFO, RO and PATO (270,000 triples) | Same graph on BFO, RO and PATO. FOAF differs in two `rdfs:comment` values, where XML 1.0 (3.3.3) makes a line end in an attribute a space and oxrdfxml keeps it. Every such case and its spec rule is listed in `src/rdfxml/grammar.rs` |
 | Parser vs. [Oxigraph](https://github.com/oxigraph/oxigraph) on public files (schema.org, Wikidata, DBpedia, QUDT, Brick, Gene Ontology, W3C vocabularies, a Web Data Commons N-Quads dump) | Same quads in 98 of 99 cases (2.56 million triples) ² |
 | Formatter on the same files | Never changed a graph, never dropped a comment; formatting twice changes nothing |
 | SPARQL on 1,317 real queries ([SIB sparql-examples](https://github.com/sib-swiss/sparql-examples): UniProt, Rhea, Bgee, neXtProt, ...) | Same verdict as [spargebra](https://crates.io/crates/spargebra) on all; the formatter kept every query's algebra and comments, and formatting twice changes nothing |
 | Gene Ontology (118 MB, 1.28 million triples) | Parsed in 0.4 s, formatted in 0.8 s |
-| Fuzz testing (`tests/chaos.rs`) | On every CI run (Linux and Windows; nightly 200,000 with a new seed), 30,000 randomly damaged Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with SPARQL among them), 30,000 JSON-LD documents and 30,000 SPARQL queries and updates, with every editor feature run on each, without a crash |
+| Fuzz testing (`tests/chaos.rs`) | On every CI run (Linux and Windows; nightly 200,000 with a new seed), 30,000 randomly damaged Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with SPARQL among them), 30,000 JSON-LD documents, 30,000 SPARQL queries and updates, and damaged RDF/XML documents, with every editor feature run on each, without a crash |
 | Resource checks | No CPU use while idle, no server left running after the editor quits |
 
 ¹ The one left is a SPARQL 1.2 proposal (a projected variable reused in a
@@ -480,6 +484,68 @@ against the JSON-LD 1.1 spec:
 `tests/jsonld_lints.rs` checks that the same documents get only the JSON-LD
 and vocabulary lints listed there, each checked by hand.
 
+## RDF/XML and Protégé files (`.owl`, `.rdf`)
+
+Protégé saves ontologies as RDF/XML by default, in `.owl` files. turtle-lsp
+reads `.owl` and `.rdf` files as workspace files, read-only.
+
+- **Which syntax**: the content decides, not the name. RDF/XML is read as
+  RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. An empty
+  `.owl` or `.rdf`, or one of white space only, is RDF/XML (no Turtle
+  completion or formatting until Turtle is written in it), and an XML file
+  with no root element is an `xml-syntax` error. A `.owl` in
+  OWL/XML, Functional or Manchester syntax is not read: it gets one
+  `unsupported-syntax` diagnostic that names the format and says how to save
+  it as RDF/XML or Turtle in Protégé (File > Save as). It is an error when an
+  import is read from the file, else a warning.
+- **One workspace**: classes and properties an RDF/XML file describes count
+  in Turtle, JSON-LD and SPARQL files (hover, completion, no
+  `undescribed-term`). `check` and `query` read these files, as do reasoning,
+  SHACL (data or shapes), the graph view and the Query Results panel. An
+  `owl:imports` of an ontology a workspace file states needs no catalog.
+- **Inside the file**: hover, definition, references, the reference lens,
+  outline, folding and type hierarchy, each on the exact attribute value or
+  qualified name. Diagnostics: XML and RDF/XML syntax errors with recovery
+  (`xml-syntax`, `rdfxml-syntax`), SHACL results, reasoning findings, and the
+  lints that need no edit (`invalid-literal`, `undescribed-term`,
+  `deprecated-term`).
+- **Nothing writes RDF/XML**: no formatting, rename, completion, quick fixes
+  or `check --fix` on RDF/XML; `format .` passes over it. A rename of a
+  term an RDF/XML workspace file uses is refused and names the file, so the
+  workspace never disagrees with itself. Edit these files in Protégé. A
+  `.owl` or `.rdf` that holds Turtle or JSON-LD is that syntax: `format`,
+  `check --fix` and editors that format it treat it as such (VS Code does
+  not offer to format any `.owl` or `.rdf`).
+- **Editors**: VS Code, Neovim and the browser editor attach to `.owl` and
+  `.rdf` files and leave them in the editor's XML language, with its own
+  highlighting. In VS Code a `.owl` opened with no folder does not start the
+  extension.
+- **Limits**: only UTF-8 is read; a file in another encoding gets an
+  `encoding` error, and an import that is not UTF-8 is not read. An XML
+  declaration that names another encoding is an `xml-syntax` error, except
+  in an ASCII file that names one extending ASCII (US-ASCII, ISO-8859-*,
+  windows-125*): its bytes read the same. Files over
+  50 MB are not read (the Gene Ontology's 118 MB `go.owl`): `check` reports
+  them as it does any file over the limit. A keystroke in PATO (20 MB) takes
+  about 90 ms. The browser editor reads files up to 10 MB, in UTF-8 only:
+  it names a file it does not read and its first bad byte.
+- **XML as the spec reads it**: line ends and attribute values are
+  normalized and internal entities expand, nested or holding markup, within
+  limits that refuse entity bombs and external entities. Namespace
+  declarations follow Namespaces in XML: `xml` and `xmlns` keep their own,
+  and an empty prefixed one is an error in XML 1.0.
+- **RDF 1.2**: triple terms (`rdf:parseType="Triple"`, `rdf:annotation`,
+  `rdf:annotationNodeID`) are read under any `rdf:version` (their grammar
+  has no version condition; the version is an announcement); `its:dir` only
+  under `1.2` or `1.2-basic`. The withdrawn
+  `rdf:bagID`, `rdf:aboutEach` and `rdf:aboutEachPrefix` are errors.
+
+The parser is turtle-lsp's own, so it can place every term and go on after
+an error. It passes the W3C RDF/XML suite (166/166) and reads the same graph
+as [oxrdfxml](https://crates.io/crates/oxrdfxml) from BFO, RO and PATO. From
+FOAF it differs in two comments, where it follows the XML rule for line ends
+in attribute values.
+
 ## Install
 
 - **VS Code:** install "Turtle RDF & SPARQL Language Server" from the
@@ -580,6 +646,11 @@ also brings:
 To change a setting, extend the config: for example
 `vim.lsp.config("turtle_lsp", { settings = { turtle = { format = { lineWidth = 80 } } } })`
 before `vim.lsp.enable`.
+
+`.owl` and `.rdf` buffers keep Neovim's `xml` file type; the plugin starts
+the same client for them, so hover, definition, references, outline and
+diagnostics work there; formatting gives no edits and a rename is refused. See
+[RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
 
 ### Reasoning, code lenses and queries in Neovim
 
@@ -1024,9 +1095,10 @@ Codes include `syntax`, `undeclared-prefix`, `unused-prefix`,
 `label-whitespace`, `multiple-labels`, the house-style codes (see
 [Features](#features)), `invalid-literal`, `unresolved-import`,
 `shacl-violation`, `shacl-failure`, `shacl-invalid-path`, `io` and
-`encoding`, and for JSON-LD `json-syntax`, `jsonld-context`,
+`encoding`, for JSON-LD `json-syntax`, `jsonld-context`,
 `jsonld-undefined-term`, `jsonld-undefined-prefix`, `invalid-iri` and
-`invalid-language-tag`. `turtle-lsp codes` lists them all, with whether each
+`invalid-language-tag`, and for RDF/XML `xml-syntax`, `rdfxml-syntax`,
+`unsupported-syntax` and `import-truncated`. `turtle-lsp codes` lists them all, with whether each
 is on by default (`--format json` too), and `turtle-lsp explain CODE` says
 what one means and how to turn it on or off in `turtle-lsp.json`. An unknown
 code in `--select` or `--ignore` prints the full list. `--format json` gives each problem's range, severity, code,

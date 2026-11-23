@@ -163,7 +163,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         .iter()
         .filter(|r| r.role != Role::Subject)
         .filter_map(|r| match r.form {
-            Form::A => None,
+            // The text at an anchor is not the term: nothing to report it at.
+            Form::A | Form::Anchor => None,
             Form::PName { prefix_len } => Some(TermUse {
                 span: r.span,
                 iri: r.iri,
@@ -179,8 +180,15 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
                 bare: None,
             }),
         });
-    let jsonld = a.parsed.syntax == Syntax::JsonLd;
-    undescribed_written(
+    // How a suggestion is spelt: where prefixes come from, and whether a
+    // full IRI is a JSON-LD string or a bare attribute value.
+    let (jsonld, xml) = match a.parsed.syntax {
+        Syntax::JsonLd => (true, false),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => (false, false),
+        // Its prefixes are the XML namespaces of its qualified names.
+        Syntax::RdfXml => (true, true),
+    };
+    let mut found = undescribed_written(
         uses,
         &a.text,
         k,
@@ -203,13 +211,23 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         },
         |span| a.range(enc, span),
         |written, used, s| {
-            if jsonld {
+            if xml {
+                s.to_string()
+            } else if jsonld {
                 jsonld_iri(written, used, s)
             } else {
                 format!("<{s}>")
             }
         },
-    )
+    );
+    // Nothing edits RDF/XML: the suggestion stays in the message, with no
+    // fix to apply.
+    if !super::writes(a.parsed.syntax) {
+        for d in &mut found {
+            d.data = None;
+        }
+    }
+    found
 }
 
 /// The prefixes a JSON-LD document uses, from its compact IRIs: each
@@ -432,5 +450,61 @@ mod tests {
         let mut s = Suggester::new();
         assert_eq!(s.suggest(&k, ns, "ab"), None);
         assert_eq!(s.searches, MAX_SUGGESTION_SEARCHES);
+    }
+
+    /// `undescribed-term` runs on RDF/XML (decision 8), its suggestion in
+    /// the message and spelt as the text spells the term (a qualified name
+    /// in the XML namespace in scope, else the IRI as an attribute value
+    /// holds it), with no fix: nothing edits RDF/XML.
+    #[test]
+    fn rdfxml_gets_undescribed_terms_with_no_fix() {
+        use crate::features::rdfxml_fixture as fx;
+        use crate::knowledge::Source;
+        let described = "@prefix ex: <http://example.org/> .\n\
+            ex:C a ex:C . ex:Pump a ex:C . ex:Valve a ex:C . ex:Tank a ex:C .\n\
+            ex:Gear a ex:C . ex:Belt a ex:C .\n";
+        let uses = "@prefix ex: <http://example.org/> .\nex:x a ex:Pmup .\n";
+        let found = |a: Analysis| {
+            let a = std::sync::Arc::new(a);
+            let mut k = Knowledge::default();
+            let d = Analysis::new(
+                "file:///w/d.ttl".into(),
+                described,
+                Default::default(),
+                true,
+            );
+            k.set("file:///w/d.ttl", Source::Open, std::sync::Arc::new(d));
+            k.set(&a.uri.clone(), Source::Open, a.clone());
+            undescribed_terms(&a, &k, Encoding::Utf8)
+                .into_iter()
+                .map(|d| (d.message, d.data.is_some()))
+                .collect::<Vec<_>>()
+        };
+        let uri = "file:///w/onto.owl";
+        let turtle =
+            Analysis::with_syntax(uri.into(), uses, Default::default(), true, Syntax::Turtle);
+        let did = "'ex:Pmup' is not described anywhere in the workspace. Did you mean 'ex:Pump'?";
+        assert_eq!(found(turtle), [(did.to_string(), true)]);
+        assert_eq!(found(fx::written(uri, uses)), [(did.to_string(), false)]);
+        let xml = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n\
+            \x20 <ex:Pmup rdf:about=\"http://example.org/x\"/>\n\
+            \x20 <rdf:Description rdf:about=\"http://example.org/y\">\n\
+            \x20   <rdf:type rdf:resource=\"http://example.org/Valv\"/>\n\
+            \x20 </rdf:Description>\n\
+            </rdf:RDF>\n";
+        let read = Analysis::with_syntax(uri.into(), xml, Default::default(), true, Syntax::RdfXml);
+        assert!(read.parsed.errors.is_empty(), "{:?}", read.parsed.errors);
+        assert_eq!(
+            found(read),
+            [
+                (did.to_string(), false),
+                (
+                    "'http://example.org/Valv' is not described anywhere in the workspace. \
+                     Did you mean 'http://example.org/Valve'?"
+                        .to_string(),
+                    false
+                ),
+            ]
+        );
     }
 }

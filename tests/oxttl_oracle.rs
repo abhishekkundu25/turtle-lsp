@@ -38,6 +38,7 @@ fn oxttl_quads(src: &str, syntax: Syntax) -> Result<Vec<oxrdf::Quad>, String> {
             })
             .collect(),
         Syntax::JsonLd => unreachable!("oxttl reads no JSON-LD"),
+        Syntax::RdfXml => unreachable!("oxttl reads no RDF/XML"),
     }
 }
 

@@ -345,7 +345,7 @@ ex:p1 a ex:Pump .
 `
   const CATALOG = `<?xml version="1.0" encoding="UTF-8"?>
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
-    <uri name="http://example.org/vendor" uri="vendor/vendor.rdf"/>
+    <uri name="http://example.org/vendor" uri="node_modules/vendor.rdf"/>
 </catalog>
 `
   const OF = (cls) => `PREFIX ex: <http://example.org/> SELECT ?s WHERE { ?s a ex:${cls} }`
@@ -357,9 +357,11 @@ ex:p1 a ex:Pump .
   async function workspace(initializationOptions) {
     const dir = tempDir("turtle-lsp-query-request-reasoning-")
     dirs.push(dir)
-    fs.mkdirSync(path.join(dir, "vendor"))
+    // In a folder the workspace leaves out, so it is read only as an import
+    // (an .rdf file in the workspace is data whatever the reasoning).
+    fs.mkdirSync(path.join(dir, "node_modules"))
     fs.writeFileSync(path.join(dir, "model.ttl"), MODEL)
-    fs.writeFileSync(path.join(dir, "vendor", "vendor.rdf"), VENDOR)
+    fs.writeFileSync(path.join(dir, "node_modules", "vendor.rdf"), VENDOR)
     fs.writeFileSync(path.join(dir, "catalog-v001.xml"), CATALOG)
     const s = await startServer({ cwd: dir, initializationOptions })
     try {

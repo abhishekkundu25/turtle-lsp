@@ -4,7 +4,7 @@
 import { SETS } from "./samples.js"
 import { $, esc } from "./dom.js"
 import { lineStarts, offsetOf, lineAt, applyEdits } from "./text.js"
-import { KNOWN, picked, walkDropped, admit, limitsNote } from "./files.js"
+import { KNOWN, picked, walkDropped, admit, limitsNote, readUtf8 } from "./files.js"
 
 const TOOLS = [
   { id: "format", name: "Format", glyph: "¶", job: "Lays the file out again. The graph (or the query's algebra) is checked to be the same before anything is shown." },
@@ -649,8 +649,20 @@ async function readFiles(entries, skippedBefore = 0) {
   const skipped = skippedBefore + entries.length - wanted.length + refused
   const named = take.map(({ file, path }) => ({ file, name: fromFolder({ path }) ? path.slice(path.indexOf("/") + 1) : file.name }))
   named.sort((a, b) => a.name.localeCompare(b.name))
-  addFiles(await Promise.all(named.map(async ({ file, name }) => ({ name, text: await file.text() }))))
-  if (skipped) notify(`${skipped} file${skipped === 1 ? "" : "s"} skipped: ${limitsNote()}.`)
+  const unread = []
+  const read = await Promise.all(
+    named.map(({ file, name }) =>
+      readUtf8(file).then(
+        (text) => ({ name, text }),
+        (e) => void unread.push(`${name} not read: ${e.message}`)
+      )
+    )
+  )
+  addFiles(read.filter(Boolean))
+  const notes = []
+  if (unread.length) notes.push(unread.length > 3 ? `${unread.slice(0, 3).join(", ")} and ${unread.length - 3} more not read` : unread.join(", "))
+  if (skipped) notes.push(`${skipped} file${skipped === 1 ? "" : "s"} skipped: ${limitsNote()}`)
+  if (notes.length) notify(`${notes.join(". ")}.`)
 }
 async function readDropped(items) {
   const { entries, skipped } = await walkDropped(items)

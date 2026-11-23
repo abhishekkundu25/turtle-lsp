@@ -64,6 +64,54 @@ test("each file's kind comes from its name", () => {
   assert.deepEqual(kinds, ["turtle", "trig", "ntriples", "nquads", "sparql", "sparql", "sparql"])
 })
 
+// --- RDF/XML -------------------------------------------------------------------
+
+// Blank nodes as a nested element, a parseType="Resource" and a collection.
+const OWL = `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:ex="http://example.org/">
+    <owl:Class rdf:about="http://example.org/Pet">
+        <rdfs:label> Pet </rdfs:label>
+        <owl:equivalentClass>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://example.org/Cat"/>
+                    <rdf:Description rdf:about="http://example.org/Dog"/>
+                </owl:unionOf>
+            </owl:Class>
+        </owl:equivalentClass>
+    </owl:Class>
+    <ex:Pet rdf:about="http://example.org/rex">
+        <ex:address rdf:parseType="Resource"><ex:city>Paris</ex:city></ex:address>
+    </ex:Pet>
+</rdf:RDF>
+`
+
+test("an .owl or .rdf file is read by its content: RDF/XML with blank nodes is data, never formatted or fixed; Turtle under that name is Turtle", () => {
+  const files = [
+    { name: "onto.owl", text: OWL },
+    { name: "data.rdf", text: OWL.replace("</owl:Class>\n    <ex:Pet", "</owl:Clas>\n    <ex:Pet") },
+    { name: "turtle.owl", text: "@prefix ex: <http://example.org/> .\nex:tom a ex:Pet .\n" },
+  ]
+  const res = engine.call("analyse", { files })
+  assert.deepEqual(res.files.map((f) => f.kind), ["rdfxml", "rdfxml", "turtle"])
+  assert.deepEqual(fileOf(res, "onto.owl").format, { status: "refused", guarantee: "same graph", reason: "RDF/XML" })
+  // The element the stray end tag leaves open, and that end tag.
+  assert.deepEqual(withCode(fileOf(res, "data.rdf"), "xml-syntax").map((d) => d.range.start.line), [5, 15])
+  const q = (text) => engine.call("query", { files: [{ name: "onto.owl", text: OWL }, { name: "q.rq", text }], query: "q.rq" })
+  const members = q("SELECT ?m WHERE { ?c <http://www.w3.org/2002/07/owl#unionOf>/<http://www.w3.org/1999/02/22-rdf-syntax-ns#rest>*/<http://www.w3.org/1999/02/22-rdf-syntax-ns#first> ?m } ORDER BY ?m")
+  assert.deepEqual(members.rows, [["<http://example.org/Cat>"], ["<http://example.org/Dog>"]])
+  const city = q('ASK { <http://example.org/rex> <http://example.org/address> [ <http://example.org/city> "Paris" ] }')
+  assert.equal(city.boolean, true)
+  // The label's whitespace has a fix in Turtle; nothing writes the RDF/XML.
+  const fixed = engine.call("fix_all", { files })
+  assert.equal(fixed.files.find((f) => f.name === "onto.owl").text, OWL)
+  assert.equal(fixed.files.find((f) => f.name === "data.rdf").text, files[1].text)
+  assert.equal(fileOf(res, "turtle.owl").format.status, "changed")
+})
+
 // --- query ---------------------------------------------------------------------
 
 // The sample workspace with `text` as q.rq, asked to run q.rq.

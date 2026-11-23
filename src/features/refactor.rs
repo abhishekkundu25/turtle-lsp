@@ -7,7 +7,7 @@ use crate::syntax::lexer::{Kind, Token};
 use crate::syntax::names::{
     declarable_namespace, is_pn_local, is_pn_prefix, newline, shorten, turtle_token_edits,
 };
-use crate::syntax::{Form, PrefixDecl, Ref, Span};
+use crate::syntax::{Form, PrefixDecl, Ref, Span, Syntax};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
@@ -25,9 +25,11 @@ pub fn code_actions(
     params: &CodeActionParams,
     lazy: bool,
 ) -> Vec<CodeActionOrCommand> {
-    // Every refactoring here reads or writes prefixes, which N-Triples and N-Quads lack.
-    if !a.parsed.syntax.has_prefixes() {
-        return Vec::new();
+    // Every refactoring here reads or writes prefixes, which N-Triples and
+    // N-Quads lack and JSON-LD keeps in its context; RDF/XML is not edited.
+    match a.parsed.syntax {
+        Syntax::Turtle | Syntax::TriG => {}
+        Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd | Syntax::RdfXml => return Vec::new(),
     }
     let uri = &params.text_document.uri;
     let only = params.context.only.as_deref();
@@ -89,7 +91,8 @@ pub fn code_actions(
                     );
                 }
             }
-            Form::A => {}
+            // Nothing writes at an anchor: its text is not the IRI.
+            Form::A | Form::Anchor => {}
         }
     }
 
@@ -122,8 +125,13 @@ pub fn code_actions(
     out
 }
 
-/// Fill in the edit of a file-wide action returned without one.
+/// Fill in the edit of a file-wide action returned without one; none in a
+/// document that is not edited ([`super::writes`]: RDF/XML), which an action
+/// offered before the document's syntax changed can name.
 pub(crate) fn resolve(a: &Analysis, enc: Encoding, mut action: CodeAction) -> CodeAction {
+    if !super::writes(a.parsed.syntax) {
+        return action;
+    }
     let Some(data) = action.data.as_ref() else {
         return action;
     };
@@ -655,7 +663,7 @@ pub fn edits_of(a: &Analysis, enc: Encoding, action: &CodeAction) -> Vec<TextEdi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::PrefixMap;
+    use crate::syntax::{PrefixMap, Syntax};
     use std::sync::Arc;
 
     fn analysis(uri: &str, text: &str) -> Analysis {
@@ -698,6 +706,83 @@ mod tests {
         let out = apply(&a, Encoding::Utf16, &edits_of(&a, Encoding::Utf16, &action));
         assert_eq!(triples(text), triples(&out), "graph changed:\n{out}");
         Some(out)
+    }
+
+    /// A reference whose text is not at its span ([`Form::Anchor`]) is
+    /// neither shortened nor expanded.
+    #[test]
+    fn an_anchored_reference_is_never_rewritten() {
+        let text = "@prefix ex: <http://example.org/> .\nex:s ex:p <http://example.org/o> .\n";
+        let titles = |a: &Analysis, needle: &str| -> Vec<String> {
+            let off = text.find(needle).unwrap() + needle.len() - 1;
+            code_actions(a, Encoding::Utf16, &params(a, off), false)
+                .into_iter()
+                .filter_map(|c| match c {
+                    CodeActionOrCommand::CodeAction(c) => Some(c.title),
+                    _ => None,
+                })
+                .filter(|t| t.starts_with("Shorten IRI") || t.starts_with("Expand"))
+                .collect()
+        };
+        let written = analysis("file:///t/doc.ttl", text);
+        assert_eq!(titles(&written, "ex:p"), ["Expand to full IRI"]);
+        assert_eq!(titles(&written, "example.org/o"), ["Shorten IRI to ex:o"]);
+        for syntax in [Syntax::Turtle, Syntax::RdfXml] {
+            let anchored = Analysis::anchored("file:///t/doc.ttl", text, syntax);
+            for needle in ["ex:p", "example.org/o"] {
+                assert_eq!(
+                    titles(&anchored, needle),
+                    Vec::<String>::new(),
+                    "{syntax:?} {needle}"
+                );
+            }
+        }
+    }
+
+    /// No refactoring of any kind in an RDF/XML document, at any reference,
+    /// lazy or not, whatever the form of its references; and an action
+    /// offered before the document became RDF/XML resolves to no edit.
+    #[test]
+    fn rdfxml_gets_no_refactoring() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///t/doc.ttl";
+        let ttl =
+            Analysis::with_syntax(uri.into(), fx::TURTLE, Arc::default(), true, Syntax::Turtle);
+        let owl = fx::written(uri, fx::TURTLE);
+        let read = fx::read(uri);
+        let titles = |a: &Analysis, off: u32, lazy: bool| -> Vec<String> {
+            code_actions(a, Encoding::Utf16, &params(a, off as usize), lazy)
+                .into_iter()
+                .map(|c| match c {
+                    CodeActionOrCommand::CodeAction(c) => c.title,
+                    CodeActionOrCommand::Command(c) => c.title,
+                })
+                .collect()
+        };
+        for lazy in [false, true] {
+            let mut offered = FxHashSet::default();
+            for r in &ttl.parsed.refs {
+                offered.extend(titles(&ttl, r.span.start + 1, lazy));
+                assert_eq!(titles(&owl, r.span.start + 1, lazy), Vec::<String>::new());
+            }
+            for r in &read.parsed.refs {
+                assert_eq!(titles(&read, r.span.start + 1, lazy), Vec::<String>::new());
+            }
+            for title in [
+                "Organise prefixes",
+                "Shorten IRI to ex:b",
+                "Shorten all IRIs in file",
+            ] {
+                assert!(offered.contains(title), "{lazy} {title}: {offered:?}");
+            }
+        }
+        let lazy = CodeAction {
+            title: "Shorten all IRIs in file".into(),
+            data: Some(json!({ "uri": uri, "turtle": SHORTEN_ALL })),
+            ..Default::default()
+        };
+        assert!(resolve(&ttl, Encoding::Utf16, lazy.clone()).edit.is_some());
+        assert_eq!(resolve(&owl, Encoding::Utf16, lazy.clone()), lazy);
     }
 
     #[test]

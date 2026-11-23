@@ -7,7 +7,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::is_pn_prefix;
-use crate::syntax::{Form, Iri, IriKey, PrefixMap, Span, Syntax};
+use crate::syntax::{Form, Iri, IriKey, Node, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, as_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -24,6 +24,15 @@ pub(crate) enum Target {
 }
 
 pub(crate) fn target_at(a: &Analysis, offset: u32) -> Option<(Target, Span)> {
+    // An XML namespace prefix is no Turtle prefix: in RDF/XML every
+    // reference is its IRI, whatever part of it the cursor is on.
+    match a.parsed.syntax {
+        Syntax::RdfXml => {
+            let r = a.ref_at(offset)?;
+            return Some((Target::Iri(r.iri), r.span));
+        }
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {}
+    }
     if let Some(p) = a
         .parsed
         .prefixes
@@ -77,6 +86,15 @@ thread_local! {
 /// A document's path for a message, else its URI.
 pub(crate) fn shown(uri: &str) -> String {
     uri_to_path(uri).map_or_else(|| uri.to_string(), |p| p.display().to_string())
+}
+
+/// Why a rename that would edit the document at `uri`, which
+/// [`super::writes`] refuses, is refused.
+fn not_edited(uri: &str) -> String {
+    format!(
+        "can't rename in {}: an RDF/XML document is not edited",
+        shown(uri)
+    )
 }
 
 fn loc(a: &Analysis, enc: Encoding, span: Span) -> Option<Location> {
@@ -387,12 +405,16 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
 }
 
 /// What a rename at `pos` would change; `Err` for a JSON-LD term of a
-/// bundled or remote context, which can't be renamed.
+/// bundled or remote context, which can't be renamed. Nothing in a document
+/// that is not edited ([`super::writes`]: RDF/XML).
 pub fn prepare_rename(
     a: &Analysis,
     enc: Encoding,
     pos: Position,
 ) -> Result<Option<PrepareRenameResponse>, String> {
+    if !super::writes(a.parsed.syntax) {
+        return Ok(None);
+    }
     let Some(offset) = a.offset(enc, pos) else {
         return Ok(None);
     };
@@ -406,7 +428,8 @@ pub fn prepare_rename(
 
 fn prepare_iri_rename(a: &Analysis, enc: Encoding, offset: u32) -> Option<PrepareRenameResponse> {
     let r = a.ref_at(offset);
-    if r.is_some_and(|r| r.form == Form::A) {
+    // `a` has no name to change, and the text at an anchor is not the name.
+    if r.is_some_and(|r| matches!(r.form, Form::A | Form::Anchor)) {
         return None;
     }
     let (_, span) = target_at(a, offset)?;
@@ -427,7 +450,9 @@ pub struct PrefixScope<'a> {
 /// `new_name` may be a local name (`robert`), a prefixed name (`ex:robert`)
 /// or a full IRI (`<http://...>`); each occurrence keeps its file's style.
 /// A JSON-LD term (or keyword alias) is renamed as a term
-/// ([`jsonld::term_rename`]).
+/// ([`jsonld::term_rename`]). `Err` when `a` is not edited
+/// ([`super::writes`]: RDF/XML), and a prefix rename leaves such documents
+/// out.
 pub fn rename(
     a: &Analysis,
     k: &Knowledge,
@@ -436,6 +461,9 @@ pub fn rename(
     new_name: &str,
     scope: PrefixScope,
 ) -> Result<WorkspaceEdit, String> {
+    if !super::writes(a.parsed.syntax) {
+        return Err(not_edited(&a.uri));
+    }
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
     if let Some(t) = jsonld::term_at(a, offset) {
         return Ok(WorkspaceEdit {
@@ -474,6 +502,7 @@ pub fn rename(
                 }
                 for (_, src, d) in k.docs() {
                     if src == Source::External
+                        || !super::writes(d.parsed.syntax)
                         || d.uri == a.uri
                         || d.uri == source.uri
                         || is_prefix_file(d)
@@ -558,7 +587,13 @@ pub(crate) fn renamed_iri_at(
     new_name: &str,
 ) -> Result<String, String> {
     let prefixes = jsonld::prefixes_at(a, offset);
-    if a.parsed.syntax == Syntax::JsonLd
+    // An RDF/XML document is never renamed in ([`rename`] refuses); the new
+    // name is read as in Turtle.
+    let bare_iri = match a.parsed.syntax {
+        Syntax::JsonLd => true,
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => false,
+    };
+    if bare_iri
         && let Some((p, rest)) = new_name.split_once(':')
         && !prefixes.contains_key(p)
         && rest.starts_with("//")
@@ -602,8 +637,16 @@ fn checked_iri(iri: String) -> Result<String, String> {
 /// workspace's RDF documents (imports left out): each use keeps its form, a
 /// prefixed name when a prefix of its document shortens the new IRI. A
 /// JSON-LD document writes each use in its own form, never in angle
-/// brackets ([`jsonld::iri_rename`]). `Err` (the whole rename refused) when
-/// a JSON-LD use cannot be rewritten.
+/// brackets ([`jsonld::iri_rename`]). `Err` (the whole rename refused, with
+/// nothing added to `changes`) when a workspace document that is not edited
+/// ([`super::writes`]: RDF/XML) uses `old`, in any form: renaming the other
+/// uses would leave a workspace that disagrees with itself. Such a document
+/// uses every IRI its triples name, including the vocabulary a production
+/// implies (`rdf:type`, `rdf:first`, `xsd:string`) and the names read from
+/// an entity reference, which share its span and have no reference of
+/// their own ([`rdfxml_names`]). Also `Err` when a
+/// JSON-LD use cannot be rewritten. An anchored use ([`Form::Anchor`]) of a
+/// Turtle-family document is left as it is: its text is not the IRI.
 pub(crate) fn rename_term(
     k: &Knowledge,
     enc: Encoding,
@@ -611,24 +654,41 @@ pub(crate) fn rename_term(
     new_iri: &str,
     changes: &mut HashMap<Uri, Vec<TextEdit>>,
 ) -> Result<(), String> {
+    let (mut jsonld_docs, mut turtle_docs) = (Vec::new(), Vec::new());
+    for (_, _, other) in k
+        .docs_referencing(old)
+        .filter(|(_, src, _)| *src != Source::External)
+    {
+        match other.parsed.syntax {
+            Syntax::RdfXml => return Err(not_edited(&other.uri)),
+            Syntax::JsonLd => jsonld_docs.push(other),
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+                turtle_docs.push(other)
+            }
+        }
+    }
+    if let Some(old) = Iri::get(old) {
+        let names_old = k
+            .docs()
+            .filter(|(_, src, d)| *src != Source::External && rdfxml_names(d, old))
+            .map(|(_, _, d)| &d.uri)
+            .min();
+        if let Some(uri) = names_old {
+            return Err(not_edited(uri));
+        }
+    }
     let mut jsonld_changes = jsonld::Changes {
         by_uri: std::mem::take(changes),
     };
-    let refused = k
-        .docs_referencing(old)
-        .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax == Syntax::JsonLd)
-        .try_for_each(|(_, _, other)| {
-            jsonld::iri_rename(other, k, enc, old, new_iri, &mut jsonld_changes)
-        });
+    let refused = jsonld_docs
+        .into_iter()
+        .try_for_each(|other| jsonld::iri_rename(other, k, enc, old, new_iri, &mut jsonld_changes));
     *changes = jsonld_changes.by_uri;
     refused?;
-    for (_, _, other) in k
-        .docs_referencing(old)
-        .filter(|(_, src, other)| *src != Source::External && other.parsed.syntax != Syntax::JsonLd)
-    {
+    for other in turtle_docs {
         let mut uses: Vec<(Span, Form)> = other
             .refs_of(old)
-            .filter(|r| r.form != Form::A)
+            .filter(|r| !matches!(r.form, Form::A | Form::Anchor))
             .map(|r| (r.span, r.form))
             .collect();
         uses.sort_by_key(|(s, _)| s.start);
@@ -652,6 +712,26 @@ pub(crate) fn rename_term(
         }
     }
     Ok(())
+}
+
+/// Whether `a` is an RDF/XML document whose triples name `iri`, as subject,
+/// predicate, object or datatype, or inside a triple term. Its references
+/// do not say it all: an entity reference stands for everything read from
+/// it, and a production implies vocabulary no name is written for.
+fn rdfxml_names(a: &Analysis, iri: Iri) -> bool {
+    fn names(n: &Node, iri: Iri) -> bool {
+        match n {
+            Node::Iri(i) => *i == iri,
+            Node::Literal { datatype, .. } => *datatype == iri,
+            Node::Triple(t) => names(&t.0, iri) || t.1 == iri || names(&t.2, iri),
+            Node::Blank(_) => false,
+        }
+    }
+    a.parsed.syntax == Syntax::RdfXml
+        && a.parsed
+            .triples
+            .iter()
+            .any(|t| t.p == iri || names(&t.s, iri) || names(&t.o, iri))
 }
 
 #[cfg(test)]
@@ -884,5 +964,463 @@ mod tests {
         let edit = rename(&open, &k, Encoding::Utf8, at, "t", scope).unwrap();
         assert_eq!(edit.changes.unwrap().len(), 2);
         assert!(!closed.has_tokens());
+    }
+
+    /// A use whose text is not at its span ([`Form::Anchor`]) is never
+    /// written over: a rename from elsewhere leaves it, and none starts at it.
+    #[test]
+    fn an_anchored_use_is_never_renamed() {
+        let text = "@prefix ex: <http://example.org/> .\nex:s ex:p <http://example.org/o> .\n";
+        let at = |a: &Analysis, needle: &str| {
+            a.position(
+                Encoding::Utf8,
+                (text.find(needle).unwrap() + needle.len() - 1) as u32,
+            )
+        };
+        let open = Arc::new(Analysis::new(
+            "file:///w/a.ttl".into(),
+            text,
+            Arc::default(),
+            true,
+        ));
+        let renamed = |other: Arc<Analysis>| -> Vec<String> {
+            let mut k = Knowledge::default();
+            k.set("file:///w/a.ttl", Source::Open, open.clone());
+            k.set("file:///w/b.ttl", Source::Disk, other);
+            let scope = PrefixScope {
+                file: None,
+                file_of: &mut |_| None,
+            };
+            let edit = rename(&open, &k, Encoding::Utf8, at(&open, "ex:s"), "t", scope).unwrap();
+            let mut uris: Vec<String> = edit
+                .changes
+                .unwrap()
+                .into_keys()
+                .map(|u| u.to_string())
+                .collect();
+            uris.sort();
+            uris
+        };
+        let written = Arc::new(Analysis::new(
+            "file:///w/b.ttl".into(),
+            text,
+            Arc::default(),
+            true,
+        ));
+        assert_eq!(renamed(written), ["file:///w/a.ttl", "file:///w/b.ttl"]);
+        let anchored = Arc::new(Analysis::anchored("file:///w/b.ttl", text, Syntax::Turtle));
+        assert_eq!(renamed(anchored), ["file:///w/a.ttl"]);
+        // An RDF/XML document refuses the rename instead
+        // (`a_term_an_rdfxml_document_uses_is_not_renamed`).
+        for syntax in [Syntax::Turtle, Syntax::RdfXml] {
+            let anchored = Arc::new(Analysis::anchored("file:///w/b.ttl", text, syntax));
+            for needle in ["ex:s", "ex:p", "example.org/o"] {
+                let got = prepare_rename(&anchored, Encoding::Utf8, at(&anchored, needle)).unwrap();
+                assert_eq!(got, None, "{syntax:?} {needle}");
+            }
+        }
+        for needle in ["ex:s", "ex:p", "example.org/o"] {
+            let got = prepare_rename(&open, Encoding::Utf8, at(&open, needle)).unwrap();
+            assert!(got.is_some(), "{needle}");
+        }
+    }
+
+    use crate::features::rdfxml_fixture;
+
+    const OWL_URI: &str = "file:///w/onto.owl";
+
+    /// `name` in the folder `/w` (`C:\w` on Windows): its path, and its URI
+    /// as the workspace makes it. A URI with no drive is no path on Windows.
+    fn in_w(name: &str) -> (std::path::PathBuf, String) {
+        let path = std::path::Path::new(if cfg!(windows) { "C:\\w" } else { "/w" }).join(name);
+        let uri = crate::workspace::path_to_uri(&path).unwrap();
+        (path, uri)
+    }
+
+    fn turtle_doc(uri: &str, text: &str) -> Arc<Analysis> {
+        Arc::new(Analysis::new(uri.into(), text, Arc::default(), true))
+    }
+
+    /// The offset of the first `needle` in `text`, plus `plus`.
+    fn offset_of(text: &str, needle: &str, plus: usize) -> u32 {
+        (text.find(needle).unwrap_or_else(|| panic!("{needle}")) + plus) as u32
+    }
+
+    /// Decision 9: a term that a workspace RDF/XML document uses, in any
+    /// form, is renamed nowhere, and the message names that document. An
+    /// import in RDF/XML neither refuses nor is edited.
+    #[test]
+    fn a_term_an_rdfxml_document_uses_is_not_renamed() {
+        let text = "@prefix ex: <http://example.org/> .\nex:a ex:p ex:zz .\n";
+        let ttl = turtle_doc("file:///w/a.ttl", text);
+        let at = ttl.position(Encoding::Utf8, offset_of(text, "ex:a", 3));
+        // The message names the document by its path.
+        let (owl_path, owl_uri) = in_w("onto.owl");
+        let owl_shown = owl_path.display().to_string();
+        let owls = [
+            ("read", Arc::new(rdfxml_fixture::read(&owl_uri))),
+            (
+                "written",
+                Arc::new(rdfxml_fixture::written(&owl_uri, rdfxml_fixture::TURTLE)),
+            ),
+        ];
+        for (how, owl) in owls {
+            assert!(
+                owl.refs_of("http://example.org/a").next().is_some(),
+                "{how}"
+            );
+            let mut k = Knowledge::default();
+            k.set("file:///w/a.ttl", Source::Open, ttl.clone());
+            k.set(&owl_uri, Source::Disk, owl.clone());
+            let err = rename(
+                &ttl,
+                &k,
+                Encoding::Utf8,
+                at,
+                "z",
+                PrefixScope {
+                    file: None,
+                    file_of: &mut |_| None,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                format!("can't rename in {owl_shown}: an RDF/XML document is not edited"),
+                "{how}"
+            );
+            // Nothing is added to the changes a caller already holds.
+            let mut changes = HashMap::new();
+            let old = "http://example.org/a";
+            let refused = rename_term(
+                &k,
+                Encoding::Utf8,
+                old,
+                "http://example.org/z",
+                &mut changes,
+            );
+            assert!(refused.unwrap_err().contains(&owl_shown), "{how}");
+            assert!(changes.is_empty(), "{how}");
+            // A term it does not use is renamed as before.
+            let at_p = ttl.position(Encoding::Utf8, offset_of(text, "ex:zz", 3));
+            let edit = rename(
+                &ttl,
+                &k,
+                Encoding::Utf8,
+                at_p,
+                "c",
+                PrefixScope {
+                    file: None,
+                    file_of: &mut |_| None,
+                },
+            )
+            .unwrap();
+            let uris: Vec<String> = edit
+                .changes
+                .unwrap()
+                .keys()
+                .map(|u| u.to_string())
+                .collect();
+            assert_eq!(uris, ["file:///w/a.ttl"], "{how}");
+
+            // An import is never edited, so it does not refuse either.
+            let mut k = Knowledge::default();
+            k.set("file:///w/a.ttl", Source::Open, ttl.clone());
+            k.add_external("http://example.org/onto", owl);
+            let edit = rename(
+                &ttl,
+                &k,
+                Encoding::Utf8,
+                at,
+                "z",
+                PrefixScope {
+                    file: None,
+                    file_of: &mut |_| None,
+                },
+            )
+            .unwrap();
+            let uris: Vec<String> = edit
+                .changes
+                .unwrap()
+                .keys()
+                .map(|u| u.to_string())
+                .collect();
+            assert_eq!(uris, ["file:///w/a.ttl"], "{how}");
+        }
+    }
+
+    /// The IRIs `n` names: itself, a literal's datatype, a triple term's.
+    fn iris_of(n: &Node, out: &mut Vec<Iri>) {
+        match n {
+            Node::Iri(i) => out.push(*i),
+            Node::Literal { datatype, .. } => out.push(*datatype),
+            Node::Triple(t) => {
+                iris_of(&t.0, out);
+                out.push(t.1);
+                iris_of(&t.2, out);
+            }
+            Node::Blank(_) => {}
+        }
+    }
+
+    /// The names and values an entity reference expands to share its span
+    /// and have no reference of their own, but are in the triples: a Turtle
+    /// document's rename of such an IRI is refused all the same.
+    #[test]
+    fn a_term_an_rdfxml_entity_uses_is_not_renamed() {
+        let text = "@prefix ex: <urn:ex:> .\nex:a ex:q <urn:ex:target> .\n";
+        let ttl = turtle_doc("file:///w/a.ttl", text);
+        let (owl_path, owl_uri) = in_w("onto.owl");
+        let owl_text = "<!DOCTYPE r [<!ENTITY m \"<e:p rdf:resource='urn:ex:target'/>\">]>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:e=\"urn:ex:\">\n\
+            <rdf:Description rdf:about=\"urn:ex:s\">&m;</rdf:Description>\n\
+            </rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            owl_text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        assert!(owl.parsed.errors.is_empty(), "{:?}", owl.parsed.errors);
+        let target = "urn:ex:target";
+        let mut named = Vec::new();
+        for t in &owl.parsed.triples {
+            iris_of(&t.o, &mut named);
+        }
+        assert!(named.iter().any(|i| *i == target), "{named:?}");
+        let mut k = Knowledge::default();
+        k.set("file:///w/a.ttl", Source::Open, ttl.clone());
+        k.set(&owl_uri, Source::Disk, owl);
+        let at = ttl.position(Encoding::Utf8, offset_of(text, "target", 0));
+        let err = rename(
+            &ttl,
+            &k,
+            Encoding::Utf8,
+            at,
+            "z",
+            PrefixScope {
+                file: None,
+                file_of: &mut |_| None,
+            },
+        )
+        .unwrap_err();
+        let owl_shown = owl_path.display().to_string();
+        assert_eq!(
+            err,
+            format!("can't rename in {owl_shown}: an RDF/XML document is not edited")
+        );
+    }
+
+    /// Every IRI in a workspace RDF/XML document's triples refuses a rename
+    /// of it, whatever production gave it: `rdf:li`, `rdf:ID` against
+    /// `xml:base`, a typed node element, the collection, resource and
+    /// literal parse types, reification, a triple term, datatypes, and the vocabulary
+    /// these imply (`rdf:type`, `rdf:first`, `xsd:string`).
+    #[test]
+    fn every_iri_an_rdfxml_document_says_refuses_a_rename() {
+        let (_, owl_uri) = in_w("onto.owl");
+        let owl_text = "<!DOCTYPE r [<!ENTITY m \"<e:in rdf:resource='urn:ex:inner'/>\">\
+            <!ENTITY q \"<rdf:Description rdf:about='urn:ex:qs'><e:qp rdf:resource='urn:ex:qo'/></rdf:Description>\">]>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:e=\"urn:ex:\"\n\
+            \x20   xml:base=\"http://example.org/base/\" rdf:version=\"1.2\">\n\
+            <e:T rdf:about=\"s\" e:attr=\"v\">\n\
+            \x20 <e:p rdf:ID=\"st\" rdf:resource=\"o\"/>\n\
+            \x20 <e:list rdf:parseType=\"Collection\"><e:Item rdf:about=\"i1\"/></e:list>\n\
+            \x20 <e:res rdf:parseType=\"Resource\"><e:q xml:lang=\"en\">x</e:q></e:res>\n\
+            \x20 <e:xml rdf:parseType=\"Literal\"><b>y</b></e:xml>\n\
+            \x20 <e:n rdf:datatype=\"http://www.w3.org/2001/XMLSchema#integer\">1</e:n>\n\
+            \x20 &m;\n\
+            \x20 <e:quotes rdf:parseType=\"Triple\">&q;</e:quotes>\n\
+            </e:T>\n\
+            <rdf:Seq rdf:about=\"seq\"><rdf:li>a</rdf:li></rdf:Seq>\n\
+            </rdf:RDF>\n";
+        let owl = Arc::new(Analysis::with_syntax(
+            owl_uri.clone(),
+            owl_text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        assert!(owl.parsed.errors.is_empty(), "{:?}", owl.parsed.errors);
+        let mut iris = Vec::new();
+        for t in &owl.parsed.triples {
+            iris_of(&t.s, &mut iris);
+            iris.push(t.p);
+            iris_of(&t.o, &mut iris);
+        }
+        iris.sort();
+        iris.dedup();
+        for want in [
+            "http://example.org/base/s",
+            "http://example.org/base/#st",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#_1",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#first",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral",
+            "http://www.w3.org/2001/XMLSchema#string",
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString",
+            "urn:ex:inner",
+            // Only in a triple term.
+            "urn:ex:qo",
+        ] {
+            assert!(iris.iter().any(|i| *i == want), "{want}: {iris:?}");
+        }
+        // Read from an entity, after the reference that stands for it.
+        for gone in ["urn:ex:inner", "urn:ex:qo"] {
+            assert!(owl.refs_of(gone).next().is_none(), "{gone}");
+        }
+        let mut k = Knowledge::default();
+        k.set(&owl_uri, Source::Disk, owl);
+        for iri in iris {
+            let mut changes = HashMap::new();
+            let renamed = format!("{iri}x");
+            let got = rename_term(&k, Encoding::Utf8, &iri, &renamed, &mut changes);
+            assert!(got.is_err_and(|e| e.contains("onto.owl")), "{iri}");
+        }
+    }
+
+    /// No rename starts in an RDF/XML document, whatever the form of the
+    /// reference or prefix under the cursor: prepare-rename offers nothing
+    /// and a rename sent anyway is refused, editing no other document.
+    #[test]
+    fn nothing_is_renamed_from_inside_rdfxml() {
+        let ttl = turtle_doc(
+            "file:///w/a.ttl",
+            "@prefix ex: <http://example.org/> .\nex:a ex:p ex:b .\n",
+        );
+        let cases = [
+            (rdfxml_fixture::read(OWL_URI), rdfxml_fixture::TEXT),
+            (
+                rdfxml_fixture::written(OWL_URI, rdfxml_fixture::TURTLE),
+                rdfxml_fixture::TURTLE,
+            ),
+        ];
+        for (owl, text) in cases {
+            let owl = Arc::new(owl);
+            // The knowledge with the document, and one without it (the
+            // refusal is the document's own, not its uses').
+            let mut without = Knowledge::default();
+            without.set("file:///w/a.ttl", Source::Open, ttl.clone());
+            let mut k = Knowledge::default();
+            k.set("file:///w/a.ttl", Source::Open, ttl.clone());
+            k.set(OWL_URI, Source::Open, owl.clone());
+            // Every reference, and every prefix declaration and use.
+            let mut offsets: Vec<u32> = owl.parsed.refs.iter().map(|r| r.span.start + 1).collect();
+            offsets.extend(owl.parsed.prefixes.iter().map(|p| p.name_span.start));
+            offsets.extend(owl.parsed.prefix_uses.iter().map(|u| u.span.start));
+            assert!(offsets.len() > 5, "{text}");
+            for offset in offsets {
+                let at = owl.position(Encoding::Utf8, offset);
+                let got = prepare_rename(&owl, Encoding::Utf8, at).unwrap();
+                assert_eq!(got, None, "{offset} in {text}");
+                for k in [&k, &without] {
+                    let err = rename(
+                        &owl,
+                        k,
+                        Encoding::Utf8,
+                        at,
+                        "z",
+                        PrefixScope {
+                            file: None,
+                            file_of: &mut |_| None,
+                        },
+                    )
+                    .unwrap_err();
+                    assert!(err.contains("/w/onto.owl"), "{offset}: {err}");
+                }
+            }
+        }
+    }
+
+    /// A prefix renamed in the prefixes.ttl that serves the folder is not
+    /// renamed in an RDF/XML document there, though its parse uses it.
+    #[test]
+    fn a_shared_prefix_is_not_renamed_in_rdfxml() {
+        // The folder's prefixes.ttl is matched by path.
+        let (prefixes_path, prefixes_uri) = in_w("prefixes.ttl");
+        let (_, a_uri) = in_w("a.ttl");
+        let decl = "@prefix ex: <http://example.org/> .\n";
+        let prefixes = turtle_doc(&prefixes_uri, decl);
+        let external: Arc<PrefixMap> = Arc::new(PrefixMap::from_iter([(
+            "ex".to_string(),
+            "http://example.org/".to_string(),
+        )]));
+        let body = "ex:a ex:p ex:b .\n";
+        let ttl = Arc::new(Analysis::new(a_uri.clone(), body, external.clone(), true));
+        let owl = Arc::new(rdfxml_fixture::written_with(OWL_URI, body, external));
+        assert!(owl.parsed.prefix_uses.iter().any(|u| u.name == "ex"));
+        let mut k = Knowledge::default();
+        k.set(&prefixes_uri, Source::Open, prefixes.clone());
+        k.set(&a_uri, Source::Open, ttl);
+        k.set(OWL_URI, Source::Disk, owl);
+        let mut file_of = |_: &str| Some(prefixes_path.clone());
+        let scope = PrefixScope {
+            file: Some(prefixes.clone()),
+            file_of: &mut file_of,
+        };
+        let at = prefixes.position(Encoding::Utf8, offset_of(decl, "ex:", 0));
+        let edit = rename(&prefixes, &k, Encoding::Utf8, at, "e2", scope).unwrap();
+        let mut uris: Vec<String> = edit
+            .changes
+            .unwrap()
+            .keys()
+            .map(|u| u.to_string())
+            .collect();
+        uris.sort();
+        assert_eq!(uris, [a_uri, prefixes_uri]);
+    }
+
+    /// Definition, references, highlights, the type hierarchy and the
+    /// reference lenses work in an RDF/XML document, and the prefix of a
+    /// QName there is part of its IRI: no Turtle prefix to go to.
+    #[test]
+    fn navigation_works_in_rdfxml() {
+        let enc = Encoding::Utf8;
+        for owl in [
+            rdfxml_fixture::read(OWL_URI),
+            rdfxml_fixture::written(OWL_URI, rdfxml_fixture::TURTLE),
+        ] {
+            let owl = Arc::new(owl);
+            let mut k = Knowledge::default();
+            k.set(OWL_URI, Source::Open, owl.clone());
+            let class = "http://example.org/A";
+            // A place where the cursor is on the class (the reference
+            // found there is the cursor's).
+            let offset = owl
+                .refs_of(class)
+                .map(|r| r.span.start)
+                .find(|&o| owl.ref_at(o).is_some_and(|r| r.iri == class))
+                .unwrap();
+            let at = owl.position(enc, offset);
+            let found = definition(&owl, &k, enc, at, None);
+            assert!(!found.is_empty());
+            assert!(found.iter().all(|l| l.uri.as_str() == OWL_URI));
+            let refs = references(&owl, &k, enc, at, true);
+            let spans: FxHashSet<Span> = owl.refs_of(class).map(|r| r.span).collect();
+            assert_eq!(refs.len(), spans.len());
+            assert!(highlights(&owl, enc, at).len() >= refs.len());
+            let items = crate::features::hierarchy::prepare(&owl, &k, enc, at).unwrap();
+            assert_eq!(items[0].data.as_ref().unwrap()["iri"], class);
+            let lenses = crate::features::lens::code_lenses(&owl, enc, true);
+            assert!(
+                lenses
+                    .iter()
+                    .any(|l| l.data.as_ref().unwrap()["iri"] == class)
+            );
+        }
+        // On the prefix part of a QName.
+        let owl = Arc::new(rdfxml_fixture::written(OWL_URI, rdfxml_fixture::TURTLE));
+        let mut k = Knowledge::default();
+        k.set(OWL_URI, Source::Open, owl.clone());
+        let text = rdfxml_fixture::TURTLE;
+        let on = |plus| {
+            let at = owl.position(enc, offset_of(text, "ex:a a ex:A", plus));
+            definition(&owl, &k, enc, at, None)
+        };
+        let (prefix, local) = (on(8), on(10));
+        assert!(!local.is_empty());
+        assert_eq!(prefix, local);
     }
 }

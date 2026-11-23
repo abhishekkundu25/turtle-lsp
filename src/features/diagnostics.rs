@@ -18,6 +18,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::BorrowMut;
 
 pub(crate) const SOURCE: &str = "turtle";
+/// The code of a use of a deprecated term.
+const DEPRECATED: &str = "deprecated-term";
 
 /// Codes of diagnostics that claim something is known nowhere in the
 /// workspace, so are only reported once the initial index is in.
@@ -86,7 +88,7 @@ pub(crate) fn vocabulary_terms<'a, K, D>(
                 let mut d = mk(
                     u.span,
                     DiagnosticSeverity::HINT,
-                    "deprecated-term",
+                    DEPRECATED,
                     format!("'{}:{local}' is deprecated", v.prefix),
                 );
                 d.borrow_mut().tags = Some(vec![DiagnosticTag::DEPRECATED]);
@@ -157,7 +159,7 @@ where
         let mut d = mk(
             u.span,
             DiagnosticSeverity::WARNING,
-            "deprecated-term",
+            DEPRECATED,
             format!("'{written}' is deprecated: the workspace marks it owl:deprecated"),
         );
         d.borrow_mut().tags = Some(vec![DiagnosticTag::DEPRECATED]);
@@ -342,6 +344,43 @@ impl Check {
         followed && self.costly()
     }
 
+    /// Whether the check runs on a document of `syntax`.
+    pub(crate) fn runs_on(self, syntax: Syntax) -> bool {
+        match syntax {
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
+                true
+            }
+            Syntax::RdfXml => self.runs_on_rdfxml(),
+        }
+    }
+
+    /// Whether the check runs on an RDF/XML document. Its syntax errors do
+    /// (`xml-syntax`, `rdfxml-syntax`, `unsupported-syntax`); SHACL results
+    /// and reasoning findings come from outside these checks. Of the lints,
+    /// those that need no edit (decision 8 of the RDF/XML plan), at the
+    /// exact spans of its references; none offers a fix.
+    fn runs_on_rdfxml(self) -> bool {
+        match self {
+            Check::Syntax => true,
+            // `invalid-literal`, `undescribed-term` (its suggestion in the
+            // message only), and of the term uses `deprecated-term` alone
+            // ([`term_uses`]): `unknown-term` is a misspelling, which asks
+            // for an edit.
+            Check::Literals | Check::UndescribedTerms | Check::TermUses => true,
+            // Lints of Turtle prefixes or a JSON-LD context, which RDF/XML
+            // has not, the shape lint, and the curation checks.
+            Check::UndeclaredPrefix
+            | Check::PrefixDeclarations
+            | Check::UnusedPrefix
+            | Check::JsonLd
+            | Check::ShaclLint
+            | Check::LabelWhitespace
+            | Check::DuplicateLabel
+            | Check::MultipleLabels
+            | Check::HouseStyle => false,
+        }
+    }
+
     /// The checks [`Check::kept`] picks by their cost.
     fn costly(self) -> bool {
         match self {
@@ -426,7 +465,8 @@ pub fn diagnostics_with(
 }
 
 /// [`diagnostics_with`], with the findings of the [`Check::kept`] checks
-/// from `kept`, which must be up to date with `a` and `k`.
+/// from `kept`, which must be up to date with `a` and `k`. The checks that
+/// do not run on `a`'s syntax ([`Check::runs_on`]) give nothing.
 pub(crate) fn diagnostics_kept(
     a: &Analysis,
     k: &Knowledge,
@@ -439,6 +479,9 @@ pub(crate) fn diagnostics_kept(
         Found::new(span, severity, code, message).into_diagnostic(a, enc)
     };
     for check in Check::ALL {
+        if !check.runs_on(a.parsed.syntax) {
+            continue;
+        }
         if check.kept() {
             out.extend(kept.findings(check).map(|f| f.diagnostic(a, enc)));
             continue;
@@ -448,9 +491,14 @@ pub(crate) fn diagnostics_kept(
             Check::UndeclaredPrefix => undeclared_prefixes(a, k, &mk, &mut out),
             Check::PrefixDeclarations => prefix_declarations(a, &mk, &mut out),
             Check::UnusedPrefix => unused_prefixes(a, &mk, &mut out),
-            Check::JsonLd if a.parsed.syntax == Syntax::JsonLd => {
-                jsonld_lints(a, k, &mk, &mut out);
-            }
+            Check::JsonLd => match a.parsed.syntax {
+                Syntax::JsonLd => jsonld_lints(a, k, &mk, &mut out),
+                Syntax::Turtle
+                | Syntax::TriG
+                | Syntax::NTriples
+                | Syntax::NQuads
+                | Syntax::RdfXml => {}
+            },
             Check::ShaclLint => {
                 for f in crate::features::shacl_lint::lint(a, k) {
                     let sev = if f.error {
@@ -467,7 +515,7 @@ pub(crate) fn diagnostics_kept(
             Check::HouseStyle if opts.house_style => {
                 out.extend(crate::features::curation::house_style(a, k, enc));
             }
-            Check::JsonLd | Check::UndescribedTerms | Check::HouseStyle => {}
+            Check::UndescribedTerms | Check::HouseStyle => {}
             Check::TermUses
             | Check::Literals
             | Check::LabelWhitespace
@@ -488,9 +536,14 @@ fn severity_of(s: Severity) -> DiagnosticSeverity {
 /// The parse's errors and warnings, at most [`Options::max_syntax_errors`].
 fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic>) {
     let errors = &a.parsed.errors;
+    // JSON-LD's errors are not capped.
+    let capped = match a.parsed.syntax {
+        Syntax::JsonLd => false,
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => true,
+    };
     let cap = opts
         .max_syntax_errors
-        .filter(|&max| errors.len() > max && a.parsed.syntax != Syntax::JsonLd);
+        .filter(|&max| errors.len() > max && capped);
     let shown = cap.map(|max| first_in_text(errors, max));
     let mut last_end = 0;
     for (i, e) in errors.iter().enumerate() {
@@ -670,10 +723,11 @@ fn text_at(a: &Analysis, span: Span, len: u32) -> Option<&str> {
 }
 
 /// The use of the term `r` refers to, for the term checks: a prefixed name
-/// with its prefix as written, or an IRI; none for `a`.
+/// with its prefix as written, or an IRI; none for `a`, nor for an anchor,
+/// whose text is not the term's (a fix written there would break the file).
 pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>> {
     match r.form {
-        Form::A => None,
+        Form::A | Form::Anchor => None,
         Form::PName { prefix_len } => Some(TermUse {
             span: r.span,
             iri: r.iri,
@@ -689,9 +743,10 @@ pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>>
     }
 }
 
-/// [`Check::TermUses`] for the references `refs` of a Turtle-family
-/// document: the findings of [`vocabulary_terms`], and those of
-/// [`own_deprecations`] (subjects left out), each in the order of `refs`.
+/// [`Check::TermUses`] for the references `refs` of a Turtle-family or
+/// RDF/XML document: the findings of [`vocabulary_terms`] (in RDF/XML its
+/// `deprecated-term` alone), and those of [`own_deprecations`] (subjects
+/// left out), each in the order of `refs`.
 pub(crate) fn term_uses<'a>(
     a: &Analysis,
     k: &Knowledge,
@@ -715,6 +770,12 @@ pub(crate) fn term_uses<'a>(
         &mk,
         &mut vocab,
     );
+    // Only the uses that need no edit, where nothing is edited.
+    if !super::writes(a.parsed.syntax) {
+        vocab.retain(
+            |f| matches!(&f.diagnostic.code, Some(NumberOrString::String(c)) if c == DEPRECATED),
+        );
+    }
     (vocab, own)
 }
 
@@ -832,7 +893,7 @@ mod tests {
             [
                 // On the definition, not on "title" where it is used.
                 d("unknown-term", S::WARNING, "rdfs:lable", Some("rdfs:label")),
-                d("deprecated-term", S::HINT, "vcard:Email", None),
+                d(DEPRECATED, S::HINT, "vcard:Email", None),
                 d("jsonld-undefined-term", S::WARNING, "wieght", None),
                 d("unknown-term", S::WARNING, "rdfs:labl", Some("rdfs:label")),
                 d("invalid-iri", S::WARNING, "http://exa mple.org/x", None),
@@ -1133,6 +1194,41 @@ mod tests {
         );
     }
 
+    /// RDF/XML (decision 8): a use of a deprecated term, at the text that
+    /// names it: an attribute value, a qualified name, a collection item;
+    /// not where it is described, nor through an entity (no name is
+    /// written there).
+    #[test]
+    fn an_rdfxml_use_of_an_own_deprecated_term_is_a_warning() {
+        let uses = "<?xml version=\"1.0\"?>\n\
+            <!DOCTYPE rdf:RDF [<!ENTITY ex \"http://ex.org/\">]>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:ex=\"http://ex.org/\">\n\
+            \x20 <owl:Class rdf:about=\"http://ex.org/old\"/>\n\
+            \x20 <ex:old rdf:about=\"http://ex.org/a\">\n\
+            \x20   <ex:p rdf:resource=\"http://ex.org/old\"/>\n\
+            \x20   <ex:p rdf:resource=\"&ex;old\"/>\n\
+            \x20 </ex:old>\n\
+            \x20 <owl:Class rdf:about=\"http://ex.org/b\">\n\
+            \x20   <owl:unionOf rdf:parseType=\"Collection\">\n\
+            \x20     <rdf:Description rdf:about=\"http://ex.org/old\"/>\n\
+            \x20   </owl:unionOf>\n\
+            \x20 </owl:Class>\n\
+            </rdf:RDF>\n";
+        let got = own_deprecated("ex:old owl:deprecated true .\n", uses, Syntax::RdfXml);
+        let at: Vec<(DiagnosticSeverity, &str)> = got.iter().map(|g| (g.0, g.1.as_str())).collect();
+        let w = DiagnosticSeverity::WARNING;
+        assert_eq!(
+            at,
+            [
+                (w, "ex:old"),
+                (w, "http://ex.org/old"),
+                (w, "http://ex.org/old")
+            ],
+            "{got:?}"
+        );
+    }
+
     #[test]
     fn a_jsonld_use_of_an_own_deprecated_term_is_a_warning() {
         let uses = r#"{
@@ -1168,6 +1264,102 @@ mod tests {
         assert_eq!(
             bare_replacement("https://schema.org/Persn", "Persn", schema, "Person"),
             "http://schema.org/Person"
+        );
+    }
+
+    fn codes_of(ds: &[Diagnostic]) -> Vec<String> {
+        ds.iter()
+            .filter_map(|d| match &d.code {
+                Some(NumberOrString::String(c)) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decision 8: on RDF/XML run the syntax errors and the lints that need
+    /// no edit (`invalid-literal`, `undescribed-term`, `deprecated-term`),
+    /// none with a fix; not `unknown-term`, the prefix lints or curation.
+    /// SHACL results and reasoning findings come through the composer as
+    /// for any document.
+    #[test]
+    fn rdfxml_gets_its_syntax_errors_and_the_lints_that_need_no_edit() {
+        use crate::features::rdfxml_fixture as fx;
+        let uri = "file:///w/onto.owl";
+        let k = Knowledge::default();
+        let opts = Options {
+            lint_undescribed_terms: true,
+            house_style: true,
+            max_syntax_errors: Some(1),
+        };
+        let codes = |a: &Analysis| codes_of(&diagnostics_with(a, &k, Encoding::Utf8, &opts));
+        let linted = codes(&fx::turtle(uri));
+        for code in [
+            "unused-prefix",
+            "unknown-term",
+            "invalid-literal",
+            "label-whitespace",
+        ] {
+            assert!(linted.iter().any(|c| c == code), "{code}: {linted:?}");
+        }
+        assert_eq!(codes(&fx::written(uri, fx::TURTLE)), ["invalid-literal"]);
+        let read = fx::read(uri);
+        let found = diagnostics_with(&read, &k, Encoding::Utf8, &opts);
+        assert_eq!(codes_of(&found), ["invalid-literal"]);
+        // At the literal's text, between the tags.
+        assert_eq!(found[0].range.start, lsp_types::Position::new(11, 66));
+        assert!(found.iter().all(|d| d.data.is_none()));
+        let broken = fx::TEXT.replace("</ex:A>", "</ex:B>");
+        for (text, want) in [
+            // Read on past the error: the literal after it is still checked;
+            // the second error (`ex:A` not closed) is past the cap.
+            (
+                broken.as_str(),
+                &["xml-syntax", "syntax", "invalid-literal"][..],
+            ),
+            ("Prefix(:=<http://example.org/o#>)", &["unsupported-syntax"]),
+        ] {
+            let a = Analysis::with_syntax(uri.into(), text, Arc::default(), true, Syntax::RdfXml);
+            assert_eq!(codes(&a), want, "{text}");
+        }
+        for check in Check::ALL {
+            let on = matches!(
+                check,
+                Check::Syntax | Check::Literals | Check::UndescribedTerms | Check::TermUses
+            );
+            assert_eq!(check.runs_on(Syntax::RdfXml), on, "{check:?}");
+            assert!(check.runs_on(Syntax::Turtle), "{check:?}");
+        }
+
+        // Through the composer, with every lint enabled.
+        let settings = crate::settings::Settings {
+            lint_enable: (crate::features::curation::OPT_IN.iter())
+                .map(|c| c.to_string())
+                .collect(),
+            ..Default::default()
+        };
+        let finding = |c: &str| Diagnostic {
+            code: Some(NumberOrString::String(c.into())),
+            ..Default::default()
+        };
+        let (shacl, reasoning) = ([finding("shacl-violation")], [finding("turbowl/cax-dw")]);
+        let inputs = crate::diagnose::DiagnosticInputs {
+            shacl: &shacl,
+            reasoning: &reasoning,
+            ..crate::diagnose::DiagnosticInputs::new(&settings)
+        };
+        let a = Analysis::with_syntax(uri.into(), &broken, Arc::default(), true, Syntax::RdfXml);
+        assert!(!a.parsed.triples.is_empty());
+        let got =
+            crate::diagnose::document(crate::diagnose::Doc::Rdf(&a), &k, Encoding::Utf8, &inputs);
+        assert_eq!(
+            codes_of(&got),
+            [
+                "xml-syntax",
+                "xml-syntax",
+                "invalid-literal",
+                "shacl-violation",
+                "turbowl/cax-dw"
+            ]
         );
     }
 }

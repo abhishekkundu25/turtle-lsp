@@ -137,7 +137,7 @@ pub(crate) struct Change<'t> {
 /// Why a splice gave up; the caller parses the new text in full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallback {
-    /// JSON-LD, which has its own frontend.
+    /// JSON-LD or RDF/XML, which have their own frontends.
     Syntax,
     /// The edit does not fit the two texts.
     Edit,
@@ -197,8 +197,9 @@ pub(crate) fn applies(
     external: &PrefixMap,
     base: Option<&str>,
 ) -> Result<(), Fallback> {
-    if old.syntax == Syntax::JsonLd {
-        return Err(Fallback::Syntax);
+    match old.syntax {
+        Syntax::JsonLd | Syntax::RdfXml => return Err(Fallback::Syntax),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if old_external != external || old.document_base.as_deref() != base {
         return Err(Fallback::Context);

@@ -6,9 +6,9 @@
 //! as written (`a.RQ` is not SPARQL). The extension is what follows the last
 //! `.` of the last part of a path or URI (after the last `/` or `\`). Every
 //! row is a file the server watches: `server::WATCHED_FILES` is the glob of
-//! all rows, and a test checks it. `Syntax::from_extension` keeps its own
-//! list, as the syntax core cannot read the workspace; a test checks it
-//! against the RDF rows.
+//! all rows, and a test checks it. `Syntax::from_extension` and
+//! `Syntax::by_content` keep their own lists, as the syntax core cannot read
+//! the workspace; a test checks them against the RDF and ontology rows.
 
 use crate::imports::CATALOG_FILE;
 use crate::syntax::Syntax;
@@ -21,8 +21,11 @@ pub(crate) enum FileKind {
     Rdf(Syntax),
     /// A SPARQL query or update.
     Sparql,
-    /// An ontology read only as an `owl:imports` target (`.rdf`, `.owl`).
-    ImportSource,
+    /// RDF whose syntax its content gives (`.owl`, `.rdf`): RDF/XML, or
+    /// Turtle or JSON-LD under that name (`Syntax::of`). A workspace file,
+    /// read and never written, and an `owl:imports` target through a
+    /// catalog.
+    Ontology,
     /// A catalog mapping import IRIs to files ([`CATALOG_FILE`]).
     Catalog,
     /// A `.json` file: a JSON-LD context, or the settings file.
@@ -72,8 +75,8 @@ pub(crate) const ROWS: &[Row] = &[
     ext("nq", FileKind::Rdf(Syntax::NQuads), Case::Any),
     ext("jsonld", FileKind::Rdf(Syntax::JsonLd), Case::Any),
     ext("json", FileKind::Json, Case::Any),
-    ext("rdf", FileKind::ImportSource, Case::Any),
-    ext("owl", FileKind::ImportSource, Case::Any),
+    ext("rdf", FileKind::Ontology, Case::Any),
+    ext("owl", FileKind::Ontology, Case::Any),
     ext("rq", FileKind::Sparql, Case::Exact),
     ext("sparql", FileKind::Sparql, Case::Exact),
     ext("ru", FileKind::Sparql, Case::Exact),
@@ -116,10 +119,13 @@ impl Row {
     }
 }
 
-/// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`
-/// or `.jsonld`, in any letter case.
+/// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`,
+/// `.jsonld`, `.owl` or `.rdf`, in any letter case.
 pub(crate) fn is_rdf_file(path: &Path) -> bool {
-    matches!(FileKind::of_path(path), Some(FileKind::Rdf(_)))
+    matches!(
+        FileKind::of_path(path),
+        Some(FileKind::Rdf(_) | FileKind::Ontology)
+    )
 }
 
 /// Whether a path or URI names a SPARQL file: `.rq`, `.sparql` or `.ru`, in
@@ -133,13 +139,18 @@ pub(crate) fn is_sparql_path(path: &Path) -> bool {
     FileKind::of_path(path) == Some(FileKind::Sparql)
 }
 
-/// Files that feed `owl:imports` without being documents themselves: a
-/// catalog, an `.rdf` or `.owl` ontology.
+/// Files that feed `owl:imports` through a catalog: the catalog, and the
+/// `.rdf` or `.owl` ontologies it may map an import to.
 pub(crate) fn is_import_source(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),
-        Some(FileKind::ImportSource | FileKind::Catalog)
+        Some(FileKind::Ontology | FileKind::Catalog)
     )
+}
+
+/// A catalog ([`CATALOG_FILE`]): read by the imports, never a document.
+pub(crate) fn is_catalog(path: &Path) -> bool {
+    FileKind::of_path(path) == Some(FileKind::Catalog)
 }
 
 /// Whether `path` names a kind of file the server watches (any row): if it
@@ -155,7 +166,8 @@ mod tests {
     use crate::workspace::DocKind;
 
     /// The predicates as they were before the table (the RDF one under its
-    /// new name), kept to check that every path keeps its kind.
+    /// new name), kept to check that every path keeps its kind, except
+    /// `.owl` and `.rdf`, which became RDF files on purpose.
     mod before {
         use crate::syntax::Syntax;
         use std::path::Path;
@@ -219,6 +231,9 @@ mod tests {
         assert_eq!(WATCHED_FILES, glob());
     }
 
+    /// Changed on purpose with the `Ontology` rows: `from_extension` reads
+    /// the RDF rows, `by_content` the ontology rows, and no other row is
+    /// either.
     #[test]
     fn the_rdf_rows_are_what_from_extension_reads() {
         for row in ROWS {
@@ -233,6 +248,8 @@ mod tests {
                     format!("C:\\w\\{name}"),
                 ] {
                     assert_eq!(Syntax::from_extension(&path), rdf, "{path}");
+                    let content = row.kind == FileKind::Ontology;
+                    assert_eq!(Syntax::by_content(&path), content, "{path}");
                 }
             }
         }
@@ -249,18 +266,25 @@ mod tests {
         }
     }
 
+    /// Changed on purpose with the `Ontology` rows: their kind comes from
+    /// the text.
     #[test]
     fn doc_kind_reads_the_table() {
+        let xml = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>";
         for row in ROWS {
             for name in [lower(row), upper(row)] {
                 let uri = format!("file:///w/{name}");
-                let expected = match FileKind::of(&uri) {
-                    Some(FileKind::Rdf(s)) => DocKind::Rdf(s),
-                    Some(FileKind::Sparql) => DocKind::Sparql,
-                    _ => DocKind::Rdf(Syntax::Turtle),
-                };
-                assert_eq!(DocKind::detect(None, &uri), expected, "{uri}");
-                assert_eq!(DocKind::detect(Some("turtle"), &uri), expected, "{uri}");
+                for text in ["", xml, "{\"@id\": \"http://example.org/a\"}"] {
+                    let expected = match FileKind::of(&uri) {
+                        Some(FileKind::Rdf(s)) => DocKind::Rdf(s),
+                        Some(FileKind::Sparql) => DocKind::Sparql,
+                        Some(FileKind::Ontology) => DocKind::Rdf(Syntax::of_content(text)),
+                        _ => DocKind::Rdf(Syntax::Turtle),
+                    };
+                    for id in [None, Some("turtle"), Some("xml"), Some("")] {
+                        assert_eq!(DocKind::of(id, &uri, text), expected, "{uri} {id:?}");
+                    }
+                }
             }
         }
     }
@@ -292,10 +316,10 @@ mod tests {
             ("/w/.ontologies/catalog-v001.xml", Some(Catalog)),
             ("/w/Catalog-v001.xml", None),
             ("/w/catalog.xml", None),
-            ("/w/x.owl", Some(ImportSource)),
-            ("x.OWL", Some(ImportSource)),
-            ("/w/x.rdf", Some(ImportSource)),
-            ("/w/x.Rdf", Some(ImportSource)),
+            ("/w/x.owl", Some(Ontology)),
+            ("x.OWL", Some(Ontology)),
+            ("/w/x.rdf", Some(Ontology)),
+            ("/w/x.Rdf", Some(Ontology)),
             ("/w/notes.txt", None),
             ("/w/x.xml", None),
             ("/w/ttl", None),
@@ -306,8 +330,14 @@ mod tests {
         for &(path, kind) in cases {
             assert_eq!(FileKind::of(path), kind, "{path}");
             let p = Path::new(path);
-            assert_eq!(is_rdf_file(p), before::is_rdf_file(p), "{path}");
-            assert_eq!(is_rdf_file(p), matches!(kind, Some(Rdf(_))), "{path}");
+            let ontology = kind == Some(Ontology);
+            assert_eq!(is_rdf_file(p), before::is_rdf_file(p) || ontology, "{path}");
+            assert_eq!(
+                is_rdf_file(p),
+                matches!(kind, Some(Rdf(_) | Ontology)),
+                "{path}"
+            );
+            assert_eq!(is_catalog(p), kind == Some(Catalog), "{path}");
             assert_eq!(is_sparql_name(path), before::is_sparql_name(path), "{path}");
             assert_eq!(is_sparql_path(p), before::is_sparql_name(path), "{path}");
             assert_eq!(is_import_source(p), before::is_import_source(p), "{path}");

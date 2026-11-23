@@ -14,7 +14,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, namespace_of};
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Iri, IriMap, Node, RDF, RDF_TYPE, Role, XSD};
+use crate::syntax::{Form, Iri, IriMap, Node, RDF, RDF_TYPE, Role, Syntax, XSD};
 use crate::vocab::{TermKind, VOCABS};
 use lsp_types::{
     Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
@@ -94,8 +94,11 @@ pub(crate) struct Class {
 /// touches `to` is included, so a range ending at a token's start keeps it).
 fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
     let p = &a.parsed;
-    if p.syntax == crate::syntax::Syntax::JsonLd {
-        return jsonld_tokens(a, k, from, to);
+    match p.syntax {
+        Syntax::JsonLd => return jsonld_tokens(a, k, from, to),
+        // The editor's XML grammar colours RDF/XML.
+        Syntax::RdfXml => return Vec::new(),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     let wanted = |s: u32, e: u32| e > from && s <= to && s < e;
     let mut out: Vec<Raw> = Vec::new();
@@ -157,6 +160,9 @@ fn raw_tokens(a: &Analysis, k: &Knowledge, from: u32, to: u32) -> Vec<Raw> {
                 start + prefix_len + 1
             }
             Form::Iri => start,
+            // The text at an anchor is not the name (never in a highlighted
+            // syntax: RDF/XML has no semantic tokens).
+            Form::Anchor => continue,
         };
         let c = *classes
             .entry(r.iri)
@@ -462,12 +468,51 @@ mod tests {
     use std::sync::Arc;
 
     fn tokens(text: &str, enc: Encoding) -> Vec<(String, u32, u32)> {
-        let a = Arc::new(Analysis::new(
+        tokens_of(
+            Analysis::new(
+                "file:///t.ttl".into(),
+                text,
+                Arc::new(PrefixMap::default()),
+                true,
+            ),
+            enc,
+        )
+    }
+
+    /// No token is made at a reference whose text is not at its span
+    /// ([`Form::Anchor`]); the lexed tokens around it stay.
+    #[test]
+    fn an_anchored_reference_gets_no_token() {
+        let text =
+            "@prefix ex: <http://example.org/> .\nex:s ex:p <http://example.org/o>, \"x\" .\n";
+        let words = |a: Analysis| -> Vec<String> {
+            tokens_of(a, Encoding::Utf8)
+                .into_iter()
+                .map(|(s, _, _)| s)
+                .collect()
+        };
+        let names = ["s", "p", "<http://example.org/o>"];
+        let written = words(Analysis::new(
             "file:///t.ttl".into(),
             text,
-            Arc::new(PrefixMap::default()),
+            Arc::default(),
             true,
         ));
+        assert!(
+            names.iter().all(|n| written.contains(&n.to_string())),
+            "{written:?}"
+        );
+        let anchored = words(Analysis::anchored("file:///t.ttl", text, Syntax::Turtle));
+        assert!(
+            names.iter().all(|n| !anchored.contains(&n.to_string())),
+            "{anchored:?}"
+        );
+    }
+
+    fn tokens_of(a: Analysis, enc: Encoding) -> Vec<(String, u32, u32)> {
+        let a = Arc::new(a);
+        let text = a.text.to_string();
+        let text = text.as_str();
         let mut k = Knowledge::default();
         k.set("file:///t.ttl", Source::Open, a.clone());
         // Decode back to (text, type, modifiers) via absolute positions.

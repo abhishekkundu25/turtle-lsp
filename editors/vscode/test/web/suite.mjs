@@ -114,6 +114,22 @@ check("formatting returns edits for an unformatted file", async () => {
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor")
 })
 
+check("a .owl file keeps VS Code's XML language and gets the server's hover, but no formatter, rename, completion or code actions of the extension", async () => {
+  const doc = await open("onto.owl")
+  ok(doc.languageId === "xml", `language ${doc.languageId}`)
+  const at = posOf(doc, 'about="http://example.org/Widg', 10)
+  const text = await until("hover in onto.owl", async () => hoverText(await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, at)), (t) => t.includes("A thing with parts."), 10_000)
+  ok(text.includes("A thing with parts."), `hover: ${JSON.stringify(text)}`)
+  // The server registers these for the documents it writes: a Turtle file has them, the .owl does not.
+  const ttl = await open("unformatted.ttl")
+  for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction"]) {
+    const feature = api.client().getFeature(method)
+    ok(feature.getProvider(ttl) !== undefined, `${method}: no provider for unformatted.ttl`)
+    ok(feature.getProvider(doc) === undefined, `${method}: a provider for onto.owl`)
+  }
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
 check("turtle/query, as another extension sends it, uses the root's prefixes.ttl", async () => {
   const api = vscode.extensions.getExtension(EXTENSION).exports
   const r = await api.client().sendRequest("turtle/query", { query: "SELECT ?c WHERE { ?c a owl:Class }" })

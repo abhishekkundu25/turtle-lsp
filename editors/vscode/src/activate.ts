@@ -6,7 +6,7 @@
 // a worker).
 import * as vscode from "vscode"
 import type { BaseLanguageClient, LanguageClientOptions } from "vscode-languageclient"
-import { configurationChange, layered, RDF_GLOB, ServerHandle, settingsFrom, type DocumentFilter } from "./client"
+import { configurationChange, layered, OPT_IN, RDF_GLOB, registrationsInSchemes, ServerHandle, settingsFrom, type DocumentFilter } from "./client"
 import { advertisesGraph, GraphProbe, graphProbe, registerGraphCommand } from "./graph"
 import { QueryResults, queryResultsFeature, type QueryResultsProbe } from "./query-results"
 
@@ -75,11 +75,20 @@ function clientOptions(
 ): LanguageClientOptions {
   return {
     documentSelector: setup.documentSelector,
-    initializationOptions: settingsFor(context, setup),
+    // The settings, and the opt-in to formatting, rename, completion and code
+    // actions registered for every document but RDF/XML (not a setting).
+    initializationOptions: { ...settingsFor(context, setup), [OPT_IN]: true },
     // Later changes reach the server as workspace/didChangeConfiguration.
     synchronize: { configurationSection: "turtle" },
     outputChannelName: "Turtle",
     middleware: {
+      // The features the server registers, as asked in initialize, for the
+      // documents it writes (formatting, rename, completion, code actions)
+      // stay in our schemes.
+      // The client hands this request no token of its own.
+      handleRegisterCapability: async (params, next) => {
+        await next(registrationsInSchemes(params, setup.documentSelector), new vscode.CancellationTokenSource().token)
+      },
       // Run query's result object opens in the query's Query Results panel.
       executeCommand: results.middleware,
       workspace: {

@@ -1,0 +1,2 @@
+Class: ex:Dog
+    SubClassOf: ex:Animal

@@ -3,7 +3,10 @@
 //! `{"version": 1, "files": [{"path", "status", "reason"?}], "summary":
 //! {"changed", "notFormatted", "filesChecked"}}`, a file's `status` being
 //! `formatted`, `would-format` or `not-formatted` (with its `reason`).
-//! Unchanged files are counted, not listed.
+//! Unchanged files are counted, not listed. Nothing writes RDF/XML: an
+//! RDF/XML file found in a folder is passed over without a word, neither
+//! listed nor counted, and leaves the exit status as it is; one named on the
+//! command line is not formatted, and says so ("not formatted: RDF/XML").
 
 use super::args::FormatArgs;
 use super::diff;
@@ -49,9 +52,15 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
         skipped += 1;
     }
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    // RDF/XML files found in a folder: passed over without a word.
+    let mut passed_over = 0;
     for (file, fr) in ws.files.iter().zip(report.files) {
         let Some(verdict) = fr.format else { continue };
         let written = match verdict.outcome {
+            FormatOutcome::Refused(_) if fr.kind == "rdfxml" && !file.named => {
+                passed_over += 1;
+                continue;
+            }
             FormatOutcome::Unchanged if stdin && !dry => out.write_all(file.text.as_bytes()),
             FormatOutcome::Unchanged => continue,
             FormatOutcome::Refused(reason) => {
@@ -114,7 +123,7 @@ pub(crate) fn run(a: FormatArgs) -> Result<i32, String> {
             "summary": {
                 "changed": changed,
                 "notFormatted": refused,
-                "filesChecked": ws.files.len() + ws.unread.len(),
+                "filesChecked": ws.files.len() + ws.unread.len() - passed_over,
             },
         });
         to_stdout(writeln!(out, "{report}"))?;

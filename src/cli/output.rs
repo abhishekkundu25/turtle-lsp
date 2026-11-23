@@ -427,6 +427,10 @@ pub(crate) const CODES: &[(&str, &str)] = &[
         "An owl:imports target could not be loaded",
     ),
     (
+        "import-truncated",
+        "An owl:imports target has an error: what it breaks is not loaded",
+    ),
+    (
         "unbound-projection",
         "A projected SPARQL variable is never bound",
     ),
@@ -449,6 +453,15 @@ pub(crate) const CODES: &[(&str, &str)] = &[
     (
         "invalid-language-tag",
         "A JSON-LD language tag is not valid",
+    ),
+    (
+        "xml-syntax",
+        "The XML is malformed, or asks more of the reader than it allows",
+    ),
+    ("rdfxml-syntax", "The XML is not valid RDF/XML"),
+    (
+        "unsupported-syntax",
+        "The file is in an OWL syntax that is not read (OWL/XML, Functional or Manchester): an error when an import is read from it, else a warning",
     ),
     (
         "shacl-violation",

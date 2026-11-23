@@ -85,12 +85,17 @@ fn format_with<'t>(
     opts: &Options,
     tokens: impl FnOnce() -> Cow<'t, [Token]>,
 ) -> Option<String> {
-    if parsed.syntax == Syntax::JsonLd {
-        // Only JSON syntax errors stop it; context problems do not.
-        if parsed.errors.iter().any(|e| e.code == "json-syntax") {
-            return None;
+    match parsed.syntax {
+        Syntax::JsonLd => {
+            // Only JSON syntax errors stop it; context problems do not.
+            if parsed.errors.iter().any(|e| e.code == "json-syntax") {
+                return None;
+            }
+            return crate::jsonld::format::format(text, opts);
         }
-        return crate::jsonld::format::format(text, opts);
+        // Nothing writes RDF/XML.
+        Syntax::RdfXml => return None,
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;

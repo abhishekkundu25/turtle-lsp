@@ -68,10 +68,19 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
     }
     let prefixes = a.prefix_map();
     // Only JSON-LD has statements that are graphs; looked up once, not per statement.
-    let graph_spans: FxHashSet<Span> = if a.parsed.syntax == Syntax::JsonLd {
-        a.parsed.graphs.iter().map(|g| g.span).collect()
-    } else {
-        FxHashSet::default()
+    let graph_spans: FxHashSet<Span> = match a.parsed.syntax {
+        Syntax::JsonLd => a.parsed.graphs.iter().map(|g| g.span).collect(),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml => {
+            FxHashSet::default()
+        }
+    };
+    // A subject is named as written, except in RDF/XML, where its span is
+    // an XML tag or attribute: there its IRI names it.
+    let name = |iri: &Iri, span: Span| match a.parsed.syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
+            written(text, span).to_string()
+        }
+        Syntax::RdfXml => shorten(iri, &prefixes).unwrap_or_else(|| iri.to_string()),
     };
     let detail = |iri: &Iri| {
         a.label(iri).map(str::to_string).or_else(|| {
@@ -90,7 +99,7 @@ pub fn document_symbols(a: &Analysis, enc: Encoding) -> Vec<DocumentSymbol> {
         }
         let (iri, span) = st.subject.as_ref()?;
         Some(DocumentSymbol {
-            name: written(text, *span).to_string(),
+            name: name(iri, *span),
             detail: detail(iri),
             kind: kind_for(a, iri),
             tags: None,
@@ -447,5 +456,57 @@ mod tests {
         if !cfg!(debug_assertions) {
             assert!(took.as_millis() < 60, "took {took:?}");
         }
+    }
+
+    /// An RDF/XML document's outline names each subject by its IRI, not by
+    /// the XML tag its span covers; its folds are on its lines.
+    #[test]
+    fn rdfxml_has_an_outline_and_folds() {
+        use crate::features::rdfxml_fixture as fx;
+        let a = fx::read("file:///w/onto.owl");
+        let mut names: Vec<String> = document_symbols(&a, Encoding::Utf8)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        // A statement per XML tag, each with its subject.
+        names.dedup();
+        assert_eq!(names, ["http://example.org/A", "http://example.org/a"]);
+        let folds: Vec<(u32, u32)> = folding_ranges(&a)
+            .into_iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        // Each statement is one tag: on one line, it does not fold (until
+        // statements nest, with exact spans).
+        let lines = fx::TEXT.lines().count() as u32;
+        assert!(folds.iter().all(|&(s, e)| s < e && e < lines), "{folds:?}");
+        // A tag over two lines folds.
+        let text = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:ex=\"http://example.org/\">\n\
+            \x20 <ex:A rdf:about=\"http://example.org/c\"\n\
+            \x20       ex:q=\"v\"/>\n\
+            </rdf:RDF>\n";
+        let a = Analysis::with_syntax(
+            "file:///w/onto.owl".into(),
+            text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        );
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let folds: Vec<(u32, u32)> = folding_ranges(&a)
+            .into_iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        assert_eq!(folds, [(3, 4)]);
+        // Written references are named by their IRI too, with the prefixes
+        // the document has.
+        let a = fx::written("file:///w/onto.owl", fx::TURTLE);
+        let names: Vec<String> = document_symbols(&a, Encoding::Utf8)
+            .into_iter()
+            .filter(|s| s.kind != SymbolKind::NAMESPACE)
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["ex:A", "ex:a"]);
     }
 }

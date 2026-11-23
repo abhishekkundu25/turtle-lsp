@@ -24,7 +24,7 @@
 
 use crate::analysis::Analysis;
 use crate::shacl::vocab;
-use crate::syntax::{self, BlankId, Iri, IriKey, IriMap, Node, Role, Span};
+use crate::syntax::{self, BlankId, Iri, IriKey, IriMap, Node, PrefixUse, Role, Span, Syntax};
 use crate::vocab::VOCABS;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::hash::{Hash, Hasher};
@@ -918,7 +918,15 @@ impl DocFacts {
         // By interned name: a document uses a few names thousands of times.
         let declared: FxHashSet<Iri> = bindings.iter().map(|b| b.0.0).collect();
         let mut used: FxHashSet<Iri> = FxHashSet::default();
-        for u in &a.parsed.prefix_uses {
+        // The prefix of an RDF/XML qualified name is an XML namespace's, not
+        // the project prefix of that name.
+        let uses: &[PrefixUse] = match a.parsed.syntax {
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
+                &a.parsed.prefix_uses
+            }
+            Syntax::RdfXml => &[],
+        };
+        for u in uses {
             if u.resolved
                 && !declared.contains(&u.name)
                 && used.insert(u.name)
@@ -2753,6 +2761,29 @@ mod tests {
         assert!(k.is_own_namespace(sd));
         assert!(!k.is_own_namespace("http://www.w3.org/2002/07/owl#"));
         assert!(k.terms_in(sd).contains(&Iri::intern(&iri("hasFunction"))));
+    }
+
+    /// The prefix of an RDF/XML qualified name is an XML namespace's: it
+    /// binds no project prefix of that name, whatever namespace it holds.
+    #[test]
+    fn an_rdfxml_qualified_name_binds_no_project_prefix() {
+        let external: PrefixMap = [("ex".to_string(), "http://project.org/".to_string())]
+            .into_iter()
+            .collect();
+        let xml = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://ex.org/\">\n\
+            \x20 <ex:C rdf:about=\"http://ex.org/a\"/>\n</rdf:RDF>\n";
+        let ttl = "ex:a a ex:C .\n";
+        for (uri, text, syntax, bound) in [
+            ("file:///w/a.ttl", ttl, Syntax::Turtle, 1),
+            ("file:///w/a.owl", xml, Syntax::RdfXml, 0),
+        ] {
+            let a =
+                Analysis::with_syntax(uri.into(), text, Arc::new(external.clone()), false, syntax);
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            let mut k = Knowledge::default();
+            k.set(uri, Source::Open, Arc::new(a));
+            assert_eq!(k.bindings("ex").len(), bound, "{syntax:?}");
+        }
     }
 
     #[test]

@@ -26,7 +26,6 @@ oxilangtag = "0.1.6"
 # with 0.3, while the Oxigraph crates (oxrdf, spargebra, spareval, oxttl, oxjsonld)
 # still depend on 0.2.
 oxiri = "0.3.1"
-oxrdfxml = { version = "0.2.4", features = ["rdf-12"] }
 rayon = "1.12.0"
 # Default features: spareval turns them on anyway and Cargo unifies features, so a
 # trimmed list here would change nothing but the manifest.
@@ -47,7 +46,7 @@ oxrdf = { version = "0.3", features = ["rdf-12"] }
 # public repository at a release tag (it is not on crates.io; deny.toml allows that one
 # git source). Without its default features: turtle-lsp
 # parses, so its parsers and its thread pool stay out. `rdf-12` because oxrdf has it
-# here (through spargebra and oxrdfxml), and TurbOWL does not compile otherwise.
+# here (through spargebra), and TurbOWL does not compile otherwise.
 turbowl = { version = "0.2.2", git = "https://github.com/abhishekkundu25/turbowl", tag = "v0.2.2", default-features = false, features = ["rdf-12"] }
 url = "2.5.8"
 
@@ -59,6 +58,8 @@ ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 [dev-dependencies]
 oxttl = { version = "0.2.4", features = ["rdf-12"] }
 oxjsonld = { version = "0.2.6", features = ["rdf-12"] }
+# The oracle of the RDF/XML parser's tests (src/rdfxml/grammar.rs).
+oxrdfxml = { version = "0.2.4", features = ["rdf-12"] }
 # The old position conversion, the oracle of `analysis::tests`.
 line-index = "0.1.2"
 

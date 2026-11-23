@@ -83,6 +83,12 @@ Editing works as in Turtle:
 
 Their terms count in your Turtle and SPARQL files. Common contexts (schema.org, ActivityStreams, Verifiable Credentials, DID) are bundled; other remote contexts are fetched only with `turtle.imports.network` on.
 
+## RDF/XML (`.owl`, `.rdf`)
+
+`.owl` and `.rdf` files are read as part of the workspace: their triples count in your Turtle and SPARQL files, in Run query, SHACL validation, reasoning and the workspace graph, and an `owl:imports` of one needs no catalog. The file's content decides its syntax: RDF/XML, or Turtle or JSON-LD under that name. They keep VS Code's XML language, and the extension attaches to them: hover, go to definition, find references, the outline, folding and the file's problems (broken XML, a syntax the server cannot read, SHACL results) work inside them. Formatting, rename, completion and quick fixes are never offered in `.owl` and `.rdf` files, and VS Code does not list the extension as an XML formatter. This includes a `.owl` that holds Turtle: it is read as Turtle, but the editor does not format it (`turtle-lsp format onto.owl` on the command line does). With `turtle.diagnostics.workspace` on (always in the browser), the problems of the ones that are not open appear in the Problems panel too.
+
+A `.owl` or `.rdf` file opened on its own, with no folder, does not start the extension: open its folder instead.
+
 ## Project prefixes
 
 If your Turtle files share a prefix header instead of declaring prefixes

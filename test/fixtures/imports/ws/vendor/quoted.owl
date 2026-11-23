@@ -1,0 +1,15 @@
+﻿<?xml version="1.0"?>
+<!-- Entities in single quotes, and a character reference. -->
+<!DOCTYPE rdf:RDF [
+    <!ENTITY quoted 'http://example.org/onto/quoted&#35;' >
+    <!ENTITY rdfs "http://www.w3.org/2000/01/rdf-schema#" >
+]>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://example.org/onto/quoted"/>
+    <owl:Class rdf:about="&quoted;Bird">
+        <rdfs:subClassOf rdf:resource="&rdfs;Resource"/>
+        <rdfs:label>Quoted bird</rdfs:label>
+    </owl:Class>
+</rdf:RDF>

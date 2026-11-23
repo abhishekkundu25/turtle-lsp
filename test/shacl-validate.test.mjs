@@ -492,3 +492,32 @@ test("a path too deep to read is an error on its shape; a short one validates", 
     await w.end()
   }
 })
+
+test("an .owl file's data is validated against the shapes: closed, in workspace diagnostics; open as XML, on save, at its element's line", async () => {
+  const owl = (designation) => `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xmlns:sd="https://ontology.example.com/plant/core/">
+    <sd:Asset rdf:about="https://data.example.com/plant/obj/pump-08">
+        <rdfs:label>Pump 08</rdfs:label>
+        <sd:designation>${designation}</sd:designation>
+    </sd:Asset>
+</rdf:RDF>
+`
+  const w = await session({ initializationOptions: { diagnostics: { workspace: true } } }, { "data/pump-08.owl": owl("P08") })
+  const file = path.join(w.dir, "data", "pump-08.owl")
+  const uri = uriOf(file)
+  try {
+    const closed = shacl(await until(w.s, uri, (d) => shacl(d).length > 0, 10000))
+    assert.deepEqual(closed.map((d) => [d.code, d.message]), [["shacl-violation", MESSAGE]])
+    // At the tag the triple ends at: the property element, on line 7.
+    assert.equal(closed[0].range.start.line, 6, JSON.stringify(closed))
+    // The web editor opens it with XML's language id; a fix on disk clears it.
+    w.s.open(uri, owl("P08"), "xml")
+    w.s.change(uri, owl("=P08"))
+    save(w.s, uri, file, owl("=P08"))
+    await until(w.s, uri, (d) => shacl(d).length === 0, 10000)
+  } finally {
+    await w.end()
+  }
+})
