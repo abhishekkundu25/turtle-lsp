@@ -427,15 +427,68 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 
-check("a .ofn and a Functional .owl or .rdf read no modelines: ' ex:' in their last lines raises no E518", function()
-  local text = {
+check("a .owx buffer gets filetype xml, the server's errors, hover and definition; nothing is written in it", function()
+  local file = owl_dir .. "/onto.owx"
+  -- No XML declaration: Neovim's own detection names such a text xml.
+  vim.fn.writefile({
+    '<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">',
+    '  <Prefix name="" IRI="http://example.org/o#"/>',
+    '  <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>',
+    '  <Declaration><Class abbreviatedIRI=":A"/></Declaration>',
+    '  <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>',
+    '  <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>Apple</Literal></AnnotationAssertion>',
+    "</Ontology>",
+  }, file)
+  local b, c = open(file)
+  assert(vim.bo[b].filetype == "xml", "filetype " .. vim.bo[b].filetype)
+  assert(#vim.lsp.get_clients({ bufnr = b, name = "turtle_lsp" }) == 1, "not one turtle_lsp client")
+  local d = wait_diagnostics(b)
+  assert(#d == 1, "diagnostics: " .. vim.inspect(d))
+  assert(d[1].code == "owx-syntax" and d[1].lnum == 4 and d[1].col == 65, vim.inspect(d[1]))
+  local edits = request(b, "textDocument/formatting", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    options = { tabSize = 2, insertSpaces = true },
+  })
+  assert(edits == nil or #edits == 0, "formatting edits in a .owx: " .. vim.inspect(edits))
+  local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, '<Declaration><Class abbreviatedIRI=":'),
+    newName = "ex:Thing",
+  }, TIMEOUT)
+  local answer = res and res[c.id]
+  local message = answer and answer.err and answer.err.message or vim.inspect(answer)
+  assert(message:find("OWL/XML document is not edited", 1, true), "rename in a .owx: " .. message)
+  -- Its axioms are read: the label in hover, the declaration as definition.
+  local h = request(b, "textDocument/hover", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, '<Declaration><Class abbreviatedIRI=":'),
+  })
+  assert(h and h.contents.value:find("Apple", 1, true), "hover in a .owx: " .. vim.inspect(h))
+  local def = request(b, "textDocument/definition", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, "<AbbreviatedIRI>:"),
+  })
+  def = def and (def.range and { def } or def) or {}
+  assert(#def == 1 and def[1].range.start.line == 3 and def[1].range.start.character == 38, "definition in a .owx: " .. vim.inspect(def))
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
+check("a .ofn, a .owx and a Functional .owl or .rdf read no modelines: ' ex:' in their last lines raises no E518", function()
+  local functional = {
     "Prefix(ex:=<http://example.org/>)",
     "Ontology(<http://example.org/o>",
     "SubClassOf(ex:Foo ex:Bar))",
   }
-  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl", "/modeline.rdf" }) do
+  local owx = {
+    '<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">',
+    '  <Prefix name="ex" IRI="http://example.org/"/>',
+    "  <!-- ex:Foo is a kind of ex:Bar -->",
+    '  <SubClassOf><Class abbreviatedIRI="ex:Foo"/><Class abbreviatedIRI="ex:Bar"/></SubClassOf>',
+    "</Ontology>",
+  }
+  for _, name in ipairs({ "/modeline.ofn", "/modeline.owl", "/modeline.rdf", "/modeline.owx" }) do
     local file = owl_dir .. name
-    vim.fn.writefile(text, file)
+    vim.fn.writefile(name:find("%.owx$") and owx or functional, file)
     local ok, b = pcall(open, file)
     assert(ok, name .. ": " .. tostring(b))
     assert(vim.bo[b].modeline == false, name .. ": modeline on")
@@ -563,6 +616,41 @@ check("a .OWL or .Rdf buffer gets the client in any letter case, with nofileigno
       assert(gone, name .. ": client not stopped")
       vim.api.nvim_buf_delete(b, { force = true })
     end
+  end)
+  vim.o.fileignorecase = was
+  vim.fn.delete(dir, "rf")
+  assert(ok, err)
+end)
+
+check("a .OWX buffer gets the client with nofileignorecase; an ordinary .xml buffer gets none", function()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local was = vim.o.fileignorecase
+  vim.o.fileignorecase = false
+  local ok, err = pcall(function()
+    local file = dir .. "/ONTO.OWX"
+    vim.fn.writefile({
+      '<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">',
+      '  <Declaration><Class IRI="http://example.org/A"/></Declaration>',
+      "</Ontology>",
+    }, file)
+    -- Read as OWL/XML (its name gives the syntax): no errors.
+    local b, c = open(file)
+    local d = wait_diagnostics(b)
+    assert(#d == 0, #d .. " diagnostics: " .. fmt(d))
+    local xml = dir .. "/data.xml"
+    vim.fn.writefile({ '<Ontology xmlns="http://www.w3.org/2002/07/owl#"/>' }, xml)
+    vim.cmd.edit(vim.fn.fnameescape(xml))
+    local other = vim.api.nvim_get_current_buf()
+    assert(vim.bo[other].filetype == "xml", "filetype " .. vim.bo[other].filetype)
+    vim.wait(200)
+    assert(#vim.lsp.get_clients({ bufnr = other, name = "turtle_lsp" }) == 0, "a client attached to data.xml")
+    vim.api.nvim_buf_delete(other, { force = true })
+    c:stop()
+    assert(vim.wait(TIMEOUT, function()
+      return c:is_stopped()
+    end, 20), "client not stopped")
+    vim.api.nvim_buf_delete(b, { force = true })
   end)
   vim.o.fileignorecase = was
   vim.fn.delete(dir, "rf")
