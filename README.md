@@ -587,8 +587,12 @@ as Functional syntax, read-only, as it reads RDF/XML.
   other than `\"` and `\\`, too few operands (`ObjectIntersectionOf` with
   one class expression, an empty `ObjectOneOf`), a cardinality that is not
   a non-negative integer, a `HasKey` with no property, an
-  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
-  an ontology annotation after the axioms.
+  `rdf:PlainLiteral` whose tag after the last `@` is not BCP 47, and
+  `Import` or an ontology annotation after the axioms. An
+  `rdf:PlainLiteral` with no `@` (`"Bonn"^^rdf:PlainLiteral`) is outside
+  the datatype's lexical space, and the W3C mapping has no row for it: it
+  is read as OWL API reads it, as the plain string `"Bonn"`
+  (`xsd:string`), with an `ofn-syntax` warning, and its axiom maps.
 - **Imports**: an `owl:imports` of a Functional ontology resolves as any
   other (in the workspace, through a catalog, a `file:` IRI, the cache or
   the web), and a Functional file's own `Import`s are followed, in the
@@ -705,7 +709,7 @@ read-only, as it reads OWL Functional syntax.
   | none | none | `"text"` (`xsd:string`) |
   | none | a tag | `"text"@tag` |
   | `rdf:PlainLiteral` | a tag | `"text"@tag`, the content whole |
-  | `rdf:PlainLiteral` | none | as in Functional syntax: `text@tag` is `"text"@tag`, `text@` is `"text"`; without an `@` it is an error, and the axiom gives nothing |
+  | `rdf:PlainLiteral` | none | as in Functional syntax: `text@tag` is `"text"@tag`, `text@` is `"text"`; without an `@`, `"text"` (`xsd:string`), the content whole, as OWL API reads it, with an `owx-syntax` warning |
   | any other | any | `"text"^^datatype`; the language is not used |
 
 - **Imports**: an `owl:imports` of an OWL/XML ontology resolves as any

@@ -334,10 +334,10 @@ fn literals_typed_tagged_plain_and_escaped() {
     }
 }
 
-/// An `rdf:PlainLiteral` whose lexical form is not `"abc@langTag"` (no
-/// `@`, or a tag that is not a language tag) has no row in Table 1: an
-/// error at its quoted string, its item gives nothing, and the items
-/// after it are mapped. The forms Table 1 maps still map (above).
+/// An `rdf:PlainLiteral` whose tag after the last `@` is not a language
+/// tag has no row in Table 1: an error at its quoted string, its item
+/// gives nothing, and the items after it are mapped. The forms Table 1
+/// maps still map (above).
 #[test]
 fn an_invalid_plain_literal_is_an_error_and_gives_nothing() {
     for (string, message) in [
@@ -348,10 +348,6 @@ fn an_invalid_plain_literal_is_an_error_and_gives_nothing() {
         (
             "\"Bonn@de-\"",
             "Invalid language tag 'de-' in an rdf:PlainLiteral",
-        ),
-        (
-            "\"Bonn\"",
-            "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here",
         ),
     ] {
         let text = in_ontology(&format!(
@@ -386,11 +382,48 @@ fn an_invalid_plain_literal_is_an_error_and_gives_nothing() {
     }
     // Among the grammar's errors, in text order.
     let text = in_ontology(
-        "SubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"x\"^^rdf:PlainLiteral)\nSubClassOf(:A nope:C)",
+        "SubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"x@ y\"^^rdf:PlainLiteral)\nSubClassOf(:A nope:C)",
     );
     let p = parse(&text, None);
     let shown: Vec<_> = p.errors.iter().map(|e| at(&text, e.span)).collect();
-    assert_eq!(shown, ["nope:B", "\"x\"", "nope:C"], "{:?}", p.errors);
+    assert_eq!(shown, ["nope:B", "\"x@ y\"", "nope:C"], "{:?}", p.errors);
+}
+
+/// An `rdf:PlainLiteral` with no `@` is outside the datatype's lexical
+/// space and has no row in Table 1. It is read as OWL API (ROBOT 1.9.11)
+/// reads it: a plain string (`xsd:string`), its text whole, with a
+/// warning at its quoted string. Its item maps; a bad tag in another
+/// literal of the item is still an error, and the item gives nothing.
+#[test]
+fn a_plain_literal_without_an_at_is_a_plain_string_with_a_warning() {
+    let text = in_ontology(
+        "AnnotationAssertion(rdfs:label :A \"Bonn\"^^rdf:PlainLiteral)\nAnnotationAssertion(Annotation(rdfs:comment \"x\"^^rdf:PlainLiteral) rdfs:label :B \"y@ z\"^^rdf:PlainLiteral)\nSubClassOf(nope:A :B)\nAnnotationAssertion(rdfs:label :C \"\"^^rdf:PlainLiteral)",
+    );
+    let p = parse(&text, None);
+    let warning = rdf::PLAIN_STRING;
+    let got: Vec<_> = p
+        .errors
+        .iter()
+        .map(|e| (at(&text, e.span), e.severity, e.code, e.message()))
+        .collect();
+    assert_eq!(
+        got[..2],
+        [
+            ("\"Bonn\"", Severity::Warning, CODE, warning),
+            ("\"y@ z\"", Severity::Error, CODE, got[1].3),
+        ]
+    );
+    assert!(got[1].3.starts_with("Invalid language tag ' z'"));
+    assert_eq!(got[2].0, "nope:A");
+    assert_eq!(got[3], ("\"\"", Severity::Warning, CODE, warning));
+    assert_eq!(got.len(), 4);
+    let theirs = parse(
+        &in_ontology(
+            "AnnotationAssertion(rdfs:label :A \"Bonn\")\nAnnotationAssertion(rdfs:label :C \"\")",
+        ),
+        None,
+    );
+    assert_eq!(graph_of(&p), graph_of(&theirs));
 }
 
 // ---- Table 2 and section 2.3: annotations ----
@@ -1180,7 +1213,8 @@ fn a_tree_whose_terms_are_not_in_its_text_maps_like_its_functional_text() {
         difference(&graph_of(&ours), &graph_of(&theirs), "Functional"),
         None
     );
-    assert_eq!(theirs.triples.len(), 15, "{:?}", theirs.triples);
+    // The `rdf:PlainLiteral` with no `@` maps, as a plain string.
+    assert_eq!(theirs.triples.len(), 16, "{:?}", theirs.triples);
     // The references, with their roles and the source's forms.
     let refs = |p: &Parsed| -> Vec<_> { p.refs.iter().map(|r| (r.iri, r.role, r.form)).collect() };
     assert_eq!(refs(&ours), refs(&theirs));
@@ -1199,10 +1233,11 @@ fn a_tree_whose_terms_are_not_in_its_text_maps_like_its_functional_text() {
             .map(|e| (e.message().to_string(), e.code))
             .collect()
     };
-    let message = "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string();
+    let message = rdf::PLAIN_STRING.to_string();
     assert_eq!(errors(&theirs), [(message.clone(), CODE)]);
     assert_eq!(errors(&ours), [(message, "test-syntax")]);
     assert_eq!(ours.errors[0].span, Span::new(27, 29));
+    assert_eq!(ours.errors[0].severity, Severity::Warning);
     assert_eq!(
         (ours.syntax, theirs.syntax),
         (Syntax::RdfXml, Syntax::OwlFunctional)
@@ -1373,18 +1408,21 @@ fn a_plain_literal_with_a_language_from_its_source_is_its_text_whole() {
         difference(&graph_of(&ours), &graph_of(&theirs), "Functional"),
         None
     );
-    // In Functional syntax, the tag after the last `@`, and no `@` an
-    // error, as before.
+    // In Functional syntax, the tag after the last `@`, and no `@` a plain
+    // string with a warning.
     let p = parse(
         &in_ontology(
             "AnnotationAssertion(rdfs:label :A \"Bonn@de\"^^rdf:PlainLiteral)\nAnnotationAssertion(rdfs:label :A \"Bonn\"^^rdf:PlainLiteral)",
         ),
         None,
     );
-    let first = parse(
-        &in_ontology("AnnotationAssertion(rdfs:label :A \"Bonn\"@de)"),
+    let read = parse(
+        &in_ontology(
+            "AnnotationAssertion(rdfs:label :A \"Bonn\"@de)\nAnnotationAssertion(rdfs:label :A \"Bonn\")",
+        ),
         None,
     );
-    assert_eq!(graph_of(&p), graph_of(&first));
+    assert_eq!(graph_of(&p), graph_of(&read));
     assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+    assert_eq!(p.errors[0].severity, Severity::Warning);
 }

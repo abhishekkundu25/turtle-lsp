@@ -150,11 +150,12 @@ fn a_literal_with_another_datatype_does_not_use_the_language() {
     );
 }
 
-/// The `rdf:PlainLiteral` without an `@` and without a language: the
-/// mapper's error at the literal's content, its item gives nothing, and
-/// the items around it map.
+/// The `rdf:PlainLiteral` without an `@` and without a language: a plain
+/// string, its content whole, as OWL API reads it, with the mapper's
+/// warning at the literal's content (at its element when it is empty).
+/// Its item maps.
 #[test]
-fn a_plain_literal_without_an_at_or_a_language_is_an_error_at_its_content() {
+fn a_plain_literal_without_an_at_or_a_language_is_a_plain_string_with_a_warning() {
     let plain = format!("{RDF}PlainLiteral");
     let text = doc(&[
         label("<Literal>before</Literal>"),
@@ -166,7 +167,7 @@ fn a_plain_literal_without_an_at_or_a_language_is_an_error_at_its_content() {
     ]
     .join("\n"));
     let p = read(&text, Some(URL));
-    let message = "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here";
+    let message = crate::ofn::rdf::PLAIN_STRING;
     assert_eq!(
         errors(&text, &p),
         [
@@ -178,12 +179,26 @@ fn a_plain_literal_without_an_at_or_a_language_is_an_error_at_its_content() {
             ),
         ]
     );
-    same_mapping(
-        &p,
-        &functional(&ofn(
-            &[ofn_label("\"before\""), ofn_label("\"after\"")].join("\n")
-        )),
+    assert!(
+        p.errors
+            .iter()
+            .all(|e| e.severity == crate::syntax::Severity::Warning)
     );
+    // The same in Functional syntax, with the same warnings.
+    let theirs = crate::ofn::parse(
+        &ofn(&[
+            ofn_label("\"before\""),
+            ofn_label("\" Bonn \"^^rdf:PlainLiteral"),
+            ofn_label("\"\"^^rdf:PlainLiteral"),
+            ofn_label("\"after\""),
+        ]
+        .join("\n")),
+        None,
+    );
+    let messages =
+        |p: &Parsed| -> Vec<String> { p.errors.iter().map(|e| e.message().to_string()).collect() };
+    assert_eq!(messages(&theirs), messages(&p));
+    same_mapping(&p, &theirs);
 }
 
 // ---- a literal's content ----

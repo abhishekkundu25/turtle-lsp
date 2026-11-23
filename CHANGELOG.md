@@ -25,8 +25,10 @@
   absolute, a language tag that is not BCP 47, too few operands
   (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a cardinality
   that is not a non-negative integer, a `HasKey` with no property, an
-  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
-  an ontology annotation after the axioms. The parse goes on at the next
+  `rdf:PlainLiteral` whose tag after the last `@` is not BCP 47, and
+  `Import` or an ontology annotation after the axioms. An
+  `rdf:PlainLiteral` with no `@` is read as OWL API reads it, a plain
+  string (`xsd:string`), with an `ofn-syntax` warning. The parse goes on at the next
   axiom after an error, and an axiom with an error gives no triples. The
   mapping stops, with an error, past 16 bytes of IRIs, 2 triples or 16
   bytes of literals per byte of text, so an annotated n-ary axiom, whose
@@ -77,7 +79,8 @@
   or content type says. SWRL rules, `nodeID`s and literals are read as
   OWL API writes them, as ROBOT 1.9.11's output of a neutral fixture shows
   (`tests/owx/`); an `rdf:PlainLiteral` with neither an `@` nor an
-  `xml:lang` is an error, as in Functional syntax. With `OWX_ROBOT=1`
+  `xml:lang` is read as OWL API reads it, a plain string (`xsd:string`),
+  with an `owx-syntax` warning, as in Functional syntax. With `OWX_ROBOT=1`
   (after `tools/corpus/robot-owx.sh`), ROBOT's OWL/XML of the six OBO
   Functional files gives the graph of their source, their 46 SWRL rules
   included, but for the declarations OWL API adds and the SWRL variables

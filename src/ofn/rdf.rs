@@ -36,18 +36,21 @@
 //!   `"abc@"^^rdf:PlainLiteral` is `"abc"` (Table 1), the tag split at the
 //!   last `@`; a language tag is lowercased, as [`Node::Literal`] keeps it.
 //!   An `rdf:PlainLiteral` whose source gives it a language too (OWL/XML's
-//!   `xml:lang` in scope) is `"text"@tag`, its text whole. Any other
-//!   `rdf:PlainLiteral` (no `@`, or a tag that is not a BCP 47 language
-//!   tag) is an error at its string, and its item gives nothing: Table 1 has no row for it, and the datatype's definition
-//!   leaves it out of the lexical space ("An rdf:PlainLiteral lexical form
-//!   is a string of the form "abc@langTag" where "abc" is an arbitrary
-//!   (possibly empty) string, and "langTag" is either the empty string or
-//!   a (not necessarily lowercase) language tag", rdf:PlainLiteral, W3C
+//!   `xml:lang` in scope) is `"text"@tag`, its text whole. The other forms
+//!   have no row in Table 1, and the datatype's definition leaves them out
+//!   of the lexical space ("An rdf:PlainLiteral lexical form is a string of
+//!   the form "abc@langTag" where "abc" is an arbitrary (possibly empty)
+//!   string, and "langTag" is either the empty string or a (not
+//!   necessarily lowercase) language tag", rdf:PlainLiteral, W3C
 //!   Recommendation 11 December 2012, section 3), where Structural
 //!   Specification section 5.7 needs it ("The lexical form of each literal
 //!   occurring in an OWL 2 DL ontology MUST belong to the lexical space of
-//!   the literal's datatype"). Mapped, `"Bonn"` would become a valid
-//!   `xsd:string` and `"Bonn@ x"` a literal with the tag ` x`;
+//!   the literal's datatype"). One with no `@` is read as OWL API (ROBOT
+//!   1.9.11) reads it, a plain string (`xsd:string`), its text whole, with
+//!   a warning at its string ([`PLAIN_STRING`]); its item maps. One whose
+//!   tag after the last `@` is not a BCP 47 language tag is an error at its
+//!   string, and its item gives nothing: mapped, `"Bonn@ x"` would be a
+//!   literal with the tag ` x`;
 //!
 //! Departures (constructs the W3C mapping does not cover):
 //! - SWRL rules (`DLSafeRule`), which the grammar takes as OWL API writes
@@ -275,7 +278,7 @@ vocab!(
 pub(crate) trait Source<'a> {
     /// The syntax of the parse.
     const SYNTAX: Syntax;
-    /// The code of the errors the mapping makes (a limit, an
+    /// The code of the errors and warnings the mapping makes (a limit, an
     /// `rdf:PlainLiteral` outside its lexical space).
     const CODE: &'static str;
     /// The length of the text, which the budgets are per byte of.
@@ -598,6 +601,10 @@ struct Said {
 /// The item being mapped is given up: a limit is reached.
 struct Over;
 
+/// The warning at an `rdf:PlainLiteral` with no `@` and no language,
+/// read as a plain string (see the module doc).
+pub(crate) const PLAIN_STRING: &str = "An rdf:PlainLiteral is \"text@tag\" or \"text@\", and this one has no '@': it is read as a plain string (xsd:string), its text whole, as OWL API reads it";
+
 type M<T = ()> = Result<T, Over>;
 
 struct Mapper<'d, 'a, S> {
@@ -617,8 +624,9 @@ struct Mapper<'d, 'a, S> {
     literal_budget: usize,
     /// The first limit met, reported once.
     limit: Option<SyntaxError>,
-    /// The `rdf:PlainLiteral`s outside its lexical space, one per item, in
-    /// text order.
+    /// The `rdf:PlainLiteral`s outside its lexical space, in text order:
+    /// an error per item that gives nothing for one, a warning per literal
+    /// read as a plain string.
     invalid: Vec<SyntaxError>,
     blanks: FxHashMap<&'a str, BlankId>,
     next_blank: u32,
@@ -811,9 +819,10 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
             let datatype = self.iri(d)?;
             self.roles.insert(d as u32, Role::Datatype);
             if datatype == v.plain_literal {
-                // With a language, the text whole; else its `@` was
-                // checked before the item was mapped
-                // ([`Mapper::invalid_literal`]).
+                // With a language, the text whole; else split at its last
+                // `@`, its tag checked before the item was mapped
+                // ([`Mapper::plain_literals`]); with no `@`, a plain
+                // string, the text whole.
                 let (lexical, tag) = match lang {
                     Some(tag) => (&*value, tag),
                     None => value.rsplit_once('@').unwrap_or((&value, "")),
@@ -838,11 +847,14 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
         }
     }
 
-    /// The error of the first `rdf:PlainLiteral` in item `item` that has
-    /// no language and is not of the form `"abc@langTag"`, at its quoted
-    /// string (see the module doc). Checked before the item is mapped, so
-    /// an item with one gives nothing and changes nothing.
-    fn invalid_literal(&mut self, item: usize) -> M<Option<SyntaxError>> {
+    /// The `rdf:PlainLiteral`s of item `item` that have no language and
+    /// are not of the form `"abc@langTag"` (see the module doc), checked
+    /// before the item is mapped: `Err` with the error at the quoted
+    /// string of the first whose tag is no language tag (the item gives
+    /// nothing and changes nothing), else the warnings at those with no
+    /// `@`, read as plain strings.
+    fn plain_literals(&mut self, item: usize) -> M<Result<Vec<SyntaxError>, SyntaxError>> {
+        let mut warnings = Vec::new();
         let end = self.doc.nodes[item].next as usize;
         for j in item..end {
             if !matches!(self.doc.nodes[j].kind, NodeKind::Literal { .. }) {
@@ -863,7 +875,11 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
                 continue;
             }
             let message = match lexical.rsplit_once('@') {
-                None => "An rdf:PlainLiteral is \"text@tag\" or \"text@\": no '@' here".to_string(),
+                None => {
+                    let w = SyntaxError::new(string, PLAIN_STRING, Severity::Warning, S::CODE);
+                    warnings.push(w);
+                    continue;
+                }
                 Some((_, "")) => continue,
                 Some((_, tag)) => match oxilangtag::LanguageTag::parse(tag) {
                     Ok(_) => continue,
@@ -873,14 +889,14 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
                     ),
                 },
             };
-            return Ok(Some(SyntaxError::new(
+            return Ok(Err(SyntaxError::new(
                 string,
                 message,
                 Severity::Error,
                 S::CODE,
             )));
         }
-        Ok(None)
+        Ok(Ok(warnings))
     }
 
     /// A class expression, property expression, data range or SWRL
@@ -1209,9 +1225,9 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
                 continue;
             }
             // An annotation of the declaration may make it give nothing.
-            match self.invalid_literal(i) {
-                Ok(None) => {}
-                Ok(Some(_)) => continue,
+            match self.plain_literals(i) {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => continue,
                 Err(Over) => break,
             }
             let entity = *self.children(i).last().unwrap();
@@ -1254,9 +1270,9 @@ impl<'d, 'a, S: Source<'a>> Mapper<'d, 'a, S> {
             if matches!(k, Some(K::Import | K::Annotation)) && subject.is_none() {
                 continue;
             }
-            match self.invalid_literal(i) {
-                Ok(None) => {}
-                Ok(Some(e)) => {
+            match self.plain_literals(i) {
+                Ok(Ok(warnings)) => self.invalid.extend(warnings),
+                Ok(Err(e)) => {
                     self.invalid.push(e);
                     continue;
                 }

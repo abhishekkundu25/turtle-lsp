@@ -3687,8 +3687,9 @@ fn owlxml_entity_shapes() -> String {
 }
 
 /// What the mapping refuses, beside what it reads: a header with a version
-/// IRI and no ontology IRI, a prefix declared twice, an `rdf:PlainLiteral`
-/// with no `@` and no language, a SWRL rule, an undeclared prefix.
+/// IRI and no ontology IRI, a prefix declared twice, a SWRL rule, an
+/// undeclared prefix; and an `rdf:PlainLiteral` with no `@` and no
+/// language, read with a warning.
 const OWLXML_ERRORS: &str = r##"<Ontology xmlns="http://www.w3.org/2002/07/owl#" versionIRI="http://example.org/v">
     <Prefix name="" IRI="http://example.org/x#"/>
     <Prefix name="" IRI="http://example.org/twice#"/>

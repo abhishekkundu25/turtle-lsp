@@ -47,8 +47,8 @@
 //!   `datatypeIRI` for a language string (`"…@tag"^^rdf:PlainLiteral`
 //!   too), and `datatypeIRI` for any other datatype, as the reader takes
 //!   them. It never writes `datatypeIRI` for `rdf:PlainLiteral`, so that
-//!   form is read as in Functional syntax, and without an `@` or an
-//!   `xml:lang` it is an error.
+//!   form is read as in Functional syntax: without an `@` or an
+//!   `xml:lang`, a plain string with a warning, as OWL API reads it.
 
 #[cfg(test)]
 mod annotation_tests;
