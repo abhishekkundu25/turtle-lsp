@@ -21,6 +21,8 @@ mod reader;
 mod source;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod timing;
 
 use crate::syntax::Parsed;
 #[cfg(test)]
