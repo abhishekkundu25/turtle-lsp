@@ -14,10 +14,14 @@ use std::sync::{Arc, Mutex};
 
 pub(super) type ContextUses = Mutex<FxHashMap<String, Vec<String>>>;
 
-/// Record the contexts `uri`'s analysis asked for. A document that asked
-/// for none, where none did, costs nothing.
-fn record_contexts(uses: &mut FxHashMap<String, Vec<String>>, uri: &str, asked: Vec<String>) {
+/// Record the contexts `uri`'s analysis asked for, a `file:` URL in the
+/// spelling documents are keyed by ([`normalize_uri`]), so a lookup compares
+/// strings. A document that asked for none, where none did, costs nothing.
+fn record_contexts(uses: &mut FxHashMap<String, Vec<String>>, uri: &str, mut asked: Vec<String>) {
     if !asked.is_empty() {
+        for u in asked.iter_mut().filter(|u| u.starts_with("file:")) {
+            *u = normalize_uri(u);
+        }
         uses.insert(uri.to_string(), asked);
     } else if !uses.is_empty() {
         uses.remove(uri);
@@ -215,8 +219,7 @@ impl Workspace {
             self.context_changes += 1;
         }
         let key = normalize_uri(url);
-        let users =
-            self.context_users(|u| u == url || (u.starts_with("file:") && normalize_uri(u) == key));
+        let users = self.context_users(|u| u == key);
         let mut paths = Vec::new();
         for u in &users {
             if let Some(d) = self.open.get_mut(u) {
