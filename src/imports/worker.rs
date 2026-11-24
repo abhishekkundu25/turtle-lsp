@@ -79,7 +79,7 @@ pub(super) fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
         // A bug on one pass must not leave the main loop waiting for its
         // answer: that pass is unresolved, with the reason, and the thread
         // goes on with a memo that starts over.
-        let attempt = crate::server::worker::catch("resolving imports", || {
+        let attempt = crate::worker::catch("resolving imports", || {
             #[cfg(test)]
             if job.req.imports.iter().any(|i| i.contains(PANIC_IMPORT)) {
                 panic!("injected resolver panic");

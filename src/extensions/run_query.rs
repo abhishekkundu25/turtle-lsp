@@ -71,9 +71,9 @@ use crate::query::{self, Answer, Inference, Inferred, Limits, QueryError};
 use crate::server::client::Client;
 use crate::server::json;
 use crate::server::progress::Progress;
-use crate::server::worker::Spawn;
 use crate::settings::{Reasoning, Settings};
 use crate::syntax::PrefixMap;
+use crate::worker::Spawn;
 use crate::workspace::{Workspace, is_sparql_path, normalize_uri, path_to_uri, uri_to_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};

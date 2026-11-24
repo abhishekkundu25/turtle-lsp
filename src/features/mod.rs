@@ -19,16 +19,16 @@ pub(crate) mod shacl_lint;
 pub mod shacl_validate;
 pub mod symbols;
 
-use crate::syntax::Syntax;
+use crate::syntax::{Family, Syntax};
 
 /// Whether the features that write text (quick fixes, refactorings,
 /// rename) may edit a document of `syntax`. RDF/XML is read-only: nothing
 /// writes XML, whatever form its references have. OWL Functional syntax and
 /// OWL/XML are read-only too: turtle-lsp reads them and writes none of them.
 pub(crate) fn writes(syntax: Syntax) -> bool {
-    match syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
+    match syntax.family() {
+        Family::Turtle | Family::JsonLd => true,
+        Family::ReadOnly => false,
     }
 }
 
@@ -97,5 +97,176 @@ pub(crate) mod rdfxml_fixture {
     /// [`TURTLE`] as Turtle.
     pub(crate) fn turtle(uri: &str) -> Analysis {
         Analysis::with_syntax(uri.into(), TURTLE, Arc::default(), true, Syntax::Turtle)
+    }
+}
+
+/// The answer of every per-syntax predicate, for each syntax, in one table:
+/// a regrouping of the syntaxes cannot move one answer unnoticed.
+#[cfg(test)]
+mod syntax_table {
+    use crate::analysis::Analysis;
+    use crate::features::diagnostics::Check;
+    use crate::syntax::splice::{Change, Edit, applies};
+    use crate::syntax::{PrefixMap, Syntax};
+    use std::sync::Arc;
+
+    /// Every syntax, in the order of the declaration.
+    const ALL: [Syntax; 8] = [
+        Syntax::Turtle,
+        Syntax::TriG,
+        Syntax::NTriples,
+        Syntax::NQuads,
+        Syntax::JsonLd,
+        Syntax::RdfXml,
+        Syntax::OwlFunctional,
+        Syntax::OwlXml,
+    ];
+
+    /// The place of `syntax` in [`ALL`] and its label in the table. The
+    /// match has no wildcard: a new variant does not compile until it is
+    /// listed here, beside [`ALL`], where it goes too.
+    /// [`all_is_every_syntax`] checks that [`ALL`] is in this order.
+    fn place(syntax: Syntax) -> (usize, &'static str) {
+        match syntax {
+            Syntax::Turtle => (0, "turtle"),
+            Syntax::TriG => (1, "trig"),
+            Syntax::NTriples => (2, "ntriples"),
+            Syntax::NQuads => (3, "nquads"),
+            Syntax::JsonLd => (4, "jsonld"),
+            Syntax::RdfXml => (5, "rdfxml"),
+            Syntax::OwlFunctional => (6, "ofn"),
+            Syntax::OwlXml => (7, "owx"),
+        }
+    }
+
+    /// A text of `syntax` with one statement and no errors.
+    fn text(syntax: Syntax) -> &'static str {
+        match syntax {
+            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+                "<http://example.org/a> <http://example.org/p> <http://example.org/b> .\n"
+            }
+            Syntax::JsonLd => {
+                "{\"@id\": \"http://example.org/a\", \"http://example.org/p\": {\"@id\": \"http://example.org/b\"}}\n"
+            }
+            Syntax::RdfXml => super::rdfxml_fixture::TEXT,
+            Syntax::OwlFunctional => {
+                "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\n)\n"
+            }
+            Syntax::OwlXml => {
+                "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n</Ontology>\n"
+            }
+        }
+    }
+
+    fn yes(b: bool) -> &'static str {
+        if b { "yes" } else { "no" }
+    }
+
+    /// A row of the table: the first of `cells` in 20 columns, the others in
+    /// 10 each, with no trailing space.
+    fn line(cells: &[&str]) -> String {
+        let (first, rest) = cells.split_first().expect("a row has cells");
+        let mut row = format!("{first:<20}");
+        for c in rest {
+            row += &format!("{c:<10}");
+        }
+        format!("{}\n", row.trim_end())
+    }
+
+    /// Whether [`applies`] lets a splice go on in a parse of `syntax`
+    /// (`ok`), or the fallback it gives. The edit is empty and fits, the
+    /// prefixes and the base are the parse's own, and the text has a
+    /// statement: the syntax is the only reason it can refuse.
+    fn splice(syntax: Syntax) -> String {
+        let text = text(syntax);
+        let a = Analysis::with_syntax(
+            "http://example.org/doc".into(),
+            text,
+            Arc::default(),
+            true,
+            syntax,
+        );
+        assert_eq!(a.parsed.syntax, syntax);
+        assert!(
+            a.parsed.errors.is_empty(),
+            "{syntax:?}: {:?}",
+            a.parsed.errors
+        );
+        let change = Change {
+            old_text: text,
+            new_text: text,
+            edit: Edit::new(0..0, 0),
+        };
+        let none = PrefixMap::default();
+        let base = a.parsed.document_base.as_deref();
+        match applies(&a.parsed, change, &none, &none, base) {
+            Ok(()) => "ok".into(),
+            Err(fallback) => format!("{fallback:?}"),
+        }
+    }
+
+    #[test]
+    fn all_is_every_syntax() {
+        for (i, s) in ALL.into_iter().enumerate() {
+            assert_eq!(place(s).0, i, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn every_syntax_answers_as_today() {
+        let mut got = line(&[
+            "syntax", "prefixes", "line", "keyword", "writes", "follows", "hinted", "tokens",
+            "splice",
+        ]);
+        for s in ALL {
+            let splice = splice(s);
+            got += &line(&[
+                place(s).1,
+                yes(s.has_prefixes()),
+                yes(s.is_line_based()),
+                yes(s.has_keyword_header()),
+                yes(super::writes(s)),
+                yes(super::kept::follows(s)),
+                yes(super::inlay::hinted(s)),
+                yes(!s.tokens(text(s)).is_empty()),
+                &splice,
+            ]);
+        }
+        // `Check::runs_on`: one row per check, one column per syntax.
+        let mut header = vec!["runs_on"];
+        header.extend(ALL.map(|s| place(s).1));
+        got += &line(&header);
+        for check in Check::ALL {
+            let name = format!("{check:?}");
+            let mut row = vec![name.as_str()];
+            row.extend(ALL.map(|s| yes(check.runs_on(s))));
+            got += &line(&row);
+        }
+        let want = "\
+            syntax              prefixes  line      keyword   writes    follows   hinted    tokens    splice\n\
+            turtle              yes       no        no        yes       yes       yes       yes       ok\n\
+            trig                yes       no        no        yes       yes       yes       yes       ok\n\
+            ntriples            no        yes       no        yes       yes       yes       yes       ok\n\
+            nquads              no        yes       no        yes       yes       yes       yes       ok\n\
+            jsonld              no        no        no        yes       no        yes       no        Syntax\n\
+            rdfxml              no        no        no        no        no        no        no        Syntax\n\
+            ofn                 no        no        yes       no        no        no        no        Syntax\n\
+            owx                 no        no        yes       no        no        no        no        Syntax\n\
+            runs_on             turtle    trig      ntriples  nquads    jsonld    rdfxml    ofn       owx\n\
+            Syntax              yes       yes       yes       yes       yes       yes       yes       yes\n\
+            UndeclaredPrefix    yes       yes       yes       yes       yes       no        no        no\n\
+            PrefixDeclarations  yes       yes       yes       yes       yes       no        no        no\n\
+            UnusedPrefix        yes       yes       yes       yes       yes       no        no        no\n\
+            JsonLd              yes       yes       yes       yes       yes       no        no        no\n\
+            TermUses            yes       yes       yes       yes       yes       yes       yes       yes\n\
+            Literals            yes       yes       yes       yes       yes       yes       yes       yes\n\
+            ShaclLint           yes       yes       yes       yes       yes       no        no        no\n\
+            UndescribedTerms    yes       yes       yes       yes       yes       yes       yes       yes\n\
+            LabelWhitespace     yes       yes       yes       yes       yes       no        no        no\n\
+            DuplicateLabel      yes       yes       yes       yes       yes       no        no        no\n\
+            MultipleLabels      yes       yes       yes       yes       yes       no        no        no\n\
+            HouseStyle          yes       yes       yes       yes       yes       no        no        no\n\
+            ";
+        assert_eq!(got, want, "\n{got}");
     }
 }

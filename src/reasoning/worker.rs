@@ -99,7 +99,7 @@ impl Worker {
         let (out_tx, out_rx) = unbounded();
         // Always a thread: the loop waits for jobs. Embedded, the server
         // runs `run_inline` instead and never starts one.
-        crate::server::worker::Spawn::Thread.run(
+        crate::worker::Spawn::Thread.run(
             "reasoning",
             // Defence in depth: TurbOWL's recursion is bounded.
             16 << 20,
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_subclass_gives_the_inferred_type_with_its_proof() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let out = shown(&shared, &job(7, vec![animals()]));
         assert_eq!(out.generation, 7);
         assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_run_over_the_size_limit_is_skipped_and_leaves_no_result() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         assert!(shared.shown().is_some());
         let small = Job {
@@ -456,7 +456,7 @@ mod tests {
              ex:Cat owl:disjointWith ex:Dog .\n\
              ex:tom a ex:Cat ,\n  ex:Dog .\n",
         );
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let out = shown(&shared, &job(1, vec![d]));
         let list = &out.diagnostics["file:///w/a.ttl"];
         let code = Some(lsp_types::NumberOrString::String("turbowl/cax-dw".into()));
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn hover_waits_at_most_its_limit_and_the_search_goes_on() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let rex = format!("{EX}rex");
         {
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn a_finished_run_is_not_read_before_the_server_shows_it() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let out = run_inline(&shared, &job(2, vec![animals(), fido()]));
         assert_eq!(out.stopped, None);
@@ -540,7 +540,7 @@ mod tests {
         let whole = whole_run();
         let limit = whole / 10;
         let shared = Arc::new(Shared::with_limits(
-            crate::server::worker::Spawn::Thread,
+            crate::worker::Spawn::Thread,
             Limits {
                 run: limit,
                 ..Limits::default()
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn timing_a_run_over_the_same_triples_takes_no_lock_hovers_wait_on() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         // A finding whose proof takes long to search: the run's findings
         // take up to their time limit.
         let docs = vec![animals(), chain(400)];
@@ -610,9 +610,9 @@ mod tests {
 
     #[test]
     fn a_proof_search_whose_thread_cannot_start_is_pending_not_run_on_the_hover() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
-        let t = crate::server::worker::failing_starts(|| {
+        let t = crate::worker::failing_starts(|| {
             shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10))
         });
         assert!(
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn one_proof_search_at_a_time_and_a_hover_again_gets_its_answer() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let more = doc(
             Source::Disk,
             "file:///w/b.ttl",
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn what_a_pending_hover_waits_on_ends_when_its_search_does() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let rex = format!("{EX}rex");
         assert!(shared.search_ended().is_none(), "no search yet");
@@ -734,10 +734,7 @@ mod tests {
 
     #[test]
     fn timing_a_hover_search_stops_at_its_time_limit_and_still_lists_every_type() {
-        for spawn in [
-            crate::server::worker::Spawn::Thread,
-            crate::server::worker::Spawn::Inline,
-        ] {
+        for spawn in [crate::worker::Spawn::Thread, crate::worker::Spawn::Inline] {
             let shared = Arc::new(Shared::with_limits(spawn, SHORT));
             shown(&shared, &job(1, vec![chain(400)]));
             let start = std::time::Instant::now();
@@ -760,7 +757,7 @@ mod tests {
 
     #[test]
     fn timing_under_the_limit_a_small_file_has_every_proof() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let types = proved(shared.inferred_types(&format!("{EX}rex"), Duration::from_secs(10)));
         assert!(types.iter().all(|t| t.proof.is_ok()));
@@ -768,7 +765,7 @@ mod tests {
 
     /// The finding about `ex:x` in [`chain`]`(links)`, run under `limits`.
     fn chain_finding(links: usize, limits: Limits) -> lsp_types::Diagnostic {
-        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, limits);
+        let shared = Shared::with_limits(crate::worker::Spawn::Thread, limits);
         let start = std::time::Instant::now();
         let mut out = run_inline(&shared, &job(1, vec![chain(links)]));
         assert!(
@@ -800,10 +797,7 @@ mod tests {
 
     #[test]
     fn timing_a_stopped_hover_is_the_answer_again_without_a_new_search() {
-        for spawn in [
-            crate::server::worker::Spawn::Thread,
-            crate::server::worker::Spawn::Inline,
-        ] {
+        for spawn in [crate::worker::Spawn::Thread, crate::worker::Spawn::Inline] {
             let shared = Arc::new(Shared::with_limits(spawn, SHORT));
             shown(&shared, &job(1, vec![chain(400)]));
             let x = format!("{EX}x");
@@ -837,7 +831,7 @@ mod tests {
             text.push_str(&format!("ex:C{} rdfs:subClassOf ex:C{i} .\n", i + 1));
         }
         let shared = Arc::new(Shared::with_limits(
-            crate::server::worker::Spawn::Thread,
+            crate::worker::Spawn::Thread,
             // The limit users get: a far shorter one leaves no time for
             // the types after a hundred stopped ones on a slow machine.
             Limits::default(),
@@ -878,7 +872,7 @@ mod tests {
 
     #[test]
     fn timing_a_hover_through_a_long_list_keeps_its_limit() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(
             &shared,
             &long_list("ex:U owl:unionOf", "ex:x a ex:K31999 ."),
@@ -899,7 +893,7 @@ mod tests {
 
     #[test]
     fn timing_a_finding_through_a_long_list_keeps_its_limit() {
-        let shared = Shared::new(crate::server::worker::Spawn::Thread);
+        let shared = Shared::new(crate::worker::Spawn::Thread);
         let start = std::time::Instant::now();
         let mut out = run_inline(
             &shared,
@@ -952,7 +946,7 @@ mod tests {
         };
         let start = std::time::Instant::now();
         run_inline(
-            &Shared::with_limits(crate::server::worker::Spawn::Thread, unlimited),
+            &Shared::with_limits(crate::worker::Spawn::Thread, unlimited),
             &job,
         );
         let room = start.elapsed() * 2 + super::super::state::Budget::RESERVE * 100;
@@ -960,7 +954,7 @@ mod tests {
             findings: room,
             ..Limits::default()
         };
-        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, limits);
+        let shared = Shared::with_limits(crate::worker::Spawn::Thread, limits);
         let mut out = run_inline(&shared, &job);
         let found = out
             .diagnostics
@@ -980,7 +974,7 @@ mod tests {
 
     #[test]
     fn inline_every_hover_has_its_proofs_at_once() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Inline));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Inline));
         shown(&shared, &job(1, vec![animals()]));
         for _ in 0..2 {
             let t = proved(shared.inferred_types(&format!("{EX}rex"), Duration::ZERO));
@@ -990,7 +984,7 @@ mod tests {
 
     #[test]
     fn hover_says_a_run_is_going_on_while_a_first_result_waits_to_be_shown() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let rex = format!("{EX}rex");
         assert!(matches!(
             shared.inferred_types(&rex, Duration::from_secs(1)),
@@ -1007,7 +1001,7 @@ mod tests {
 
     #[test]
     fn the_thread_runs_the_newest_job_and_writes_the_state() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let (worker, rx) = Worker::start(shared.clone()).unwrap();
         worker.submit(job(1, vec![animals()]));
         let out = rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -1035,7 +1029,7 @@ mod tests {
 
     #[test]
     fn complete_rules_and_off() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let complete = Job {
             rules: Reasoning::Complete,
             ..job(1, vec![animals()])
@@ -1051,12 +1045,12 @@ mod tests {
         assert!(shared.shown().is_none());
         // On by default; off builds nothing.
         let settings = crate::settings::Settings::default();
-        assert!(Shared::when_on(&settings, crate::server::worker::Spawn::Thread).is_some());
+        assert!(Shared::when_on(&settings, crate::worker::Spawn::Thread).is_some());
         let off = crate::settings::Settings {
             reasoning: Reasoning::Off,
             ..settings
         };
-        assert!(Shared::when_on(&off, crate::server::worker::Spawn::Thread).is_none());
+        assert!(Shared::when_on(&off, crate::worker::Spawn::Thread).is_none());
     }
 
     /// A long `rdfs:subClassOf` chain with members at its start: TurbOWL
@@ -1082,7 +1076,7 @@ mod tests {
             run: Duration::from_secs(600),
             ..Limits::default()
         };
-        let shared = Shared::with_limits(crate::server::worker::Spawn::Thread, unlimited);
+        let shared = Shared::with_limits(crate::worker::Spawn::Thread, unlimited);
         let start = std::time::Instant::now();
         let out = run_inline(&shared, &job(1, vec![animals(), slow()]));
         let whole = start.elapsed();
@@ -1106,7 +1100,7 @@ mod tests {
         let whole = whole_run();
         let limit = whole / 10;
         let shared = Arc::new(Shared::with_limits(
-            crate::server::worker::Spawn::Thread,
+            crate::worker::Spawn::Thread,
             Limits {
                 run: limit,
                 ..Limits::default()
@@ -1133,7 +1127,7 @@ mod tests {
         animal_of_rex(&shared);
         // With no result before it, a stopped run leaves none.
         let shared = Arc::new(Shared::with_limits(
-            crate::server::worker::Spawn::Inline,
+            crate::worker::Spawn::Inline,
             Limits {
                 run: limit,
                 ..Limits::default()
@@ -1148,7 +1142,7 @@ mod tests {
     #[test]
     fn timing_a_cancel_stops_the_run_and_hover_reads_the_last_result_meanwhile() {
         let whole = whole_run();
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         shown(&shared, &job(1, vec![animals()]));
         let next = job(2, vec![animals(), slow()]);
         let cancel = next.cancel.clone();
@@ -1175,7 +1169,7 @@ mod tests {
 
     #[test]
     fn the_inferred_types_are_read_up_to_max_triples_and_hover_is_told() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         // Six triples, and more inferred.
         let tight = Job {
             max_triples: 6,
@@ -1200,7 +1194,7 @@ mod tests {
 
     #[test]
     fn a_run_over_the_same_triples_reasons_no_round_and_takes_their_new_places() {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         let reasoned = || shared.reasoned.load(Ordering::Relaxed);
         shown(&shared, &job(1, vec![animals()]));
         assert_eq!(reasoned(), 1);

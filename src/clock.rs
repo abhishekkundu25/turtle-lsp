@@ -15,6 +15,8 @@ pub fn elapsed() -> std::time::Duration {
 }
 
 #[cfg(target_arch = "wasm32")]
+// The page's clock is an import, and calling an import is unsafe.
+#[allow(unsafe_code)]
 mod page {
     use std::time::Duration;
 

@@ -513,6 +513,40 @@ scenario("jsonld", "JSON-LD against Turtle of the same length", async () => {
   jsonldKeystrokeP50 = p50("jsonld-keystroke")
 })
 
+// Indexed JSON-LD documents that each name one context file by a `file:` URL,
+// every other one spelled with an escaped letter, and a Turtle file typed in:
+// each keystroke asks which documents use the Turtle file as a context.
+scenario("jsonld-contexts", "typing in Turtle beside 200 JSON-LD documents with file: contexts", async () => {
+  const users = scaled(200)
+  await withDir("turtle-bench-contexts-", async (dir) => {
+    const ws = fs.realpathSync(dir)
+    const ctxPath = path.join(ws, "ctx.jsonld")
+    fs.writeFileSync(ctxPath, `{"@context": {"name": "http://example.org/name"}}\n`)
+    const plain = uriOf(ctxPath)
+    const escaped = plain.replace(/\/ctx\.jsonld$/, "/c%74x.jsonld")
+    for (let i = 0; i < users; i++) {
+      const at = i % 2 ? escaped : plain
+      fs.writeFileSync(path.join(ws, `d${i}.jsonld`), `{"@context": "${at}", "@id": "http://example.org/d${i}", "name": "Doc ${i}"}\n`)
+    }
+    const file = path.join(ws, "data.ttl")
+    let doc = bigDoc(50)
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc, "turtle")
+      await s.diagnosticsFor(u, WAIT)
+      const keys = await time(25, async (i) => {
+        doc = typeAt(s, u, doc, `"Person ${i}"`, `"Person ${i}x"`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("jsonld-contexts-keystroke", `Turtle keystroke -> diagnostics beside ${users} JSON-LD context users`, keys, {
+        gate: true,
+        notes: `the context lookup over ${users} recorded file: URLs, half of them escaped`,
+      })
+    })
+  })
+})
+
 // A namespace of own terms that the workspace describes, and a document that
 // uses a thousand misspellings of them: every one is flagged, and the first
 // hundred get a "did you mean" search over all the namespace's terms.
@@ -774,6 +808,68 @@ scenario("big-vocab", "a vocabulary over 2 MB: open and keystroke", async () => 
         await s.diagnosticsFor(u, WAIT)
       })
       record("big-vocab-keystroke", `big vocabulary: keystroke -> diagnostics (${size})`, keys, { gate: true })
+    })
+  })
+})
+
+// `m` subjects without a label, then `n` classes as in `vocabDoc` with a
+// skos:prefLabel too: one class in 50 has the rdfs:label of the class before it
+// (`duplicate-label` on both), one in 100 a second rdfs:label
+// (`multiple-labels` on both). The unlabelled block comes first, so finding
+// the text a keystroke edits is quick.
+function labelledDoc(m, n) {
+  let out = `${header}@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+`
+  for (let i = 0; i < m; i++) {
+    out += `
+ex:d${i} a foaf:Person ;
+    foaf:name "Person ${i}" ;
+    foaf:knows ex:d${(i + 1) % m} .
+`
+  }
+  for (let i = 0; i < n; i++) {
+    const label = i % 50 === 1 ? i - 1 : i
+    const second = i % 100 === 7 ? `\n    rdfs:label "Other ${i}"@en ;` : ""
+    out += `
+ex:C${i} a owl:Class ;
+    rdfs:label "Class ${label}"@en ;${second}
+    skos:prefLabel "Class number ${i}"@en ;
+    skos:definition "A class numbered ${i}."@en ;
+    rdfs:subClassOf ex:C${(i + 1) % n} .
+`
+  }
+  return out
+}
+
+scenario("big-labels", "a labelled vocabulary over 2 MB: keystroke outside every label", async () => {
+  const target = scaled(2_400_000)
+  const m = 1000
+  let n = Math.ceil(target / 200)
+  let doc = labelledDoc(m, n)
+  while (doc.length < target) doc = labelledDoc(m, (n = Math.ceil(n * 1.05)))
+  await withDir("turtle-bench-labels-", async (ws) => {
+    const file = path.join(ws, "labels.ttl")
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc)
+      const first = await s.diagnosticsFor(u, WAIT)
+      const codes = new Set(first.map((d) => d.code))
+      expect(codes.has("duplicate-label") && codes.has("multiple-labels"), "big-labels: no label findings to keep")
+      const size = `${n} classes and ${m} unlabelled subjects, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
+      // Each keystroke is in a name of the unlabelled block, two subjects or
+      // more from the prefixes and far from the classes: the statements the
+      // splice parses again hold no label, and the index's change set is
+      // empty.
+      const keys = await time(20, async (i) => {
+        doc = typeAt(s, u, doc, `"Person ${i + 2}"`, `"Person ${i + 2}x"`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("big-labels-keystroke", `big labelled vocabulary: keystroke outside every label -> diagnostics (${size})`, keys, {
+        gate: true,
+        notes: "the kept label findings brought up to date after an edit with no label in its window and an empty change set",
+      })
     })
   })
 })

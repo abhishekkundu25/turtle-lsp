@@ -7,7 +7,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::features::refactor::text_edits;
 use crate::knowledge::{Knowledge, Source};
 use crate::syntax::names::is_pn_prefix;
-use crate::syntax::{Form, Iri, IriKey, Node, PrefixMap, Span, Syntax};
+use crate::syntax::{Family, Form, Iri, IriKey, Node, PrefixMap, Span, Syntax};
 use crate::workspace::{PREFIX_FILE, as_uri, uri_to_path};
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -673,14 +673,12 @@ pub(crate) fn rename_term(
         .docs_referencing(old)
         .filter(|(_, src, _)| *src != Source::External)
     {
-        match other.parsed.syntax {
-            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+        match other.parsed.syntax.family() {
+            Family::ReadOnly => {
                 return Err(not_edited(other));
             }
-            Syntax::JsonLd => jsonld_docs.push(other),
-            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
-                turtle_docs.push(other)
-            }
+            Family::JsonLd => jsonld_docs.push(other),
+            Family::Turtle => turtle_docs.push(other),
         }
     }
     if let Some(old) = Iri::get(old) {

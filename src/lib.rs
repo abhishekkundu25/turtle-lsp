@@ -2,39 +2,14 @@
 //!
 //! # Modules
 //!
-//! | Module | Owns | Called by |
-//! |---|---|---|
-//! | [`syntax`] | Turtle, TriG, N-Triples and N-Quads lexer and parser | every feature |
-//! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
-//! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
-//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle; its XML scanner (`rdfxml::xml`) | [`analysis`], [`imports`]; `owx` (the scanner) |
-//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the axioms mapped to RDF (the W3C mapping) into the same parse as Turtle, with the exact span of every IRI, and the errors; the tree, the signature table and the mapping that `owx` shares | [`analysis`], [`imports`], `owx` |
-//! | `owx` | OWL 2 XML Serialization (OWL/XML) frontend: a reader over the `rdfxml` scanner into the `ofn` tree, mapped by the `ofn` mapping | [`analysis`], [`imports`] |
-//! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
-//! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
-//! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
-//! | `vocab` | Embedded well-known vocabularies | [`knowledge`], [`features`] |
-//! | [`imports`] | `owl:imports` resolution and the import cache | `workspace`, [`server`], [`batch`] |
-//! | `fetch` | Web requests: redirects, the address rule, size, time and request budgets, the cache file layout | [`imports`], [`jsonld`] |
-//! | [`features`] | Completion, hover, diagnostics, formatting and the other editor features | [`server`], `ide`, [`batch`] |
-//! | `diagnose` | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | `ide`, [`server`], [`batch`] |
-//! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`], [`knowledge`] |
-//! | [`rdf`] | The union of documents' triples as a graph and a SPARQL dataset | [`query`], [`shacl`] |
-//! | [`query`] | Running SPARQL queries and rendering results | [`cli`], [`server`], [`batch`], the browser engine |
-//! | `reasoning` | Reasoning over the workspace with TurbOWL: the base, the shared state, the reasoning thread, findings as diagnostics, proofs for hover | [`server`], `ide`, [`features`] |
-//! | [`settings`] | Client settings and their layers | [`server`], [`cli`] |
-//! | `commands` | `workspace/executeCommand` commands | [`server`] |
-//! | [`server`] | The LSP main loop, and the worker threads other modules start | `main`, the browser engine |
-//! | [`batch`] | Files analysed as one workspace without the event loop | [`cli`], the browser engine |
-//! | [`cli`] | `check`, `format` and `query` | `main` |
-//! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`features`] |
-//! | `ide` | `ide::Session`: the editor requests over one workspace, routed by document kind | [`server`] |
-//! | `extensions` | The requests beyond the LSP standard: `turtle/graph`, "▶ Run query" | [`server`], [`features`] (the Run query lens) |
-//! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
+//! `ARCHITECTURE.md`, at the root of the repository, has the module table
+//! (what each module owns and which modules call it), the layer rules that
+//! the `boundaries` test checks, and the files that hold one part each of
+//! the larger modules. The module doc at the top of each file says the rest.
 //!
 //! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `ofn`,
-//! `owx`, `rdfxml`, `reasoning`, `vocab` and `workspace` are private to the
-//! crate: no consumer uses them.
+//! `owx`, `rdfxml`, `reasoning`, `vocab`, `worker` and `workspace` are
+//! private to the crate: no consumer uses them.
 //!
 //! # Public interface
 //!
@@ -195,6 +170,7 @@
 //! use turtle_lsp::syntax::parse as _; // examples, tests
 //! use turtle_lsp::syntax::parse_with_base as _; // examples, tests
 //! ```
+#![deny(unsafe_code)]
 
 pub mod analysis;
 pub mod batch;
@@ -226,13 +202,25 @@ pub mod shacl;
 pub mod sparql;
 pub mod syntax;
 pub(crate) mod vocab;
+pub(crate) mod worker;
 pub(crate) mod workspace;
 
 /// The version of this build, as the server reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The module boundaries that `AGENTS.md` ("Where things live") states, read
-/// from the source. Comments and `#[cfg(test)]` items are not checked.
+/// The module boundaries, read from the source: each library and frontend
+/// names only what its layer allows (`LAYERS`) and no protocol crate; core
+/// code names no `extensions` (`EXTENSION_USERS` excepted); no file outside
+/// `server` and `extensions` names `crate::server`; and no product file
+/// outside `src/oracle.rs` and `ORACLE_USERS` names `crate::oracle`.
+/// `AGENTS.md` ("Where things live") and `ARCHITECTURE.md` ("The modules")
+/// state the layer and `extensions` rules. Comments, literals, `#[cfg(test)]`
+/// items and the files that a `#[cfg(test)] mod x;` declares are not checked.
+/// Paths are read from the tokens: `use` groups expanded, `self` and `super`
+/// resolved.
+///
+/// Limits: a path that a macro builds, or that a re-export reaches (`pub use`
+/// in an allowed module), is not seen.
 #[cfg(test)]
 mod boundaries {
     const LIBRARIES: &str = "syntax rdf shacl sparql::lexer sparql::spargebra_input";
@@ -250,24 +238,33 @@ mod boundaries {
     /// The core files that may name `extensions`: the router and the Run query lens.
     const EXTENSION_USERS: &[&str] = &["src/server.rs", "src/features/lens.rs"];
 
+    /// The product files outside `src/oracle.rs` that may name `crate::oracle`:
+    /// none.
+    const ORACLE_USERS: &[&str] = &[];
+
+    /// The protocol crates. The libraries of `LAYERS` name none of them.
+    const PROTOCOL: &[&str] = &["lsp_types", "lsp_server", "serde_json"];
+
     #[test]
     fn each_file_names_only_what_its_layer_allows() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (mut dirs, mut errors) = (vec!["src".to_string()], Vec::new());
+        let (mut dirs, mut files) = (vec!["src".to_string()], Vec::new());
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(root.join(&dir)).unwrap() {
                 let name = format!("{dir}/{}", entry.unwrap().file_name().to_string_lossy());
                 if root.join(&name).is_dir() {
                     dirs.push(name);
                 } else if name.ends_with(".rs") {
-                    check(
-                        &name,
-                        &std::fs::read_to_string(root.join(&name)).unwrap(),
-                        &mut errors,
-                    );
+                    let text = std::fs::read_to_string(root.join(&name)).unwrap();
+                    files.push((name, text));
                 }
             }
         }
+        let files: Vec<_> = files
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        let errors = check(&files);
         assert!(errors.is_empty(), "{}", errors.join("\n"));
     }
 
@@ -275,11 +272,7 @@ mod boundaries {
     /// `rdfxml`, and nothing else: not the RDF/XML grammar, not a feature.
     #[test]
     fn owx_names_syntax_ofn_and_the_xml_scanner_only() {
-        let errors = |text: &str| {
-            let mut errors = Vec::new();
-            check("src/owx/reader.rs", text, &mut errors);
-            errors.len()
-        };
+        let errors = |text: &str| check(&[("src/owx/reader.rs", text)]).len();
         let allowed = "use crate::syntax::Span;\nuse crate::ofn::tree::Document;\nuse crate::rdfxml::xml::{self, Scanner};\nuse super::source::OwlXml;\n";
         assert_eq!(errors(allowed), 0);
         assert_eq!(errors("use crate::rdfxml::parse;\n"), 1);
@@ -290,47 +283,618 @@ mod boundaries {
         assert_eq!(errors("#[cfg(test)]\nuse crate::features::writes;\n"), 0);
     }
 
-    fn check(name: &str, text: &str, errors: &mut Vec<String>) {
-        let layer = LAYERS.iter().find(|(p, _)| name.starts_with(p));
-        let core = !name.starts_with("src/extensions/") && !EXTENSION_USERS.contains(&name);
-        let module = name[4..].trim_end_matches(".rs").trim_end_matches("/mod");
-        let parent = module
-            .rsplit_once('/')
-            .map_or("", |p| p.0)
-            .replace('/', "::");
-        let mut test_item = None;
-        for (i, line) in text.lines().enumerate() {
-            let code = line.trim_start();
-            let indent = line.len() - code.len();
-            if let Some(at) = test_item {
-                // The test item ends at the first line at its indent that closes it.
-                if indent == at && (code.ends_with(';') || code.ends_with('}')) {
-                    test_item = None;
-                }
-                continue;
-            } else if code == "#[cfg(test)]" {
-                test_item = Some(indent);
-            }
-            if code.starts_with("//") || test_item.is_some() {
-                continue;
-            }
-            let at = format!("{name}:{}", i + 1);
-            if core && (code.contains("crate::extensions") || code.contains("extensions::")) {
-                errors.push(format!("{at}: core code may not name extensions: {code}"));
-            }
-            let Some((_, allowed)) = layer else { continue };
-            let named = code.replace("super::", &format!("crate::{parent}::"));
-            for (k, _) in named.match_indices("crate::") {
-                let rest = &named[k + 7..];
-                let names = |m| {
-                    rest.strip_prefix(m).is_some_and(|r: &str| {
-                        !r.starts_with(|c: char| c == '_' || c.is_alphanumeric())
-                    })
-                };
-                if !allowed.split(' ').any(names) {
-                    errors.push(format!("{at}: may name only crate::{{{allowed}}}: {code}"));
+    /// How many errors `check` reports for one file.
+    fn count(name: &str, text: &str) -> usize {
+        check(&[(name, text)]).len()
+    }
+
+    /// `super` chains resolve against the file's module path, `mod.rs`
+    /// folded; `self` names the file's own module, which is always allowed.
+    #[test]
+    fn super_chains_resolve_to_the_module_they_reach() {
+        assert_eq!(
+            count("src/syntax/parser.rs", "use super::super::features::x;\n"),
+            1
+        );
+        assert_eq!(
+            count("src/syntax/parser.rs", "use super::lexer::Token;\n"),
+            0
+        );
+        assert_eq!(count("src/owx/mod.rs", "use super::features::x;\n"), 1);
+        assert_eq!(count("src/sparql/lexer.rs", "use super::format::x;\n"), 1);
+        assert_eq!(count("src/sparql/lexer.rs", "use self::kinds::X;\n"), 0);
+        let up = "use self::super::super::features::x;\n";
+        assert_eq!(count("src/syntax/parser.rs", up), 1);
+    }
+
+    /// A `#[cfg(test)]` item ends where its braces or parentheses balance:
+    /// a struct field at its `,`, not at the next line that ends in `;`.
+    #[test]
+    fn a_test_item_ends_where_its_brackets_balance() {
+        let field = "struct S {\n    #[cfg(test)]\n    probe: u32,\n    a: u32,\n}\nfn f() {\n    let x = crate::features::x();\n}\n";
+        assert_eq!(count("src/syntax/parser.rs", field), 1);
+        let arm = "fn f(k: u8) -> u8 {\n    match k {\n        #[cfg(test)]\n        0 => 1,\n        _ => {\n            crate::features::x();\n            2\n        }\n    }\n}\n";
+        assert_eq!(count("src/syntax/parser.rs", arm), 1);
+        // A declaration's generics may hold a `,`: the item ends at its body.
+        let generic = "#[cfg(test)]\nfn f() -> Result<(), u8> {\n    crate::features::x();\n}\n";
+        assert_eq!(count("src/syntax/parser.rs", generic), 0);
+        // A test item that never closes reads to the end of the file: an error.
+        assert_eq!(
+            count("src/syntax/parser.rs", "#[cfg(test)]\nmod tests {\n"),
+            1
+        );
+    }
+
+    /// The text that a test file may hold, and a product file may not.
+    const CROSS_LAYER: &str = "use crate::features::writes;\n";
+
+    /// `src/syntax/parser.rs` declares `mod tests;` under `#[cfg(test)]`: the
+    /// test module is `src/syntax/parser/tests.rs` or a folder of that name.
+    #[test]
+    fn a_test_file_under_a_file_parent_is_test_code() {
+        let parent = (
+            "src/syntax/parser.rs",
+            "#[cfg(test)]\nmod tests;\nmod lexer;\n",
+        );
+        for test in [
+            "src/syntax/parser/tests.rs",
+            "src/syntax/parser/tests/mod.rs",
+            "src/syntax/parser/tests/more.rs",
+        ] {
+            assert_eq!(check(&[parent, (test, CROSS_LAYER)]).len(), 0, "{test}");
+        }
+        for product in [
+            "src/syntax/tests.rs",
+            "src/syntax/parser/lexer.rs",
+            "src/syntax/parser/tests_more.rs",
+        ] {
+            assert_eq!(
+                check(&[parent, (product, CROSS_LAYER)]).len(),
+                1,
+                "{product}"
+            );
+        }
+    }
+
+    /// `src/owx/mod.rs` declares `mod tests;` under `#[cfg(test)]`: the test
+    /// module is `src/owx/tests.rs` or a folder of that name.
+    #[test]
+    fn a_test_file_under_a_mod_rs_parent_is_test_code() {
+        let parent = (
+            "src/owx/mod.rs",
+            "#[cfg(test)]\npub(crate) mod tests;\nmod reader;\n",
+        );
+        for test in [
+            "src/owx/tests.rs",
+            "src/owx/tests/mod.rs",
+            "src/owx/tests/more.rs",
+        ] {
+            assert_eq!(check(&[parent, (test, CROSS_LAYER)]).len(), 0, "{test}");
+        }
+        for product in [
+            "src/owx/reader.rs",
+            "src/owx/mod/tests.rs",
+            "src/ofn/tests.rs",
+        ] {
+            assert_eq!(
+                check(&[parent, (product, CROSS_LAYER)]).len(),
+                1,
+                "{product}"
+            );
+        }
+    }
+
+    /// An `extensions` import in a group is checked at its origin, aliased or not.
+    #[test]
+    fn a_grouped_extensions_import_is_core_naming_extensions() {
+        let core = "src/features/hover.rs";
+        assert_eq!(count(core, "use crate::{extensions as ext};\n"), 1);
+        assert_eq!(count(core, "use crate::{\n    extensions as ext,\n};\n"), 1);
+        assert_eq!(
+            count(
+                core,
+                "use crate::{syntax::{Span, Syntax}, extensions::{self as e}};\n"
+            ),
+            1
+        );
+        assert_eq!(
+            count("src/features/lens.rs", "use crate::{extensions as ext};\n"),
+            0
+        );
+    }
+
+    /// A group is expanded, nested groups included, and each path is checked.
+    #[test]
+    fn a_grouped_import_is_checked_path_by_path() {
+        let owx = "src/owx/reader.rs";
+        assert_eq!(count(owx, "use crate::{syntax::Span};\n"), 0);
+        let nested =
+            "use crate::{\n    ofn::tree::Document,\n    rdfxml::xml::{self, Scanner},\n};\n";
+        assert_eq!(count(owx, nested), 0);
+        assert_eq!(count(owx, "use crate::{syntax::Span, rdfxml::parse};\n"), 1);
+        // A path after `as` in an expression is a path, not an alias.
+        let cast = "let c = <u8 as crate::features::Code>::f();\n";
+        assert_eq!(count(owx, cast), 1);
+    }
+
+    /// String and raw-string contents are not code: a column-0 `"#;` does not
+    /// end a test module, and a path in a product string is not named.
+    #[test]
+    fn literals_are_not_code() {
+        let owx = "src/owx/reader.rs";
+        let fixture = "fn f() {}\n#[cfg(test)]\nmod tests {\n    const T: &str = r#\"\n<a/>\n\"#;\n    use crate::features::writes;\n}\n";
+        assert_eq!(count(owx, fixture), 0);
+        assert_eq!(count(owx, "const S: &str = \"crate::features\";\n"), 0);
+        let hidden = "const S: &str = r#\"\n#[cfg(test)]\n\"#;\nuse crate::features::writes;\n";
+        assert_eq!(count(owx, hidden), 1);
+        assert_eq!(
+            count(owx, "const C: char = '{';\nuse crate::features::writes;\n"),
+            1
+        );
+    }
+
+    /// Below the server, no file names `crate::server`.
+    #[test]
+    fn only_the_listed_files_name_the_server() {
+        let spawn = "let s = crate::server::WORKER_STACK;\n";
+        assert_eq!(count("src/features/hover.rs", spawn), 1);
+        assert_eq!(count("src/workspace.rs", spawn), 1);
+        assert_eq!(
+            count("src/workspace/kinds.rs", "use super::super::server::X;\n"),
+            1
+        );
+        assert_eq!(count("src/server_x.rs", spawn), 1);
+        for name in [
+            "src/server.rs",
+            "src/server/index.rs",
+            "src/extensions/mod.rs",
+        ] {
+            assert_eq!(count(name, spawn), 0, "{name}");
+        }
+        let main = "fn main() {\n    let _ = turtle_lsp::server::run();\n}\n";
+        assert_eq!(count("src/main.rs", main), 0);
+    }
+
+    /// Only `ORACLE_USERS` name `crate::oracle`.
+    #[test]
+    fn only_the_listed_files_name_the_oracle() {
+        let call = "let x = crate::oracle::check(a, b);\n";
+        assert_eq!(count("src/features/hover.rs", call), 1);
+        assert_eq!(count("src/workspace.rs", call), 1);
+        assert_eq!(
+            count(
+                "src/oracle.rs",
+                "use self::x::Y;\nlet y = crate::oracle::z();\n"
+            ),
+            0
+        );
+    }
+
+    /// The layered libraries name no protocol crate.
+    #[test]
+    fn libraries_name_no_protocol_crate() {
+        assert_eq!(
+            count("src/syntax/parser.rs", "fn f(r: lsp_types::Range) {}\n"),
+            1
+        );
+        assert_eq!(count("src/shacl/model.rs", "use serde_json::Value;\n"), 1);
+        assert_eq!(count("src/owx/reader.rs", "use lsp_server::Message;\n"), 1);
+        assert_eq!(count("src/rdf/mod.rs", "use lsp_types as lt;\n"), 1);
+        assert_eq!(count("src/features/hover.rs", "use lsp_types::Range;\n"), 0);
+    }
+
+    /// The boundary errors of `files`, given as (path from the crate root, text).
+    /// A file that a `#[cfg(test)] mod x;` declares, and the folder below it,
+    /// is test code and is not checked.
+    fn check(files: &[(&str, &str)]) -> Vec<String> {
+        let masked: Vec<String> = files.iter().map(|(_, text)| mask(text)).collect();
+        let mut tests = Vec::new();
+        for ((name, _), code) in files.iter().zip(&masked) {
+            for (start, end) in test_items(code) {
+                let item = &code[start + TEST.len()..end.unwrap_or(code.len())];
+                if let Some(module) = declared_module(item) {
+                    tests.push(format!("{}{module}", module_dir(name)));
                 }
             }
         }
+        let mut errors = Vec::new();
+        for ((name, text), code) in files.iter().zip(masked) {
+            let test =
+                |t: &String| *name == format!("{t}.rs") || name.starts_with(&format!("{t}/"));
+            if !tests.iter().any(test) {
+                check_file(name, text, code, &mut errors);
+            }
+            // Paths of one group on one line give one message.
+            errors.dedup();
+        }
+        errors
+    }
+
+    /// The attribute that starts a test item.
+    const TEST: &str = "#[cfg(test)]";
+
+    fn check_file(name: &str, text: &str, code: String, errors: &mut Vec<String>) {
+        let lines: Vec<&str> = text.lines().collect();
+        let breaks: Vec<usize> = code.match_indices('\n').map(|(i, _)| i).collect();
+        let mut report = |offset: usize, why: String| {
+            let n = breaks.partition_point(|&b| b < offset);
+            let code = lines.get(n).map_or("", |l| l.trim());
+            errors.push(format!("{name}:{}: {why}: {code}", n + 1));
+        };
+        let mut product = code.into_bytes();
+        for (start, end) in test_items(std::str::from_utf8(&product).unwrap()) {
+            if end.is_none() {
+                report(start, "the test item does not end".into());
+            }
+            let end = end.unwrap_or(product.len());
+            for b in &mut product[start..end] {
+                if *b != b'\n' {
+                    *b = b' ';
+                }
+            }
+        }
+        let product = String::from_utf8(product).unwrap();
+        let layer = LAYERS.iter().find(|(p, _)| name.starts_with(p));
+        let core = !name.starts_with("src/extensions/") && !EXTENSION_USERS.contains(&name);
+        let below_server = !(name == "src/server.rs"
+            || name.starts_with("src/server/")
+            || name.starts_with("src/extensions/"));
+        let outside_oracle = !(name == "src/oracle.rs"
+            || name.starts_with("src/oracle/")
+            || ORACLE_USERS.contains(&name));
+        let module = file_module(name);
+        let tokens: Vec<_> = tokens(&product).collect();
+        if layer.is_some() {
+            for &(offset, token) in &tokens {
+                if PROTOCOL.contains(&token) {
+                    report(offset, format!("a library may not name {token}"));
+                }
+            }
+        }
+        // The module path at each token: the file's, plus the inline `mod x {}` it is in.
+        let (mut depth, mut inline) = (0, Vec::new());
+        let mut i = 0;
+        while i < tokens.len() {
+            let (_, token) = tokens[i];
+            let starts = i == 0 || tokens[i - 1].1 != "::";
+            if starts && is_ident(token) && tokens.get(i + 1).is_some_and(|t| t.1 == "::") {
+                let mut paths = Vec::new();
+                i = tree(&tokens, i, Vec::new(), &mut paths);
+                let mut here = module.clone();
+                here.extend(inline.iter().map(|(_, m): &(usize, &str)| m.to_string()));
+                for (path, offset) in paths {
+                    let resolved = resolve(&path, &here);
+                    let first = resolved
+                        .as_ref()
+                        .and_then(|r| r.first())
+                        .map(String::as_str);
+                    let inner = &path[..path.len() - 1];
+                    if core && (first == Some("extensions") || inner.contains(&"extensions")) {
+                        report(offset, "core code may not name extensions".into());
+                    }
+                    if below_server && first == Some("server") {
+                        report(offset, "this file may not name crate::server".into());
+                    }
+                    if outside_oracle && first == Some("oracle") {
+                        report(offset, "only ORACLE_USERS may name crate::oracle".into());
+                    }
+                    let (Some((_, allowed)), Some(resolved)) = (layer, resolved) else {
+                        continue;
+                    };
+                    // A `self` path that stays in its module names that module or one below it.
+                    if path[0] == "self" && resolved.starts_with(&here) {
+                        continue;
+                    }
+                    let joined = resolved.join("::");
+                    let names = |m: &str| {
+                        joined
+                            .strip_prefix(m)
+                            .is_some_and(|r| r.is_empty() || r.starts_with("::"))
+                    };
+                    if !allowed.split(' ').any(names) {
+                        report(offset, format!("may name only crate::{{{allowed}}}"));
+                    }
+                }
+                continue;
+            }
+            match token {
+                "{" => {
+                    depth += 1;
+                    if i >= 2 && tokens[i - 2].1 == "mod" {
+                        inline.push((depth, tokens[i - 1].1));
+                    }
+                }
+                "}" => {
+                    if inline.last().is_some_and(|m| m.0 == depth) {
+                        inline.pop();
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// `text` with its comments and the whole of its string, char and raw
+    /// string literals turned to spaces. Line breaks stay, so lines keep
+    /// their numbers.
+    fn mask(text: &str) -> String {
+        let c: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < c.len() {
+            let rest = &c[i..];
+            let after_ident = |k: usize| i >= k && is_ident_char(c[i - k]);
+            let raw_prefix = rest[0] == 'r'
+                && (!after_ident(1) || (matches!(c[i - 1], 'b' | 'c') && !after_ident(2)));
+            let hashes = rest.iter().skip(1).take_while(|&&h| h == '#').count();
+            let len = if rest.starts_with(&['/', '/']) {
+                rest.iter().position(|&ch| ch == '\n').unwrap_or(rest.len())
+            } else if rest.starts_with(&['/', '*']) {
+                let (mut depth, mut j) = (0, 0);
+                while j < rest.len() {
+                    if rest[j..].starts_with(&['/', '*']) {
+                        (depth, j) = (depth + 1, j + 2);
+                    } else if rest[j..].starts_with(&['*', '/']) {
+                        (depth, j) = (depth - 1, j + 2);
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                j
+            } else if raw_prefix && rest.get(1 + hashes) == Some(&'"') {
+                let end: Vec<char> = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let body = 2 + hashes;
+                (body..rest.len())
+                    .find(|&j| rest[j..].starts_with(&end))
+                    .map_or(rest.len(), |j| j + end.len())
+            } else if rest[0] == '"' {
+                let mut j = 1;
+                while j < rest.len() && rest[j] != '"' {
+                    j += if rest[j] == '\\' { 2 } else { 1 };
+                }
+                (j + 1).min(rest.len())
+            } else if rest.starts_with(&['\'', '\\']) {
+                (3..rest.len())
+                    .find(|&j| rest[j] == '\'')
+                    .map_or(rest.len(), |j| j + 1)
+            } else if rest[0] == '\'' && rest.get(2) == Some(&'\'') {
+                3
+            } else {
+                out.push(rest[0]);
+                i += 1;
+                continue;
+            };
+            out.extend(
+                rest[..len]
+                    .iter()
+                    .map(|&ch| if ch == '\n' { '\n' } else { ' ' }),
+            );
+            i += len;
+        }
+        out
+    }
+
+    /// The byte ranges of the `#[cfg(test)]` items in masked code, each from
+    /// its attribute to its end; `None` for an item that never ends.
+    fn test_items(code: &str) -> Vec<(usize, Option<usize>)> {
+        let mut items = Vec::new();
+        let mut from = 0;
+        while let Some(found) = code[from..].find(TEST) {
+            let start = from + found;
+            let end = item_end(code, start + TEST.len());
+            items.push((start, end));
+            let Some(end) = end else { break };
+            from = end;
+        }
+        items
+    }
+
+    /// Where the item that starts at `from` ends: after a `;` outside
+    /// brackets, after the `}` that closes its first `{`, or before a closer
+    /// of the block it is in. A field, variant, match arm or expression also
+    /// ends after a `,` outside brackets; a declaration does not, since its
+    /// generics may hold one.
+    fn item_end(code: &str, from: usize) -> Option<usize> {
+        let declaration = declares(&code[from..]);
+        let mut depth = 0;
+        for (i, &c) in code.as_bytes().iter().enumerate().skip(from) {
+            match c {
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' if depth == 0 => return Some(i),
+                b'}' if depth == 1 => return Some(i + 1),
+                b'}' | b')' | b']' => depth -= 1,
+                b';' if depth == 0 => return Some(i + 1),
+                b',' if depth == 0 && !declaration => return Some(i + 1),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The keywords that start a declaration.
+    const DECLARATIONS: &[&str] = &[
+        "fn",
+        "mod",
+        "impl",
+        "struct",
+        "enum",
+        "union",
+        "trait",
+        "type",
+        "const",
+        "static",
+        "use",
+        "let",
+        "macro_rules",
+        "unsafe",
+        "extern",
+        "async",
+    ];
+
+    /// Whether the item at the start of `item` is a declaration: its first
+    /// keyword after its attributes and its visibility.
+    fn declares(item: &str) -> bool {
+        let mut tokens = tokens(item).map(|t| t.1);
+        let mut depth = 0;
+        let mut next = tokens.next();
+        while let Some(token) = next {
+            match token {
+                "[" => depth += 1,
+                "]" => depth -= 1,
+                "pub" | "(" | ")" | "crate" | "super" | "in" | "self" | "::" | "#" => {}
+                _ if depth == 0 => return DECLARATIONS.contains(&token),
+                _ => {}
+            }
+            next = tokens.next();
+        }
+        false
+    }
+
+    /// The module that a test item declares out of line: `x` in `mod x;`,
+    /// with any visibility and no other attribute.
+    fn declared_module(item: &str) -> Option<&str> {
+        let tokens: Vec<&str> = tokens(item).map(|t| t.1).collect();
+        let mut rest = &tokens[..];
+        if rest.first() == Some(&"pub") {
+            rest = &rest[1..];
+            if rest.first() == Some(&"(") {
+                rest = &rest[rest.iter().position(|&t| t == ")")? + 1..];
+            }
+        }
+        match rest {
+            ["mod", module, ";"] if is_ident(module) => Some(module),
+            _ => None,
+        }
+    }
+
+    /// The folder that holds the out-of-line modules of the file `name`.
+    fn module_dir(name: &str) -> String {
+        let root = ["src/lib.rs", "src/main.rs"].contains(&name) || name.ends_with("/mod.rs");
+        match name.rsplit_once('/') {
+            Some((dir, _)) if root => format!("{dir}/"),
+            _ => format!("{}/", name.trim_end_matches(".rs")),
+        }
+    }
+
+    /// The module path of the file `name`, `mod.rs` folded; empty at a crate root.
+    fn file_module(name: &str) -> Vec<String> {
+        let module = name[4..].trim_end_matches(".rs").trim_end_matches("/mod");
+        if module == "lib" || module == "main" {
+            return Vec::new();
+        }
+        module.split('/').map(String::from).collect()
+    }
+
+    /// The crate path that `path` names from the module `here`, or `None` for
+    /// a path that does not start at `crate`, `self` or `super`.
+    fn resolve(path: &[&str], here: &[String]) -> Option<Vec<String>> {
+        let (mut resolved, mut rest) = match path.first()? {
+            &"crate" => (Vec::new(), &path[1..]),
+            &"self" | &"super" => (here.to_vec(), path),
+            _ => return None,
+        };
+        while let Some((&first, tail)) = rest.split_first() {
+            match first {
+                "self" => {}
+                "super" => {
+                    resolved.pop();
+                }
+                _ => break,
+            }
+            rest = tail;
+        }
+        resolved.extend(rest.iter().filter(|&&s| s != "self").map(|s| s.to_string()));
+        Some(resolved)
+    }
+
+    /// The paths of the tree that starts at `tokens[i]`, each after the
+    /// segments in `path`: a path joined by `::`, which may end in a `{…}`
+    /// group of trees. Each path
+    /// comes with the offset of its last segment, and an alias (`as x`) is
+    /// dropped, so a path is checked where it starts. Returns the index after
+    /// the tree.
+    fn tree<'a>(
+        tokens: &[(usize, &'a str)],
+        mut i: usize,
+        mut path: Vec<&'a str>,
+        paths: &mut Vec<(Vec<&'a str>, usize)>,
+    ) -> usize {
+        loop {
+            match tokens.get(i) {
+                Some(&(_, "{")) if !path.is_empty() => {
+                    i += 1;
+                    while let Some(&(_, token)) = tokens.get(i) {
+                        if token == "}" {
+                            return i + 1;
+                        }
+                        let next = if token == "," {
+                            i + 1
+                        } else {
+                            tree(tokens, i, path.clone(), paths)
+                        };
+                        i = next.max(i + 1);
+                    }
+                    return i;
+                }
+                Some(&(offset, segment)) if is_ident(segment) || segment == "*" => {
+                    path.push(segment);
+                    i += 1;
+                    if tokens.get(i).is_some_and(|t| t.1 == "::") {
+                        i += 1;
+                        continue;
+                    }
+                    // An alias is one name; after `as` in an expression, a path goes on.
+                    let alias = !tokens.get(i + 2).is_some_and(|t| t.1 == "::");
+                    if tokens.get(i).is_some_and(|t| t.1 == "as") && alias {
+                        i += 2;
+                    }
+                    paths.push((path, offset));
+                    return i;
+                }
+                // A path that goes on as `::<…>` ends before the generics.
+                _ => {
+                    if !path.is_empty() {
+                        let offset = tokens[i.min(tokens.len()) - 1].0;
+                        paths.push((path, offset));
+                    }
+                    return i;
+                }
+            }
+        }
+    }
+
+    /// The tokens of masked code, with their byte offsets: identifiers, `::`,
+    /// and every other character on its own.
+    fn tokens(code: &str) -> impl Iterator<Item = (usize, &str)> {
+        let mut chars = code.char_indices().peekable();
+        std::iter::from_fn(move || {
+            let (start, c) = chars.find(|c| !c.1.is_whitespace())?;
+            let mut end = start + c.len_utf8();
+            if is_ident_char(c) {
+                while let Some(&(i, n)) = chars.peek().filter(|p| is_ident_char(p.1)) {
+                    end = i + n.len_utf8();
+                    chars.next();
+                }
+            } else if c == ':' && chars.peek().is_some_and(|p| p.1 == ':') {
+                chars.next();
+                end += 1;
+            }
+            Some((start, &code[start..end]))
+        })
+    }
+
+    fn is_ident_char(c: char) -> bool {
+        c == '_' || c.is_alphanumeric()
+    }
+
+    fn is_ident(token: &str) -> bool {
+        token.starts_with(|c: char| c == '_' || c.is_alphabetic())
     }
 }

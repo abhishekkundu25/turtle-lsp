@@ -137,7 +137,7 @@ The language server runs its main loop on a thread with a 64 MiB stack
 and each phase after a batch of messages runs under a guard: a panic is
 reported on stderr and the session goes on. A document whose analysis panics
 gets an `internal-error` diagnostic. Background threads start through one
-guarded helper, `spawn_guarded` (`src/server.rs`, `src/server/worker.rs`).
+guarded helper, `spawn_guarded` (`src/server.rs`, `src/worker.rs`).
 
 A stack overflow cannot be caught, so the inputs that recurse are bounded
 before they reach recursive code: Turtle nesting (256 levels, annotation

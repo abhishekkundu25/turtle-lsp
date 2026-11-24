@@ -267,6 +267,22 @@ fn cut(s: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{}…{}", &s[..at(HEAD)], &s[at(n - TAIL)..]))
 }
 
+/// The key of [`Reader::prefixes`]: a prefix name. In the lib tests, a
+/// `str` that counts its hashes and comparisons, for the tests that read in
+/// linear work (`owx/timing.rs`).
+#[cfg(not(test))]
+type PrefixKey = str;
+#[cfg(test)]
+use super::timing::work::PrefixKey;
+
+/// The prefix name `s` as a key of [`Reader::prefixes`].
+#[cfg(not(test))]
+fn prefix_key(s: &str) -> &PrefixKey {
+    s
+}
+#[cfg(test)]
+use super::timing::work::prefix_key;
+
 /// A declared prefix: its IRI's place in [`Terms::prefixes`], and what its
 /// expansions are checked after ([`context`]).
 struct Prefix {
@@ -428,7 +444,7 @@ struct Reader<'a> {
     scopes: Vec<Scope>,
     /// The base outside every `xml:base`: the document's URL.
     outer: Base,
-    prefixes: FxHashMap<Box<str>, Prefix>,
+    prefixes: FxHashMap<Box<PrefixKey>, Prefix>,
     errors: Vec<SyntaxError>,
     /// Every error reported, those past [`MAX_ERRORS`] too.
     reported: usize,
@@ -1062,7 +1078,7 @@ impl<'a> Reader<'a> {
             );
             return self.stop(w.span, message);
         }
-        let Some(p) = self.prefixes.get(name) else {
+        let Some(p) = self.prefixes.get(prefix_key(name)) else {
             let iri = STANDARD.iter().find(|s| s.0 == name).map_or("…", |s| s.1);
             let message = format!(
                 "Undeclared prefix '{name}:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"{name}\" IRI=\"{iri}\"/>",
@@ -1808,7 +1824,7 @@ impl<'a> Reader<'a> {
             );
             return None;
         }
-        if self.prefixes.contains_key(written) {
+        if self.prefixes.contains_key(prefix_key(written)) {
             self.error(
                 name.value.span,
                 format!(
@@ -1853,7 +1869,7 @@ impl<'a> Reader<'a> {
         self.terms.prefixes.push(d.iri);
         let index = self.terms.prefixes.len() as u32 - 1;
         self.prefixes
-            .insert(d.name.as_str().into(), Prefix { index, context });
+            .insert(prefix_key(&d.name).into(), Prefix { index, context });
         self.doc.prefixes.push(PrefixDecl {
             name: d.name,
             iri,

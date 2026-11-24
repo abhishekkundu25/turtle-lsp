@@ -169,6 +169,12 @@
   lists no turtle-lsp formatter for XML or OWL Functional syntax. Other editors get the same static
   capabilities as before.
 - oxrdfxml is now only a test dependency.
+- **An edit costs less in a workspace whose JSON-LD files name `file:`
+  contexts.** The server stores each such context URL in one spelling when
+  it reads the document, so an edit compares strings instead of
+  normalising every stored URL. In the benchmark with 200 such documents, a
+  Turtle keystroke takes 0.1 ms instead of 0.2 ms (the figures are rounded
+  to 0.1 ms).
 
 ### Fixed
 
@@ -178,6 +184,28 @@
   without a word; a Manchester `.owl` loaded as empty Turtle; an OWL/XML one
   failed with an RDF/XML error (it is now read as OWL/XML); a single-quoted
   `<!ENTITY>` value failed.
+- **A JSON-LD document follows each change of the context it names, also
+  when it was opened or changed during the workspace index.** A JSON-LD
+  document opened while the server indexed the workspace, a file changed on
+  disk during the index, or a file opened or edited while the server parsed
+  files again after a prefix change could keep the context its discarded
+  parse had asked for. Then an edit, save or close of its real context file,
+  or the arrival of a fetched context, did not reach it, and its triples and
+  diagnostics stayed stale until the document itself changed. The server now
+  records the contexts of a parse only when it keeps the parse, and forgets
+  those of a closed document that the index does not hold (an `untitled:`
+  one).
+
+### Internal
+
+- **The largest files are split into parts, with no behaviour change but
+  the fix above.** The knowledge index (`src/knowledge/`), the workspace
+  (`src/workspace/`) and the server (`server::Embedded`) hold one part per
+  file, the job runner is `src/worker.rs`, and the unit tests of the largest
+  modules are in files of their own. The `boundaries` test reads Rust tokens
+  instead of line shapes, and it also checks that nothing below the server
+  names it, that product code never names the test oracle, and that the
+  libraries name no LSP or JSON crate.
 
 ## 0.19.0 — 2026-11-17
 

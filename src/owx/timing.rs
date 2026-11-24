@@ -1,9 +1,12 @@
 //! The reader's wall-clock tests: a large OWL/XML document is scanned, read
 //! and mapped within its budget, and reading takes time linear in the text
-//! however long a base or a prefix IRI is and however many prefixes there
-//! are. Run them alone (`--test-threads=1`) in release mode. The large
-//! document is the Functional `large` shape written as OWL/XML by the
-//! test-only printer.
+//! however long a base is. Run them (`timing_*`) alone (`--test-threads=1`)
+//! in release mode. The large document is the Functional `large` shape
+//! written as OWL/XML by the test-only printer.
+//!
+//! Reading under a long prefix IRI and reading many prefixes are checked by
+//! the work they count ([`work`]), not by the clock, so those two tests run
+//! with the others.
 //!
 //! `owx_real_files` reads the OWL/XML that ROBOT writes from the Functional
 //! corpus (`test/corpus-ofn/robot-owx/`, opt-in with `OWX_REAL=1`) and
@@ -190,6 +193,167 @@ fn fastest_read(text: &str) -> (Duration, usize) {
         .unwrap()
 }
 
+/// The work counted on this thread while [`work::counted`] runs: the lib
+/// test binary's allocator, which counts allocations, and the key of the
+/// reader's prefix map, which counts its hashes and comparisons.
+#[allow(unsafe_code)]
+pub(super) mod work {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use std::hash::{Hash, Hasher};
+
+    /// What one reading did.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub(in crate::owx) struct Work {
+        /// Calls to allocate or reallocate.
+        pub allocations: u64,
+        /// Bytes allocated, and those a reallocation added.
+        pub bytes: u64,
+        /// Prefix names hashed: a lookup, an insertion, or a move when the
+        /// map grows.
+        pub hashes: u64,
+        /// Prefix names compared.
+        pub comparisons: u64,
+    }
+
+    thread_local! {
+        /// Counting is on for this thread. A constant with no destructor, so
+        /// the allocator reads it without allocating.
+        static ON: Cell<bool> = const { Cell::new(false) };
+        static WORK: Cell<Work> = const {
+            Cell::new(Work { allocations: 0, bytes: 0, hashes: 0, comparisons: 0 })
+        };
+    }
+
+    fn add(f: impl FnOnce(&mut Work)) {
+        if ON.try_with(Cell::get).unwrap_or(false) {
+            let mut w = WORK.get();
+            f(&mut w);
+            WORK.set(w);
+        }
+    }
+
+    /// `f`'s result and the work it did on this thread.
+    pub(in crate::owx) fn counted<T>(f: impl FnOnce() -> T) -> (T, Work) {
+        WORK.set(Work::default());
+        ON.set(true);
+        let out = f();
+        ON.set(false);
+        (out, WORK.get())
+    }
+
+    /// The system allocator, counting on the threads that count.
+    struct Counting;
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    // SAFETY: every call goes to `System` with its arguments unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(|w| (w.allocations, w.bytes) = (w.allocations + 1, w.bytes + layout.size() as u64));
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            add(|w| (w.allocations, w.bytes) = (w.allocations + 1, w.bytes + layout.size() as u64));
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let grown = new_size.saturating_sub(layout.size()) as u64;
+            add(|w| (w.allocations, w.bytes) = (w.allocations + 1, w.bytes + grown));
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    /// A prefix name, the key of the reader's prefix map, whose hashes and
+    /// comparisons count.
+    #[repr(transparent)]
+    pub(in crate::owx) struct PrefixKey(str);
+
+    pub(in crate::owx) fn prefix_key(s: &str) -> &PrefixKey {
+        // SAFETY: `PrefixKey` is a transparent `str`.
+        unsafe { &*(s as *const str as *const PrefixKey) }
+    }
+
+    impl From<&PrefixKey> for Box<PrefixKey> {
+        fn from(key: &PrefixKey) -> Box<PrefixKey> {
+            let s: Box<str> = key.0.into();
+            // SAFETY: `PrefixKey` is a transparent `str`.
+            unsafe { Box::from_raw(Box::into_raw(s) as *mut PrefixKey) }
+        }
+    }
+
+    impl Hash for PrefixKey {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            add(|w| w.hashes += 1);
+            self.0.hash(state);
+        }
+    }
+
+    impl PartialEq for PrefixKey {
+        fn eq(&self, other: &PrefixKey) -> bool {
+            add(|w| w.comparisons += 1);
+            self.0 == other.0
+        }
+    }
+
+    impl Eq for PrefixKey {}
+}
+
+/// The work of reading `text` on this thread, and the reading's errors,
+/// each `owx-syntax`. A first reading, not counted, interns the IRIs, so
+/// that the counted one does not depend on what other threads interned.
+fn work_of(text: &str) -> (work::Work, usize) {
+    drop(reader::read(text, None));
+    let ((doc, terms), work) = work::counted(|| reader::read(text, None));
+    drop(terms);
+    assert!(
+        doc.errors.iter().all(|e| e.code == CODE),
+        "{:?}",
+        doc.errors.iter().find(|e| e.code != CODE)
+    );
+    (work, doc.errors.len())
+}
+
+/// `make(1)` and `make(4)` read in linear work, with `want` errors each (by
+/// the number of items `make` gives): per item, the larger makes as many
+/// allocations of as many bytes, and hashes and compares as many prefix
+/// names, as the smaller, within 1%. Returns the work of each. Unlike
+/// [`linear`], this holds on any machine; it misses superlinear work that
+/// neither allocates nor goes through the prefix map.
+#[track_caller]
+fn linear_work(
+    what: &str,
+    make: impl Fn(usize) -> (String, usize),
+    want: impl Fn(usize) -> usize,
+) -> (work::Work, work::Work) {
+    let ((small, n_small), (big, n_big)) = (make(1), make(4));
+    let ((w_small, e_small), (w_big, e_big)) = (work_of(&small), work_of(&big));
+    assert_eq!((e_small, e_big), (want(n_small), want(n_big)), "{what}");
+    eprintln!("{what}: {n_small} items {w_small:?} at 1x, {n_big} items {w_big:?} at 4x");
+    let per_item = |w: work::Work, n: usize| {
+        [w.allocations, w.bytes, w.hashes, w.comparisons].map(|c| c as f64 / n as f64)
+    };
+    let (small_per, big_per) = (per_item(w_small, n_small), per_item(w_big, n_big));
+    for ((name, s), b) in ["allocations", "bytes", "hashes", "comparisons"]
+        .iter()
+        .zip(small_per)
+        .zip(big_per)
+    {
+        assert!(
+            (b - s).abs() <= s * 0.01,
+            "{what}: {b} {name} per item at 4x, {s} at 1x"
+        );
+    }
+    (w_small, w_big)
+}
+
 /// `make(1)` and `make(4)` read in linear time: the larger in under four
 /// times the smaller plus 5 ms, with `want` errors each (by the number of
 /// IRIs `make` gives). The reader is timed, as the Functional tests time
@@ -247,12 +411,13 @@ fn timing_relative_iris_owl_api_reads_otherwise_warn_in_linear_time() {
     linear("warnings under a long base", make, |n| n);
 }
 
-/// Abbreviated IRIs under a prefix IRI of 40,000 bytes are checked in time
-/// linear in the text, valid or not: 2,000 distinct abbreviated IRIs, then
-/// four times both. The mapping, which expands them, stops at its IRI
-/// budget.
+/// Abbreviated IRIs under a prefix IRI of 40,000 bytes are checked in
+/// linear work, valid or not: 2,000 distinct abbreviated IRIs, then four
+/// times both, each looked up once ([`linear_work`]). A check that copied the
+/// prefix IRI per use would allocate four times the bytes per item at 4x.
+/// The mapping, which expands them, stops at its IRI budget.
 #[test]
-fn timing_abbreviated_iris_with_a_long_prefix_iri_read_in_linear_time() {
+fn abbreviated_iris_with_a_long_prefix_iri_read_in_linear_work() {
     for bad in ["", "\u{FFF0}"] {
         let make = |s: usize| {
             let ns = format!("http://example.org/{}/", "a".repeat(40_000 * s));
@@ -267,19 +432,19 @@ fn timing_abbreviated_iris_with_a_long_prefix_iri_read_in_linear_time() {
             )
         };
         let want = |n| if bad.is_empty() { 0 } else { n };
-        linear(&format!("prefix IRI, {bad:?}"), make, want);
+        let (small, _) = linear_work(&format!("prefix IRI, {bad:?}"), make, want);
+        // Every use compared its prefix name: no lookup went around the map.
+        assert!(small.comparisons >= 2_000, "{bad:?}: {small:?}");
     }
 }
 
-/// 2,000 `Prefix` elements and ten uses of each are read in time linear in
-/// their number: then four times that. A lookup that scanned the prefixes
-/// would take 16 times as long, not 4. The sizes keep the reader's maps in
-/// the cache: at 20,000 prefixes the same linear work took 4.2 to 5 times as
-/// long at 4x, with 1.01 times the instructions and up to 1.38 times the
-/// cycles (memory stalls, measured), as the Functional grammar does too.
-/// Real files declare tens of prefixes.
+/// 2,000 `Prefix` elements and ten uses of each are read in linear work:
+/// then four times that ([`linear_work`]). Each use is looked up in the
+/// prefix map with one comparison or so; a lookup that scanned the prefixes
+/// would compare four times as many names per item at 4x. Real files
+/// declare tens of prefixes.
 #[test]
-fn timing_many_prefix_declarations_read_in_linear_time() {
+fn many_prefix_declarations_read_in_linear_work() {
     let make = |s: usize| {
         let n = 2_000 * s;
         let prefixes: String = (0..n)
@@ -293,7 +458,10 @@ fn timing_many_prefix_declarations_read_in_linear_time() {
             .collect();
         (format!("{OPEN}>\n{prefixes}{items}{CLOSE}"), n)
     };
-    linear("prefixes", make, |_| 0);
+    let (small, _) = linear_work("prefixes", make, |_| 0);
+    // Every use compared its prefix name, and few compared more than one.
+    let uses = 10 * 2_000;
+    assert!((uses..uses * 2).contains(&small.comparisons), "{small:?}");
 }
 
 /// The OWL/XML files under `test/corpus-ofn/robot-owx/`, which ROBOT

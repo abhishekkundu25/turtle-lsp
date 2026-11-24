@@ -3,7 +3,8 @@
 //! statements the parse splice took again are checked again
 //! ([`Window`]); after a change of the knowledge index, only what its
 //! change set names ([`Changes`]). What this cannot follow (a full parse,
-//! more than one index change, JSON-LD, RDF/XML) checks everything again.
+//! more than one index change, a syntax outside the Turtle family: JSON-LD,
+//! RDF/XML, OWL Functional, OWL/XML) checks everything again.
 //!
 //! By what each kept check reads ([`Reads`]):
 //! - statement-local, `invalid-literal` and `label-whitespace`: kept per
@@ -25,7 +26,7 @@ use super::diagnostics::{self, Check, Found};
 use crate::analysis::Analysis;
 use crate::knowledge::{Changes, Knowledge, Text};
 use crate::syntax::splice::Window;
-use crate::syntax::{Iri, Syntax};
+use crate::syntax::{Family, Iri, Syntax};
 use lsp_types::DiagnosticSeverity;
 use rustc_hash::FxHashSet;
 use std::sync::{Arc, Weak};
@@ -352,13 +353,13 @@ impl Kept {
 }
 
 /// Whether the findings of a document of `syntax` are brought up to date
-/// by what changed: the Turtle family's. A JSON-LD, RDF/XML or OWL
-/// Functional document is checked again in full ([`Kept::of`]), which runs
+/// by what changed: the Turtle family's. A JSON-LD, RDF/XML, OWL
+/// Functional or OWL/XML document is checked again in full ([`Kept::of`]), which runs
 /// only the checks of its syntax.
-fn follows(syntax: Syntax) -> bool {
-    match syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
-        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
+pub(super) fn follows(syntax: Syntax) -> bool {
+    match syntax.family() {
+        Family::Turtle => true,
+        Family::JsonLd | Family::ReadOnly => false,
     }
 }
 
