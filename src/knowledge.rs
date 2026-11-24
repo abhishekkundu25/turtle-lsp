@@ -4003,15 +4003,17 @@ _:shared sh:path ex:sh ; sh:minCount 0 .
         assert_eq!(indexed() - before, a.parsed.triples.len() as u64);
     }
 
-    /// The measurement behind owner decision 8, on demand
-    /// (`cargo test --release --lib -- --ignored shapes_cost`): the builder
-    /// against a graph of the document plus its model, the best of seven
-    /// tries each. At 33c the model cost 2.2 to 3.8 times the builder (a
-    /// 44,000-triple shapes document: 0.77 ms against 1.72 ms; Brick, 53,646
-    /// triples: 0.52 ms against 1.26 ms), so the builder stays.
+    /// The measurement behind owner decision 8: the builder against a graph
+    /// of the document plus its model, the best of seven tries each. On the
+    /// generated 2,000-shape document (44,000 triples) the model cost 1.5
+    /// to 2.3 times the builder, in the shipped profile and in CI's (LTO
+    /// off, 16 codegen units), on a loaded M-series laptop: builder 0.80 to
+    /// 1.23 ms, model 1.81 to 2.00 ms. That document is asserted. At
+    /// 33c Brick (53,646 triples) cost 0.52 ms against 1.26 ms, so the
+    /// builder stays. The corpus files, when present, are printed only.
+    #[cfg(not(debug_assertions))]
     #[test]
-    #[ignore = "a timing, printed"]
-    fn shapes_cost_against_the_model() {
+    fn timing_the_shape_builder_costs_less_than_the_model() {
         use crate::rdf::graph::Graph;
         let none = Arc::new(PrefixMap::default());
         let mut texts = vec![("generated".to_string(), shapes_document(2_000))];
@@ -4063,6 +4065,9 @@ _:shared sh:path ex:sh ; sh:minCount 0 .
                 "{name}: {} triples; builder {builder:?}; model {model:?} (graph {graph:?}); Analysis::new {analysis:?}",
                 triples.len()
             );
+            if name == "generated" {
+                assert!(builder < model, "builder {builder:?}, model {model:?}");
+            }
         }
     }
 }
