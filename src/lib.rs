@@ -195,6 +195,7 @@
 //! use turtle_lsp::syntax::parse as _; // examples, tests
 //! use turtle_lsp::syntax::parse_with_base as _; // examples, tests
 //! ```
+#![deny(unsafe_code)]
 
 pub mod analysis;
 pub mod batch;
