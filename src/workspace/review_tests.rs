@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 const QUERY: &str = "SELECT * WHERE { ?s ?p ?o }\n";
 
