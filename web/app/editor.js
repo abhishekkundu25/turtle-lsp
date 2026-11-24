@@ -503,6 +503,10 @@ function editorOptions() {
     inlayHints: { enabled: "on" },
     renameOnType: false,
     fixedOverflowWidgets: true,
+    // Typing goes through a hidden textarea, as in every browser and as
+    // monaco-vim expects; Monaco 0.53 and later default to the EditContext
+    // API in Chrome and Edge.
+    editContext: false,
   }
 }
 
@@ -1566,11 +1570,14 @@ const idle = []
 async function main() {
   const initialized = startServer()
   initialized.catch(() => {}) // awaited below, once the files show
-  window.MonacoEnvironment = { getWorkerUrl: () => "monaco-worker.js" }
   monaco = await new Promise((resolve, reject) => {
     window.require.config({ paths: { vs: "vendor/monaco/vs" } })
     window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject)
   })
+  // Monaco's workers from this origin (the policy allows no other). Set once
+  // Monaco has loaded: editor.main.js sets its own, which starts each worker
+  // from a blob: URL.
+  window.MonacoEnvironment = { getWorker: (_, label) => new Worker("monaco-worker.js", { name: label }) }
   registerSyntax(monaco)
   quietJson(monaco)
   defineThemes()

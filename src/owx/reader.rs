@@ -74,6 +74,16 @@ pub(super) enum Str {
     Arena(u32, u32),
 }
 
+impl Str {
+    /// Its length in bytes.
+    pub(super) fn len(self) -> usize {
+        match self {
+            Str::Text(span) => (span.end - span.start) as usize,
+            Str::Arena(from, to) => (to - from) as usize,
+        }
+    }
+}
+
 /// What the tree does not hold of a node, which the source answers from.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Term {
@@ -119,8 +129,9 @@ pub(super) struct Terms {
     /// The strings no span of the text spells: values through a reference,
     /// resolved bases and prefix IRIs.
     pub(super) arena: String,
-    /// The bases in force somewhere, each an absolute IRI.
-    pub(super) bases: Vec<Str>,
+    /// The bases in force somewhere, each an absolute IRI, read through
+    /// [`Terms::base`].
+    pub(super) bases: Vec<BaseStr>,
     /// The IRI of each prefix declared, in text order.
     pub(super) prefixes: Vec<Str>,
     /// The root element's name.
@@ -133,6 +144,11 @@ impl Terms {
             Str::Text(span) => &text[span.start as usize..span.end as usize],
             Str::Arena(from, to) => &self.arena[from as usize..to as usize],
         }
+    }
+
+    /// The text of base `b` of [`Terms::bases`].
+    pub(super) fn base<'a>(&'a self, text: &'a str, b: u32) -> &'a str {
+        self.str(text, base_read(self.bases[b as usize]))
     }
 }
 
@@ -189,8 +205,8 @@ struct Scope {
 /// Where the joined IRI is not the resolution of XML Base, a warning.
 #[derive(Clone, Copy)]
 struct Joined {
-    /// The `xml:base` as written.
-    written: Str,
+    /// The `xml:base` as written, read as a base is.
+    written: BaseStr,
     /// The base it resolved to, in [`Terms::bases`].
     base: u32,
     /// The two are one string.
@@ -282,6 +298,28 @@ fn prefix_key(s: &str) -> &PrefixKey {
 }
 #[cfg(test)]
 use super::timing::work::prefix_key;
+
+/// A base of [`Terms::bases`], or an `xml:base` as written ([`Joined`]).
+/// In the lib tests, a [`Str`] that counts the bytes read through it
+/// ([`base_read`]), for the tests that read in linear work
+/// (`owx/timing.rs`).
+#[cfg(not(test))]
+type BaseStr = Str;
+#[cfg(test)]
+use super::timing::work::BaseStr;
+
+/// `s` as a base of [`Terms::bases`].
+#[cfg(not(test))]
+fn base_str(s: Str) -> BaseStr {
+    s
+}
+/// Where base `b` is, to read it.
+#[cfg(not(test))]
+fn base_read(b: BaseStr) -> Str {
+    b
+}
+#[cfg(test)]
+use super::timing::work::{base_read, base_str};
 
 /// A declared prefix: its IRI's place in [`Terms::prefixes`], and what its
 /// expansions are checked after ([`context`]).
@@ -474,7 +512,7 @@ impl<'a> Reader<'a> {
         let outer = match base.filter(|b| oxiri::Iri::parse(*b).is_ok()) {
             Some(b) => {
                 terms.arena.push_str(b);
-                terms.bases.push(Str::Arena(0, b.len() as u32));
+                terms.bases.push(base_str(Str::Arena(0, b.len() as u32)));
                 Base::At(0)
             }
             None => Base::None,
@@ -875,8 +913,8 @@ impl<'a> Reader<'a> {
             return None;
         };
         let w = Written::of(&a.value);
-        let written = self.keep(&w).ok()?;
-        let resolved = self.terms.str(self.text, self.terms.bases[b as usize]);
+        let written = base_str(self.keep(&w).ok()?);
+        let resolved = self.terms.base(self.text, b);
         self.joined.push(Joined {
             written,
             base: b,
@@ -897,15 +935,15 @@ impl<'a> Reader<'a> {
         if has_scheme(reference) || (j.same && j.shape.joins_alike(reference)) {
             return;
         }
-        let base = self.terms.str(self.text, self.terms.bases[j.base as usize]);
-        let written = self.terms.str(self.text, j.written);
-        let cost = base.len() + written.len() + 2 * reference.len();
+        let cost = self.terms.bases[j.base as usize].len() + j.written.len() + 2 * reference.len();
         if self.warned + cost > self.budget {
             self.warned = self.budget;
             let message = "Read as XML Base resolves it; OWL API joins it to the xml:base as strings, to another IRI";
             return self.warning(w.span, message);
         }
         self.warned += cost;
+        let base = self.terms.base(self.text, j.base);
+        let written = self.terms.str(self.text, base_read(j.written));
         let mut ours = String::new();
         oxiri::Iri::parse_unchecked(base)
             .resolve_into_unchecked(&oxiri::IriRef::parse_unchecked(reference), &mut ours);
@@ -956,7 +994,7 @@ impl<'a> Reader<'a> {
             outer => match oxiri::Iri::parse(&*v.text) {
                 Ok(_) => match self.keep(&v) {
                     Ok(s) => {
-                        self.terms.bases.push(s);
+                        self.terms.bases.push(base_str(s));
                         Base::At(self.terms.bases.len() as u32 - 1)
                     }
                     Err(Stop) => Base::Broken,
@@ -975,20 +1013,20 @@ impl<'a> Reader<'a> {
     /// past the budget.
     fn resolve(&mut self, b: u32, reference: &oxiri::IriRef<&str>, at: Span) -> Option<u32> {
         let resolved = self.resolved_str(b, reference, at)?;
-        self.terms.bases.push(resolved);
+        self.terms.bases.push(base_str(resolved));
         Some(self.terms.bases.len() as u32 - 1)
     }
 
     /// `reference` resolved against base `b`, in the arena; `None` past the
     /// budget.
     fn resolved_str(&mut self, b: u32, reference: &oxiri::IriRef<&str>, at: Span) -> Option<Str> {
-        let base = self.terms.str(self.text, self.terms.bases[b as usize]);
-        let cost = base.len() + reference.as_str().len();
+        let cost = self.terms.bases[b as usize].len() + reference.as_str().len();
         if self.over || self.resolved + cost > self.budget {
             self.over_limit(at);
             return None;
         }
         self.resolved += cost;
+        let base = self.terms.base(self.text, b);
         let mut out = String::new();
         // Both are valid and the base is absolute: the result is an IRI.
         oxiri::Iri::parse_unchecked(base).resolve_into_unchecked(reference, &mut out);
