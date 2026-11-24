@@ -3,13 +3,12 @@
 //! after their prefixes changed.
 
 use super::worker::{Fed, Feed};
-use crate::analysis::Analysis;
 use crossbeam_channel::RecvError;
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 /// The initial index: the files parsed, or why it failed.
-pub(super) type Initial = Result<Vec<(String, Analysis)>, String>;
+pub(super) type Initial = Result<Vec<crate::workspace::Parsed>, String>;
 
 /// Indexed files parsed again, or why that failed.
 #[cfg(not(target_arch = "wasm32"))]

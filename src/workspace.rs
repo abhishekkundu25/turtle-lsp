@@ -341,8 +341,15 @@ pub(crate) struct Workspace {
     /// contexts only).
     contexts: Option<Arc<dyn ContextLoader>>,
     /// Document URI -> the context URLs its last JSON-LD analysis asked
-    /// for. Shared with the thread that builds the initial index.
+    /// for, among the analyses the workspace kept. Never shared: a parse on
+    /// another thread returns its list ([`Parsed`]), recorded if the parse
+    /// is kept.
     context_uses: ContextUses,
+    /// How many times a context changed for the indexed files (saved,
+    /// closed, changed on disk, fetched, a new loader). A parse that began
+    /// before one asked for contexts its record did not hold yet
+    /// ([`Workspace::add_reparsed`]).
+    context_changes: u64,
     /// What changed on disk since the workspace was created, kept until the
     /// initial index is merged (see [`Workspace::expect_initial_index`]).
     touched: Option<Touched>,
@@ -402,26 +409,24 @@ struct Touched {
     dirs: Vec<PathBuf>,
 }
 
-type ContextUses = Arc<Mutex<FxHashMap<String, Vec<String>>>>;
+type ContextUses = Mutex<FxHashMap<String, Vec<String>>>;
 
-/// Record the contexts `uri`'s analysis asked for.
-fn record_contexts(uses: &ContextUses, uri: &str, asked: Vec<String>) {
-    let Ok(mut uses) = uses.lock() else { return };
-    if asked.is_empty() {
-        uses.remove(uri);
-    } else {
+/// Record the contexts `uri`'s analysis asked for. A document that asked
+/// for none, where none did, costs nothing.
+fn record_contexts(uses: &mut FxHashMap<String, Vec<String>>, uri: &str, asked: Vec<String>) {
+    if !asked.is_empty() {
         uses.insert(uri.to_string(), asked);
+    } else if !uses.is_empty() {
+        uses.remove(uri);
     }
 }
 
 /// What a workspace hands to another one parsing files for it (the initial
-/// index, built on another thread): its context loader, and the record of
-/// which documents use which contexts.
+/// index, built on another thread): its context loader.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct SharedContexts {
     loader: Option<Arc<dyn ContextLoader>>,
-    uses: ContextUses,
 }
 
 /// The contexts of one JSON-LD analysis: a `file:` URL is the open
@@ -452,11 +457,19 @@ impl<'a> DocContexts<'a> {
     /// is JSON-LD (a document whose content turned from JSON-LD to another
     /// syntax uses no context any more).
     fn record(self, uses: &ContextUses, uri: &str, syntax: Syntax) {
-        let asked = match syntax {
+        let asked = self.asked(syntax);
+        if let Ok(mut uses) = uses.lock() {
+            record_contexts(&mut uses, uri, asked);
+        }
+    }
+
+    /// What `uri`'s analysis asked for, for the caller to record if it keeps
+    /// the analysis.
+    fn asked(self, syntax: Syntax) -> Vec<String> {
+        match syntax {
             Syntax::JsonLd => self.asked.into_inner().unwrap_or_default(),
             _ => Vec::new(),
-        };
-        record_contexts(uses, uri, asked);
+        }
     }
 
     fn file(&self, url: &str) -> Result<RemoteDocument, LoadError> {
@@ -987,6 +1000,7 @@ impl Workspace {
     /// context are parsed again.
     pub(crate) fn set_context_loader(&mut self, loader: Arc<dyn ContextLoader>) {
         self.contexts = Some(loader);
+        self.context_changes += 1;
         for d in self.open.values_mut() {
             if d.kind == DocKind::Rdf(Syntax::JsonLd) {
                 d.analyzed.outdate();
@@ -1007,22 +1021,28 @@ impl Workspace {
         self.contexts.clone().unwrap_or_else(|| Arc::new(Bundled))
     }
 
-    /// The context loader and the record of context uses, for a workspace
-    /// that parses files for this one ([`Workspace::use_shared_contexts`]).
+    /// The context loader, for a workspace that parses files for this one
+    /// ([`Workspace::use_shared_contexts`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shared_contexts(&self) -> SharedContexts {
         SharedContexts {
             loader: self.contexts.clone(),
-            uses: self.context_uses.clone(),
         }
     }
 
-    /// Load contexts as the workspace that shared them does, and record
-    /// which documents use which in its record.
+    /// Load contexts as the workspace that shared them does.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn use_shared_contexts(&mut self, shared: SharedContexts) {
         self.contexts = shared.loader;
-        self.context_uses = shared.uses;
+    }
+
+    /// Record what the analysis of `uri` the workspace keeps asked for.
+    fn record_uses(&mut self, uri: &str, asked: Vec<String>) {
+        let uses = self
+            .context_uses
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        record_contexts(uses, uri, asked);
     }
 
     /// The documents whose last analysis asked for a context URL `wanted`
@@ -1057,6 +1077,9 @@ impl Workspace {
     /// documents that use it are analyzed again, and, with `disk`, the
     /// indexed ones are parsed again. Whether any document uses it.
     pub(crate) fn context_changed(&mut self, url: &str, disk: bool) -> bool {
+        if disk {
+            self.context_changes += 1;
+        }
         let key = normalize_uri(url);
         let users =
             self.context_users(|u| u == url || (u.starts_with("file:") && normalize_uri(u) == key));
@@ -1268,6 +1291,11 @@ impl Workspace {
                 self.reindex_disk_file(&path);
             }
             self.sync(uri);
+        }
+        if !self.disk.contains_key(uri) {
+            // No copy left to use contexts (an `untitled:` document, a file
+            // the index does not hold).
+            self.record_uses(uri, Vec::new());
         }
         let mut fx = Effects::default();
         if self.context_changed(uri, true) {
@@ -1906,17 +1934,18 @@ impl Workspace {
 
     /// Add analyses parsed elsewhere (the initial index, built on another
     /// thread). With `replace` false, files indexed meanwhile are kept.
-    pub(crate) fn add_disk(&mut self, files: Vec<(String, Analysis)>, replace: bool) {
-        let files: Vec<(String, Arc<Analysis>, DocFacts)> = files
+    pub(crate) fn add_disk(&mut self, files: Vec<Parsed>, replace: bool) {
+        let files: Vec<(String, Arc<Analysis>, DocFacts, Vec<String>)> = files
             .into_par_iter()
-            .filter(|(uri, _)| !self.open.contains_key(uri))
-            .filter(|(uri, _)| replace || !self.disk.contains_key(uri))
-            .map(|(uri, a)| {
-                let (a, facts) = prepared(a);
-                (uri, Arc::new(a), facts)
+            .filter(|f| !self.open.contains_key(&f.uri))
+            .filter(|f| replace || !self.disk.contains_key(&f.uri))
+            .map(|f| {
+                let (a, facts) = prepared(f.analysis);
+                (f.uri, Arc::new(a), facts, f.asked)
             })
             .collect();
-        for (uri, a, facts) in files {
+        for (uri, a, facts, asked) in files {
+            self.record_uses(&uri, asked);
             self.knowledge
                 .set_prepared(&uri, Source::Disk, a.clone(), facts);
             self.disk.insert(uri, a);
@@ -1934,11 +1963,11 @@ impl Workspace {
     /// Add the initial index, built elsewhere, without the files and
     /// folders that changed on disk since [`Workspace::expect_initial_index`]
     /// (those are as the changes left them), and files indexed meanwhile.
-    pub(crate) fn merge_initial_index(&mut self, files: Vec<(String, Analysis)>) {
+    pub(crate) fn merge_initial_index(&mut self, files: Vec<Parsed>) {
         let touched = self.touched.take().unwrap_or_default();
         let files = files
             .into_iter()
-            .filter(|(uri, _)| {
+            .filter(|Parsed { uri, .. }| {
                 !touched.uris.contains(uri)
                     && !uri_to_path(uri)
                         .is_some_and(|p| touched.dirs.iter().any(|d| p.starts_with(d)))
@@ -1966,6 +1995,7 @@ impl Workspace {
                     path,
                     external,
                     was,
+                    changes: self.context_changes,
                 })
             })
             .collect()
@@ -1976,47 +2006,52 @@ impl Workspace {
         Reader {
             roots: self.roots.clone(),
             contexts: self.contexts(),
-            uses: self.context_uses.clone(),
         }
     }
 
     /// Parse files in parallel, without adding them to anything.
-    pub(crate) fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<(String, Analysis)> {
+    pub(crate) fn parse_paths(&mut self, paths: Vec<PathBuf>) -> Vec<Parsed> {
         let jobs = self.prefix_jobs(paths);
         let contexts = self.contexts();
-        parse_files(
-            &self.open,
-            &self.roots,
-            &*contexts,
-            &self.context_uses,
-            jobs,
-        )
-        .into_iter()
-        .map(|r| (r.uri, r.analysis))
-        .collect()
+        parse_files(&self.open, &self.roots, &*contexts, jobs)
+            .into_iter()
+            .map(|r| r.file)
+            .collect()
     }
 
     /// Replace indexed files with their analyses parsed again elsewhere
     /// ([`Reader::parse`]), but only those still closed, still indexed as
     /// they were when the parse began, and parsed with the prefixes they
-    /// have now. How many were replaced.
+    /// have now. A file that asked for contexts while one changed (a fetch
+    /// arrived, a context file was saved) is parsed again here: the change
+    /// found no record of its new uses. How many were replaced.
     pub(crate) fn add_reparsed(&mut self, files: Vec<Reparsed>) -> usize {
         let mut current = Vec::new();
-        for Reparsed { uri, analysis, was } in files {
-            let unchanged = match (self.disk.get(&uri), &was) {
+        let mut again = Vec::new();
+        for Reparsed { file, was, changes } in files {
+            let uri = &file.uri;
+            let unchanged = match (self.disk.get(uri), &was) {
                 (Some(now), Some(was)) => Arc::ptr_eq(now, was),
                 _ => false,
             };
-            if self.open.contains_key(&uri)
+            if self.open.contains_key(uri)
                 || !unchanged
-                || *self.external_prefixes_as(&uri, analysis.parsed.syntax) != *analysis.external
+                || *self.external_prefixes_as(uri, file.analysis.parsed.syntax)
+                    != *file.analysis.external
             {
                 continue;
             }
-            current.push((uri, analysis));
+            if changes != self.context_changes && !file.asked.is_empty() {
+                again.extend(uri_to_path(uri));
+            } else {
+                current.push(file);
+            }
         }
-        let n = current.len();
+        let n = current.len() + again.len();
         self.add_disk(current, true);
+        if !again.is_empty() {
+            self.index_paths(again);
+        }
         n
     }
 
@@ -2068,7 +2103,7 @@ impl Workspace {
     fn forget_disk(&mut self, uri: &str) -> bool {
         let had = self.disk.remove(uri).is_some();
         if !self.open.contains_key(uri) {
-            record_contexts(&self.context_uses, uri, Vec::new());
+            self.record_uses(uri, Vec::new());
         }
         self.sync(uri);
         had
@@ -2185,20 +2220,30 @@ impl Workspace {
     }
 }
 
-/// A file to parse, with the prefixes to parse it with, and the indexed copy
-/// it replaces, if any.
+/// A file to parse, with the prefixes to parse it with, the indexed copy it
+/// replaces, if any, and [`Workspace::context_changes`] when it was made.
 pub(crate) struct ParseJob {
     uri: String,
     path: PathBuf,
     external: Arc<PrefixMap>,
     was: Option<Arc<Analysis>>,
+    changes: u64,
 }
 
-/// A file parsed again, and the indexed copy it was meant to replace.
-pub(crate) struct Reparsed {
+/// A file parsed, and the context URLs its analysis asked for: recorded by
+/// the workspace that keeps the analysis ([`Workspace::add_disk`]).
+pub(crate) struct Parsed {
     uri: String,
     analysis: Analysis,
+    asked: Vec<String>,
+}
+
+/// A file parsed again, and what its job knew: the indexed copy it was
+/// meant to replace, and [`Workspace::context_changes`] then.
+pub(crate) struct Reparsed {
+    file: Parsed,
     was: Option<Arc<Analysis>>,
+    changes: u64,
 }
 
 /// What parsing files needs of a workspace, apart from the workspace: it can
@@ -2206,20 +2251,13 @@ pub(crate) struct Reparsed {
 pub(crate) struct Reader {
     roots: Vec<PathBuf>,
     contexts: Arc<dyn ContextLoader>,
-    uses: ContextUses,
 }
 
 impl Reader {
     /// Parse files in parallel, without adding them to anything. Open
     /// documents are not seen: JSON-LD contexts come from the files.
     pub(crate) fn parse(&self, jobs: Vec<ParseJob>) -> Vec<Reparsed> {
-        parse_files(
-            &FxHashMap::default(),
-            &self.roots,
-            &*self.contexts,
-            &self.uses,
-            jobs,
-        )
+        parse_files(&FxHashMap::default(), &self.roots, &*self.contexts, jobs)
     }
 }
 
@@ -2227,7 +2265,6 @@ fn parse_files(
     open: &FxHashMap<String, Doc>,
     roots: &[PathBuf],
     contexts: &dyn ContextLoader,
-    uses: &ContextUses,
     jobs: Vec<ParseJob>,
 ) -> Vec<Reparsed> {
     jobs.into_par_iter()
@@ -2237,6 +2274,7 @@ fn parse_files(
                  path,
                  external,
                  was,
+                 changes,
              }| {
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
@@ -2251,13 +2289,13 @@ fn parse_files(
                     Arc::new(PrefixMap::default())
                 };
                 let loader = DocContexts::new(open, roots, contexts);
-                let a = analyze(uri.clone(), &text, external, false, syntax, &loader);
-                loader.record(uses, &uri, syntax);
-                Some(Reparsed {
+                let analysis = analyze(uri.clone(), &text, external, false, syntax, &loader);
+                let file = Parsed {
                     uri,
-                    analysis: a,
-                    was,
-                })
+                    analysis,
+                    asked: loader.asked(syntax),
+                };
+                Some(Reparsed { file, was, changes })
             },
         )
         .collect()
@@ -4661,6 +4699,219 @@ pub(crate) mod tests {
             first.len()
         );
         assert!(keystroke.as_millis() < 750, "{keystroke:?}");
+    }
+
+    // ---- context uses: recorded for the parses the workspace keeps ----
+
+    /// A context file that maps `name` into the namespace `ns`.
+    fn named_in(ns: &str) -> String {
+        format!(r#"{{"@context": {{"name": "http://example.org/{ns}#name"}}}}"#)
+    }
+
+    /// A JSON-LD document whose context is `context` (relative or absolute).
+    fn using(context: &str) -> String {
+        format!(r#"{{"@context": "{context}", "@id": "http://example.org/d", "name": "D"}}"#)
+    }
+
+    /// The triples of `uri`: the open document's, else the indexed copy's.
+    fn triples_of(ws: &mut Workspace, uri: &str) -> Vec<crate::syntax::Triple> {
+        ws.analysis(uri).unwrap().parsed.triples.clone()
+    }
+
+    /// The triples' predicates, to say what a test expects.
+    fn predicates(t: &[crate::syntax::Triple]) -> Vec<String> {
+        t.iter().map(|t| t.p.to_string()).collect()
+    }
+
+    const WEB_CONTEXT: &str = "http://example.org/context.jsonld";
+
+    /// A web context that is being fetched until `arrived` is set.
+    struct Fetching {
+        arrived: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl ContextLoader for Fetching {
+        fn load(&self, url: &str) -> Result<RemoteDocument, LoadError> {
+            if url != WEB_CONTEXT {
+                return Err(LoadError::NotFound);
+            }
+            if !self.arrived.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(LoadError::Pending);
+            }
+            Ok(RemoteDocument {
+                url: url.to_string(),
+                text: named_in("web").into(),
+            })
+        }
+    }
+
+    fn fetching(arrived: bool) -> (Arc<dyn ContextLoader>, Arc<std::sync::atomic::AtomicBool>) {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(arrived));
+        (
+            Arc::new(Fetching {
+                arrived: flag.clone(),
+            }),
+            flag,
+        )
+    }
+
+    /// Interleaving 1: the initial index reads D's saved text (context A)
+    /// on its own thread while D is open with context B; the merge drops
+    /// that parse, and a change to B still reaches D.
+    #[test]
+    fn an_open_document_keeps_its_context_when_the_initial_index_reads_its_saved_text() {
+        let root = TempDir::new("c1-index-open");
+        write(&root.0, "a.jsonld", &named_in("a"));
+        let b = write(&root.0, "b.jsonld", &named_in("b"));
+        let d = uri(&write(&root.0, "d.jsonld", &using("a.jsonld")));
+        let open = using("b.jsonld");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.expect_initial_index();
+        ws.open_doc(d.clone(), open.clone(), 1);
+        ws.analysis(&d);
+        let mut index = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        index.use_shared_contexts(ws.shared_contexts());
+        let files = index.parse_paths(Workspace::scan_roots(std::slice::from_ref(&root.0)));
+        ws.merge_initial_index(files);
+        std::fs::write(&b, named_in("b2")).unwrap();
+        ws.files_changed(&[(b, Change::Changed)]);
+
+        let mut fresh = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        fresh.open_doc(d.clone(), open, 1);
+        let want = triples_of(&mut fresh, &d);
+        assert_eq!(predicates(&want), ["http://example.org/b2#name"]);
+        assert_eq!(triples_of(&mut ws, &d), want);
+    }
+
+    /// Interleaving 3: a prefix reparse reads D's saved text (context A),
+    /// D is opened with context B meanwhile, and the merge drops the
+    /// reparse; a change to B still reaches D.
+    #[test]
+    fn a_rejected_prefix_reparse_does_not_hide_an_open_document_from_its_context() {
+        let root = TempDir::new("c1-reparse-open");
+        write(&root.0, "a.jsonld", &named_in("a"));
+        let b = write(&root.0, "b.jsonld", &named_in("b"));
+        let path = write(&root.0, "d.jsonld", &using("a.jsonld"));
+        let d = uri(&path);
+        let open = using("b.jsonld");
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(vec![path.clone()]);
+        let jobs = ws.prefix_jobs(vec![path]);
+        ws.open_doc(d.clone(), open.clone(), 1);
+        ws.analysis(&d);
+        let parsed = ws.reader().parse(jobs);
+        assert_eq!(ws.add_reparsed(parsed), 0);
+        std::fs::write(&b, named_in("b2")).unwrap();
+        ws.files_changed(&[(b, Change::Changed)]);
+
+        let mut fresh = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        fresh.open_doc(d.clone(), open, 1);
+        let want = triples_of(&mut fresh, &d);
+        assert_eq!(predicates(&want), ["http://example.org/b2#name"]);
+        assert_eq!(triples_of(&mut ws, &d), want);
+    }
+
+    /// Interleaving 2: the initial index reads closed D (context A), the
+    /// watcher reindexes D rewritten to context C before the index lands,
+    /// and a change to C reaches D.
+    #[test]
+    fn a_file_rewritten_during_the_initial_index_follows_its_new_context() {
+        let root = TempDir::new("c1-index-rewrite");
+        write(&root.0, "a.jsonld", &named_in("a"));
+        let c = write(&root.0, "c.jsonld", &named_in("c"));
+        let path = write(&root.0, "d.jsonld", &using("a.jsonld"));
+        let d = uri(&path);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.expect_initial_index();
+        let mut index = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        index.use_shared_contexts(ws.shared_contexts());
+        let files = index.parse_paths(Workspace::scan_roots(std::slice::from_ref(&root.0)));
+        std::fs::write(&path, using("c.jsonld")).unwrap();
+        ws.files_changed(&[(path.clone(), Change::Changed)]);
+        ws.merge_initial_index(files);
+        std::fs::write(&c, named_in("c2")).unwrap();
+        ws.files_changed(&[(c, Change::Changed)]);
+
+        let mut fresh = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        fresh.index_paths(Workspace::scan_roots(std::slice::from_ref(&root.0)));
+        let want = triples_of(&mut fresh, &d);
+        assert_eq!(predicates(&want), ["http://example.org/c2#name"]);
+        assert_eq!(triples_of(&mut ws, &d), want);
+    }
+
+    /// A closed `untitled:` document (no file, nothing indexed) no longer
+    /// counts as a user of the context it named.
+    #[test]
+    fn closing_an_untitled_json_ld_document_forgets_its_contexts() {
+        let root = TempDir::new("c1-untitled");
+        let ctx = uri(&write(&root.0, "ctx.jsonld", &named_in("a")));
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        let untitled = "untitled:Untitled-1";
+        ws.open_doc_as(untitled.into(), using(&ctx), 1, Syntax::JsonLd);
+        let t = triples_of(&mut ws, untitled);
+        assert_eq!(predicates(&t), ["http://example.org/a#name"]);
+        ws.close_doc(untitled);
+        assert!(
+            !ws.context_changed(&ctx, true),
+            "a closed untitled document still uses the context"
+        );
+    }
+
+    /// A web context that is still being fetched, then arrives, reaches
+    /// the open document and the indexed one that asked for it.
+    #[test]
+    fn a_context_that_fails_then_arrives_reaches_its_documents() {
+        let root = TempDir::new("c1-fetch");
+        let indexed = write(&root.0, "i.jsonld", &using(WEB_CONTEXT));
+        let i = uri(&indexed);
+        let o = uri(&root.0.join("o.jsonld"));
+        let (loader, arrived) = fetching(false);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.set_context_loader(loader);
+        ws.index_paths(vec![indexed.clone()]);
+        ws.open_doc(o.clone(), using(WEB_CONTEXT), 1);
+        let waiting = triples_of(&mut ws, &o);
+        arrived.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(ws.context_fetched(WEB_CONTEXT), Effects::default());
+
+        let mut fresh = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        fresh.set_context_loader(fetching(true).0);
+        fresh.index_paths(vec![indexed]);
+        fresh.open_doc(o.clone(), using(WEB_CONTEXT), 1);
+        for doc in [&o, &i] {
+            let want = triples_of(&mut fresh, doc);
+            assert_eq!(predicates(&want), ["http://example.org/web#name"], "{doc}");
+            assert_ne!(waiting, want);
+            assert_eq!(triples_of(&mut ws, doc), want, "{doc}");
+        }
+    }
+
+    /// A prefix reparse reads D, rewritten to use a web context the
+    /// watcher has not reported yet; the context is fetched before the
+    /// reparse is merged, and D ends parsed with it.
+    #[test]
+    fn a_context_fetched_during_a_prefix_reparse_reaches_the_reparsed_document() {
+        let root = TempDir::new("c1-fetch-reparse");
+        write(&root.0, "a.jsonld", &named_in("a"));
+        let path = write(&root.0, "d.jsonld", &using("a.jsonld"));
+        let d = uri(&path);
+        let (loader, arrived) = fetching(false);
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.set_context_loader(loader);
+        ws.index_paths(vec![path.clone()]);
+        let jobs = ws.prefix_jobs(vec![path.clone()]);
+        std::fs::write(&path, using(WEB_CONTEXT)).unwrap();
+        let parsed = ws.reader().parse(jobs);
+        arrived.store(true, std::sync::atomic::Ordering::SeqCst);
+        ws.context_fetched(WEB_CONTEXT);
+        ws.add_reparsed(parsed);
+
+        let mut fresh = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        fresh.set_context_loader(fetching(true).0);
+        fresh.index_paths(vec![path]);
+        let want = triples_of(&mut fresh, &d);
+        assert_eq!(predicates(&want), ["http://example.org/web#name"]);
+        assert_eq!(triples_of(&mut ws, &d), want);
     }
 }
 
