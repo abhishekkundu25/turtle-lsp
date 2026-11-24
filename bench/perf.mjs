@@ -812,6 +812,68 @@ scenario("big-vocab", "a vocabulary over 2 MB: open and keystroke", async () => 
   })
 })
 
+// `m` subjects without a label, then `n` classes as in `vocabDoc` with a
+// skos:prefLabel too: one class in 50 has the rdfs:label of the class before it
+// (`duplicate-label` on both), one in 100 a second rdfs:label
+// (`multiple-labels` on both). The unlabelled block comes first, so finding
+// the text a keystroke edits is quick.
+function labelledDoc(m, n) {
+  let out = `${header}@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+`
+  for (let i = 0; i < m; i++) {
+    out += `
+ex:d${i} a foaf:Person ;
+    foaf:name "Person ${i}" ;
+    foaf:knows ex:d${(i + 1) % m} .
+`
+  }
+  for (let i = 0; i < n; i++) {
+    const label = i % 50 === 1 ? i - 1 : i
+    const second = i % 100 === 7 ? `\n    rdfs:label "Other ${i}"@en ;` : ""
+    out += `
+ex:C${i} a owl:Class ;
+    rdfs:label "Class ${label}"@en ;${second}
+    skos:prefLabel "Class number ${i}"@en ;
+    skos:definition "A class numbered ${i}."@en ;
+    rdfs:subClassOf ex:C${(i + 1) % n} .
+`
+  }
+  return out
+}
+
+scenario("big-labels", "a labelled vocabulary over 2 MB: keystroke outside every label", async () => {
+  const target = scaled(2_400_000)
+  const m = 1000
+  let n = Math.ceil(target / 200)
+  let doc = labelledDoc(m, n)
+  while (doc.length < target) doc = labelledDoc(m, (n = Math.ceil(n * 1.05)))
+  await withDir("turtle-bench-labels-", async (ws) => {
+    const file = path.join(ws, "labels.ttl")
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc)
+      const first = await s.diagnosticsFor(u, WAIT)
+      const codes = new Set(first.map((d) => d.code))
+      expect(codes.has("duplicate-label") && codes.has("multiple-labels"), "big-labels: no label findings to keep")
+      const size = `${n} classes and ${m} unlabelled subjects, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
+      // Each keystroke is in a name of the unlabelled block, two subjects or
+      // more from the prefixes and far from the classes: the statements the
+      // splice parses again hold no label, and the index's change set is
+      // empty.
+      const keys = await time(20, async (i) => {
+        doc = typeAt(s, u, doc, `"Person ${i + 2}"`, `"Person ${i + 2}x"`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("big-labels-keystroke", `big labelled vocabulary: keystroke outside every label -> diagnostics (${size})`, keys, {
+        gate: true,
+        notes: "the kept label findings brought up to date after an edit with no label in its window and an empty change set",
+      })
+    })
+  })
+})
+
 // The memory budget of the command line: the peak
 // memory of `format --check` and `check --no-shacl` on the big-file scenario's
 // document, at most PEAK_BUDGET bytes per input byte, the median of three runs.

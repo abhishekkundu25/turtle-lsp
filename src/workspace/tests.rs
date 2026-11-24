@@ -2119,6 +2119,74 @@ fn a_deprecation_reaches_the_uses_outside_the_window() {
     assert!(checked.refs <= 31 + 8, "{checked:?}");
 }
 
+/// Edits in a block of statements without a label, in the middle of a
+/// document of labelled classes whose labels repeat inside it and in a
+/// second document, keep every label finding of both documents as a
+/// fresh open gives them; so does an edit of a label after them.
+#[test]
+fn an_edit_outside_every_label_keeps_the_label_findings_of_both_documents() {
+    let (a, b) = ("file:///w/a.ttl", "file:///w/b.ttl");
+    let head = format!("{KEPT_HEAD}@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n");
+    // Class 8 of ten has the label of the class before it; class 5 has
+    // two untagged labels.
+    let class = |i: usize| {
+        let label = if i % 10 == 8 { i - 1 } else { i };
+        let second = if i % 10 == 5 {
+            format!(" ; rdfs:label \"Other {i}\"")
+        } else {
+            String::new()
+        };
+        format!(
+            "ex:C{i} a owl:Class ; rdfs:label \"Class {label}\" ; \
+             skos:prefLabel \"Name {i}\"@en{second} .\n"
+        )
+    };
+    let mut text = head.clone();
+    (0..30).for_each(|i| text += &class(i));
+    for j in 0..10 {
+        text += &format!("ex:n{j} ex:note \"Note {j}\" ; ex:size \"x{j}\"^^xsd:integer .\n");
+    }
+    (30..60).for_each(|i| text += &class(i));
+    let other = format!(
+        "{head}ex:B0 a owl:Class ; rdfs:label \"Class 3\" .\n\
+         ex:B1 a owl:Class ; rdfs:label \"Class 42\" .\n\
+         ex:B2 a owl:Class ; skos:prefLabel \"Name 50\"@en .\n"
+    );
+    let mut ws = Workspace::default();
+    ws.open_doc(a.into(), text, 1);
+    ws.open_doc(b.into(), other, 1);
+    let check = |ws: &mut Workspace, step: &str| {
+        for uri in [a, b] {
+            let got = kept_diagnostics(ws, uri);
+            assert_eq!(got, fresh_diagnostics(ws, uri), "{uri}, {step}");
+            assert_as_fresh(ws, uri, step);
+        }
+    };
+    check(&mut ws, "open");
+    let ds = kept_diagnostics(&mut ws, a);
+    assert_eq!(count(&ds, "duplicate-label"), 12 + 3, "{ds:#?}");
+    assert_eq!(count(&ds, "multiple-labels"), 12);
+    assert_eq!(count(&kept_diagnostics(&mut ws, b), "duplicate-label"), 3);
+    // Each edit is two statements or more from a label: a character typed
+    // in a literal and taken back, a triple added (the triples after it
+    // move), a line break; then a label edited.
+    let text = |ws: &Workspace| ws.text(a).unwrap().to_string();
+    let edits: [(&str, usize, &str); 5] = [
+        ("\"Note 4", 0, "y"),
+        ("\"Note 4y", 1, ""),
+        ("\"x5\"^^xsd:integer", 0, " ; ex:note \"More\""),
+        ("ex:n6 ", 0, "\n"),
+        ("\"Class 42", 1, "x"),
+    ];
+    for (version, (needle, cut, new)) in (2..).zip(edits) {
+        let at = after(&text(&ws), needle);
+        let range = ranged((at.0, at.1 - cut as u32), at, new);
+        ws.change_doc(a, version, vec![range], Encoding::Utf16);
+        check(&mut ws, &format!("{needle} -> {new}"));
+    }
+    assert_eq!(count(&kept_diagnostics(&mut ws, b), "duplicate-label"), 2);
+}
+
 #[test]
 fn with_the_splice_off_nothing_is_kept() {
     let uri = "file:///w/a.ttl";
