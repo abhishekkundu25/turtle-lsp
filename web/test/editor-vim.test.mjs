@@ -151,9 +151,15 @@ test("both editors of a split use Vim; Ctrl+\\, Ctrl+P, F1, Ctrl+Shift+F and com
     await page.locator("#quick-input").waitFor({ state: "hidden" })
     await focus0()
     await page.keyboard.press("F1")
-    await page.locator(".quick-input-widget").waitFor()
+    // The palette shows, then takes focus a few milliseconds later; an Escape
+    // before that goes to the editor and leaves the palette open.
+    await page.locator(".quick-input-widget input:focus").waitFor()
     await page.keyboard.press("Escape")
     await page.locator(".quick-input-widget").waitFor({ state: "hidden" })
+    // Monaco leaves its palette's keys (Ctrl+Space, Enter, the arrows) bound
+    // until a timer it starts on Escape runs, a few milliseconds later; this
+    // test types faster than that. A timer started now runs after it.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve)))
     await focus0()
     await page.keyboard.press("ControlOrMeta+Shift+f")
     await page.locator("#view-search").waitFor()

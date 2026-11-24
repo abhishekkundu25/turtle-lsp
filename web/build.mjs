@@ -19,14 +19,21 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 /** The most the engine may weigh gzipped, in bytes (it weighs about 3.45 MB with TurbOWL and queries over inferred triples; the budget leaves about 7%). */
 export const WASM_GZIP_BUDGET = 3_700_000
 
-/** Monaco's language services the editor never starts: it opens Turtle, TriG, N-Triples, N-Quads, SPARQL and JSON-LD (JSON). */
-const UNUSED_LANGUAGES = ["typescript", "css", "html"]
+/** Monaco's language services the editor never starts: it opens Turtle, TriG, N-Triples, N-Quads, SPARQL and JSON-LD (JSON). Each with the prefix of its chunk files. */
+const UNUSED_LANGUAGES = { typescript: "ts", css: "css", html: "html" }
 
-/** Whether the Monaco file `src` is copied (a message catalogue in another language, or an unused language service, is not). */
+/**
+ * Whether the Monaco file `src` is copied. Not copied: the message catalogues
+ * in other languages (`vs/nls/`), and an unused language service: its folder in
+ * `vs/language/`, its mode (`vs/<prefix>Mode-<hash>.js`) and its worker
+ * (`vs/assets/<prefix>.worker-<hash>.js`). The small `vs/<prefix>.worker-<hash>.js`
+ * that `editor.main.js` imports for each service stays.
+ */
 export function wanted(src) {
   const p = src.split(path.sep).join("/")
-  if (/nls\.messages\.[\w-]+\.js$/.test(p)) return false
-  return !UNUSED_LANGUAGES.some((l) => p.includes(`/vs/language/${l}/`) || p.endsWith(`/vs/language/${l}`))
+  if (p.endsWith("/vs/nls") || p.includes("/vs/nls/")) return false
+  return !Object.entries(UNUSED_LANGUAGES).some(([l, prefix]) =>
+    p.includes(`/vs/language/${l}/`) || p.endsWith(`/vs/language/${l}`) || new RegExp(`/vs/(?:${prefix}Mode|assets/${prefix}\\.worker)-[\\w-]+\\.js$`).test(p))
 }
 
 /** Throws when `gzip` bytes are over `budget`. */

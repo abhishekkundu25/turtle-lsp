@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <!-- Scripts: this origin and the two inline ones below, by hash (a test keeps the hashes
-     current). Styles may be inline: Monaco and the explorer set style attributes. Fetching an
-     unresolved import (the quick fix) is the one request to other sites. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pT1y721+jHFzFNhHZjomrOsspuITXSKnLzBn6QcfxJw=' 'sha256-rrelW4+9dkDCKzcEIAGJ3usw4WpEUGTEFCZ4oLzBb7I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; connect-src 'self' http: https:; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'">
+     current). Styles may be inline: Monaco and the explorer set style attributes. Fonts may be
+     data: URLs: Monaco's stylesheet carries its icon font as one. Fetching an unresolved
+     import (the quick fix) is the one request to other sites. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pT1y721+jHFzFNhHZjomrOsspuITXSKnLzBn6QcfxJw=' 'sha256-rrelW4+9dkDCKzcEIAGJ3usw4WpEUGTEFCZ4oLzBb7I='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self'; connect-src 'self' http: https:; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RDF Editor</title>
 <meta name="description" content="Edit Turtle, TriG, N-Triples, N-Quads, JSON-LD and SPARQL with turtle-lsp running in this tab. Nothing is uploaded.">
@@ -16,10 +17,24 @@
 </script>
 <script>try { const t = localStorage.getItem("rdf-editor-theme"); if (t !== "auto") document.documentElement.dataset.theme = t === "light" ? "light" : "dark" } catch { document.documentElement.dataset.theme = "dark" }</script>
 <!-- Fetched at once, not one import after another: Monaco's code (its loader
-     asks only once editor.js runs), its icon font, and editor.js's modules. A
-     test keeps the module list equal to what editor.js imports. -->
+     asks only once editor.js runs: editor.main.js and every file it imports,
+     whose names carry Monaco's build hash) and editor.js's modules. A test
+     keeps both lists equal to what the files import. -->
 <link rel="preload" href="vendor/monaco/vs/editor/editor.main.js" as="script">
-<link rel="preload" href="vendor/monaco/vs/base/browser/ui/codicons/codicon/codicon.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="vendor/monaco/vs/nls.messages-loader.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/index-CBVt3dzv.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/editor-KLE6jdfb.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/editorWorkerHost-fVE1cjcC.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/toggleHighContrast-qGX7E9o7.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/basic-languages/monaco.contribution.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/monaco.contribution-BPhsneLd.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/monaco.contribution-9cKT3C7t.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/monaco.contribution-BgRy6xDf.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/monaco.contribution-BE88ZNGY.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/json.worker-BizpAl9O.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/css.worker-CyhWkhHo.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/html.worker-CA3iAimZ.js" as="script">
+<link rel="preload" href="vendor/monaco/vs/ts.worker-2QLmBukE.js" as="script">
 <link rel="modulepreload" href="editor.js">
 <link rel="modulepreload" href="samples.js">
 <link rel="modulepreload" href="editor-lsp.js">
@@ -57,8 +72,8 @@
 <link rel="stylesheet" href="vim.css">
 <link rel="stylesheet" href="query.css">
 <link rel="stylesheet" href="graph/graph.css">
-<!-- Monaco's own styles, last as when its loader adds them (it adds nothing
-     when this link is there). -->
+<!-- Monaco's own styles (with its icon font), last as when editor.main.js adds
+     them, which it does again once it loads: the same file, so the order holds. -->
 <link rel="stylesheet" href="vendor/monaco/vs/editor/editor.main.css">
 <script src="vendor/monaco/vs/loader.js"></script>
 <script type="module" src="editor.js"></script>
