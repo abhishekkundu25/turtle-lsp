@@ -26,13 +26,13 @@ pub(crate) struct Doc {
     /// A cached copy of an import: the import already contributes its facts.
     pub(super) cached_import: bool,
     /// For an RDF document: the findings of the checks it keeps between
-    /// edits ([`Workspace::diagnostics`]).
+    /// edits ([`Workspace::diagnostics`](super::Workspace::diagnostics)).
     pub(super) kept: Kept,
 }
 
 /// Where an open document's kind comes from.
 pub(super) enum KindFrom {
-    /// The caller named it ([`Workspace::open_doc_as`]): it stays.
+    /// The caller named it ([`Workspace::open_doc_as`](super::Workspace::open_doc_as)): it stays.
     Given,
     /// [`DocKind::of`] with this language id, the URI and the text: decided
     /// again whenever the text changes, so an `.owl` whose text turns from
@@ -191,12 +191,12 @@ pub(super) struct Reparse {
     pub(super) off: bool,
     /// Check every splice against a full parse, keep the full one when they
     /// differ, and record each analysis's path
-    /// ([`Workspace::set_check_incremental`]).
+    /// ([`Workspace::set_check_incremental`](super::Workspace::set_check_incremental)).
     pub(super) check: bool,
 }
 
 /// How one analysis of an open document was parsed, recorded when the
-/// workspace checks the splice ([`Workspace::set_check_incremental`]).
+/// workspace checks the splice ([`Workspace::set_check_incremental`](super::Workspace::set_check_incremental)).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ParseRecord {
     pub(crate) uri: String,
