@@ -246,18 +246,18 @@ impl Kept {
         self.labels.splice(lo..hi, new);
         shift(&mut self.duplicate, duplicate);
         shift(&mut self.multiple, Vec::new());
-        if !subjects.is_empty() {
-            let of_subjects: Vec<Label> = (self.labels.iter())
-                .filter(|l| subjects.contains(&l.subject))
-                .copied()
-                .collect();
-            let found = lc.multiple(&of_subjects);
-            replace(
-                &mut self.multiple,
-                &of_subjects,
-                of_subjects.iter().zip(found),
-            );
-        }
+        let of_subjects: Vec<Label> = self
+            .labels
+            .iter()
+            .filter(|l| subjects.contains(&l.subject))
+            .copied()
+            .collect();
+        let found = lc.multiple(&of_subjects);
+        replace(
+            &mut self.multiple,
+            &of_subjects,
+            of_subjects.iter().zip(found),
+        );
 
         // The references, by where they are.
         let b = w.bytes;
