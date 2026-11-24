@@ -513,6 +513,40 @@ scenario("jsonld", "JSON-LD against Turtle of the same length", async () => {
   jsonldKeystrokeP50 = p50("jsonld-keystroke")
 })
 
+// Indexed JSON-LD documents that each name one context file by a `file:` URL,
+// every other one spelled with an escaped letter, and a Turtle file typed in:
+// each keystroke asks which documents use the Turtle file as a context.
+scenario("jsonld-contexts", "typing in Turtle beside 200 JSON-LD documents with file: contexts", async () => {
+  const users = scaled(200)
+  await withDir("turtle-bench-contexts-", async (dir) => {
+    const ws = fs.realpathSync(dir)
+    const ctxPath = path.join(ws, "ctx.jsonld")
+    fs.writeFileSync(ctxPath, `{"@context": {"name": "http://example.org/name"}}\n`)
+    const plain = uriOf(ctxPath)
+    const escaped = plain.replace(/\/ctx\.jsonld$/, "/c%74x.jsonld")
+    for (let i = 0; i < users; i++) {
+      const at = i % 2 ? escaped : plain
+      fs.writeFileSync(path.join(ws, `d${i}.jsonld`), `{"@context": "${at}", "@id": "http://example.org/d${i}", "name": "Doc ${i}"}\n`)
+    }
+    const file = path.join(ws, "data.ttl")
+    let doc = bigDoc(50)
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc, "turtle")
+      await s.diagnosticsFor(u, WAIT)
+      const keys = await time(25, async (i) => {
+        doc = typeAt(s, u, doc, `"Person ${i}"`, `"Person ${i}x"`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("jsonld-contexts-keystroke", `Turtle keystroke -> diagnostics beside ${users} JSON-LD context users`, keys, {
+        gate: true,
+        notes: `the context lookup over ${users} recorded file: URLs, half of them escaped`,
+      })
+    })
+  })
+})
+
 // A namespace of own terms that the workspace describes, and a document that
 // uses a thousand misspellings of them: every one is flagged, and the first
 // hundred get a "did you mean" search over all the namespace's terms.

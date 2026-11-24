@@ -1728,6 +1728,97 @@ fn closing_a_context_file_with_unsaved_edits_reaches_its_users() {
     assert!(!Arc::ptr_eq(&before, &indexed(&ws)));
 }
 
+/// JSON-LD documents that name one context file under different spellings
+/// (an escaped letter, on Windows a lower-case drive) all follow edits, a
+/// save and a close of the file under its canonical URI. A web context URL
+/// is taken as written.
+#[test]
+fn aliased_spellings_of_a_context_file_reach_its_users() {
+    let root = TempDir::new("ctx-aliases");
+    let ctx_path = write(&root.0, "ctx.jsonld", CTX);
+    let ctx = uri(&ctx_path);
+    let escaped = ctx.replace("/ctx.jsonld", "/c%74x.jsonld");
+    #[cfg(not(windows))]
+    let spellings = [ctx.clone(), escaped];
+    #[cfg(windows)]
+    let spellings = {
+        // `file:///c:/...` and `file:///c%3A/...` (VS Code's).
+        let mut lower = ctx.clone();
+        lower[8..9].make_ascii_lowercase();
+        let vscode = format!("{}%3A{}", &lower[..9], &lower[10..]);
+        [ctx.clone(), escaped, vscode, lower]
+    };
+    let user =
+        |at: &str| format!(r#"{{"@context": "{at}", "@id": "http://example.org/a", "name": "A"}}"#);
+    let mut on_disk = Vec::new();
+    let mut open = Vec::new();
+    for (i, at) in spellings.iter().enumerate() {
+        on_disk.push(write(&root.0, &format!("disk{i}.jsonld"), &user(at)));
+        open.push((uri(&root.0.join(format!("open{i}.jsonld"))), user(at)));
+    }
+    let start = |ctx_text: Option<&str>| {
+        let mut ws = Workspace::new(vec![root.0.clone()], PrefixMap::default());
+        ws.index_paths(on_disk.clone());
+        for (u, text) in &open {
+            ws.open_doc(u.clone(), text.clone(), 1);
+        }
+        if let Some(text) = ctx_text {
+            ws.open_doc(ctx.clone(), text.into(), 1);
+        }
+        ws
+    };
+    let triples = |ws: &mut Workspace| {
+        let mut all = Vec::new();
+        for (u, _) in &open {
+            all.push(ws.analysis(u).unwrap().parsed.triples.clone());
+        }
+        for p in &on_disk {
+            all.push(ws.indexed_analysis(&uri(p)).unwrap().parsed.triples.clone());
+        }
+        all
+    };
+
+    let mut ws = start(None);
+    for (u, _) in &open {
+        assert_eq!(context_errors(&mut ws, u), Vec::<String>::new(), "{u}");
+    }
+    let before = triples(&mut ws);
+    assert!(before.iter().all(|t| t.len() == 1), "{before:?}");
+
+    let gone = r#"{"@context": {"name": null}}"#;
+    let other = r#"{"@context": {"name": "http://example.org/other"}}"#;
+    ws.open_doc(ctx.clone(), gone.into(), 1);
+    assert_eq!(triples(&mut ws), triples(&mut start(Some(gone))));
+    ws.change_doc(&ctx, 2, vec![full(other)], Encoding::Utf16);
+    assert_eq!(triples(&mut ws), triples(&mut start(Some(other))));
+    std::fs::write(&ctx_path, other).unwrap();
+    ws.save_doc(&ctx);
+    let saved = triples(&mut ws);
+    assert_eq!(saved, triples(&mut start(Some(other))));
+    assert!(saved.iter().all(|t| t.len() == 1) && saved != before);
+    ws.change_doc(&ctx, 3, vec![full(gone)], Encoding::Utf16);
+    assert_eq!(triples(&mut ws), triples(&mut start(Some(gone))));
+    ws.close_doc(&ctx);
+    assert_eq!(triples(&mut ws), saved);
+    assert_eq!(saved, triples(&mut start(None)));
+
+    // Two spellings of one web URL are two contexts.
+    let web = "https://example.org/ctx.jsonld";
+    let mut ws = Workspace::default();
+    ws.set_context_loader(Arc::new(crate::jsonld::NoNetwork::default().with(web, CTX)));
+    ws.open_doc("file:///w/web.jsonld".into(), user(web), 1);
+    assert_eq!(
+        ws.analysis("file:///w/web.jsonld")
+            .unwrap()
+            .parsed
+            .triples
+            .len(),
+        1
+    );
+    assert!(!ws.context_changed("https://example.org/c%74x.jsonld", true));
+    assert!(ws.context_changed(web, true));
+}
+
 #[test]
 fn a_settings_prefix_change_lists_every_indexed_turtle_file() {
     let root = TempDir::new("fx-settings");
