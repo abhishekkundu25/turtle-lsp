@@ -10,7 +10,7 @@ work of others, listed here with their licences:
   into `out/extension.js`;
 - the browser site (`web/app`): the engine (`engine.wasm`, built from the
   crates marked "browser", with the same contexts and vocabulary data),
-  Monaco and monaco-vim.
+  Monaco (with the DOMPurify it bundles) and monaco-vim.
 
 Where a crate offers a choice of licences, turtle-lsp uses it under the MIT
 licence, or under Apache-2.0 where MIT is not offered (`ring`: Apache-2.0
@@ -300,10 +300,14 @@ Bundled into `out/extension.js` by esbuild (`npm ls --omit=dev --all` in
 
 ## The browser site
 
-- [Monaco Editor](https://github.com/microsoft/monaco-editor) 0.52.2, MIT,
+- [Monaco Editor](https://github.com/microsoft/monaco-editor) 0.56.0, MIT,
   Copyright (c) 2016 - present Microsoft Corporation. Its `LICENSE` and
   `ThirdPartyNotices.txt` (for the code Monaco bundles) are published beside
   it, in `vendor/monaco/`.
+- [DOMPurify](https://github.com/cure53/DOMPurify) 3.4.8, bundled inside
+  Monaco's minified files, (c) Cure53 and other contributors, MPL-2.0 OR
+  Apache-2.0, used here under Apache-2.0. Monaco's `ThirdPartyNotices.txt`
+  does not list it, and its minified files drop the licence header.
 - [monaco-vim](https://github.com/brijeshb42/monaco-vim) 0.4.4, MIT,
   Copyright 2018 Brijesh Bittu, with code from CodeMirror, MIT, Copyright (C)
   2017 by Marijn Haverbeke and others. Both licences are published beside

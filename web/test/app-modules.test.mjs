@@ -291,10 +291,11 @@ test("no test carries its own static server: they all use static-server.mjs", ()
 test("the build skips the Monaco language services the editor never starts, and the message catalogues", () => {
   const sep = path.sep
   const p = (...x) => ["", "m", "vs", ...x].join(sep)
-  for (const skipped of [p("language", "typescript"), p("language", "typescript", "tsWorker.js"), p("language", "css", "cssMode.js"), p("language", "html", "htmlMode.js"), p("editor", "editor.main.nls.messages.fr.js")]) {
+  for (const skipped of [p("language", "typescript"), p("language", "typescript", "ts.worker.js"), p("language", "css", "monaco.contribution.js"), p("language", "html"), p("tsMode-B0S_kp2q.js"), p("cssMode-CV6Ay48H.js"), p("htmlMode-27by_KM4.js"), p("assets", "ts.worker-BWKtMYOk.js"), p("assets", "css.worker-URu8fCFR.js"), p("assets", "html.worker-D1SL3iM8.js"), p("nls"), p("nls", "lang", "fr.js")]) {
     assert.equal(wanted(skipped), false, skipped)
   }
-  for (const kept of [p("language", "json", "jsonMode.js"), p("language", "json"), p("basic-languages", "typescript", "typescript.js"), p("editor", "editor.main.js"), p("loader.js")]) {
+  // The services' small worker-URL modules stay: editor.main.js imports them.
+  for (const kept of [p("language", "json", "monaco.contribution.js"), p("language", "json"), p("jsonMode-DLUiMUrI.js"), p("assets", "json.worker-CoJx_OPf.js"), p("assets", "editor.worker-lj3bdIIn.js"), p("ts.worker-2QLmBukE.js"), p("css.worker-CyhWkhHo.js"), p("typescript-_2t_511t.js"), p("basic-languages", "monaco.contribution.js"), p("editor", "editor.main.js"), p("nls.messages-loader.js"), p("loader.js")]) {
     assert.equal(wanted(kept), true, kept)
   }
 })
@@ -308,6 +309,30 @@ test("the build fails when the engine is over its size budget", () => {
   if (fs.existsSync(wasm)) assert.doesNotThrow(() => checkBudget(zlib.gzipSync(fs.readFileSync(wasm), { level: 9 }).length))
 })
 
+// The files Monaco's AMD module `id` (in the folder `vs` of a Monaco build)
+// loads: itself and its static imports, through every module, with the loader
+// plugins they name (`vs/nls.messages-loader!`). Paths relative to `vs`.
+function monacoModules(vs, id) {
+  const files = new Set()
+  const walk = (id) => {
+    const file = `${id}.js`
+    if (files.has(file)) return
+    files.add(file)
+    const deps = fs.readFileSync(path.join(vs, file), "utf8").match(/^define\("[^"]*",\s*(\[[^\]]*\])/)
+    assert.ok(deps, `${file} is an AMD module`)
+    for (const dep of JSON.parse(deps[1])) {
+      if (["require", "exports", "module"].includes(dep)) continue
+      const name = dep.replace(/!.*$/, "")
+      walk(name.startsWith("vs/") ? name.slice(3) : path.posix.normalize(path.posix.join(path.posix.dirname(id), name)))
+    }
+  }
+  walk(id)
+  return files
+}
+
+// The scripts the page's Monaco worker loads, relative to the page.
+const workerScripts = () => [...read("app", "monaco-worker.js").matchAll(/"(vendor\/monaco\/[^"]+)"/g)].map((m) => m[1])
+
 test("copyMonaco copies the editor without the unused services, with its licence and notices", () => {
   const from = path.join(web, "..", "node_modules", "monaco-editor")
   if (!fs.existsSync(from)) return
@@ -318,9 +343,15 @@ test("copyMonaco copies the editor without the unused services, with its licence
     assert.deepEqual(fs.readdirSync(path.join(target, "vs", "language")), ["json"])
     assert.ok(fs.statSync(path.join(target, "LICENSE")).size > 100)
     assert.ok(fs.statSync(path.join(target, "ThirdPartyNotices.txt")).size > 1000)
-    assert.ok(fs.existsSync(path.join(target, "vs", "editor", "editor.main.js")))
-    assert.ok(fs.existsSync(path.join(target, "vs", "base", "worker", "workerMain.js")))
-    assert.equal(fs.readdirSync(path.join(target, "vs", "editor")).some((f) => /nls\.messages\.\w+\.js$/.test(f)), false)
+    // The editor, every file it loads, and the editor's and JSON's workers.
+    for (const f of monacoModules(path.join(target, "vs"), "editor/editor.main")) assert.ok(fs.existsSync(path.join(target, "vs", f)), `${f} is copied`)
+    const workers = workerScripts()
+    assert.equal(workers.length, 2)
+    for (const w of workers) assert.ok(fs.existsSync(path.join(to, w.slice("vendor/".length))), `${w} is copied`)
+    // Not the other services' modes and workers, nor the catalogues.
+    const left = fs.readdirSync(path.join(target, "vs"), { recursive: true }).map((f) => f.split(path.sep).join("/"))
+    assert.deepEqual(left.filter((f) => /^(?:ts|css|html)Mode-|^assets\/(?:ts|css|html)\.worker-|^nls(?:\/|$)/.test(f)), [])
+    assert.ok(fs.readdirSync(path.join(from, "min", "vs", "assets")).some((f) => /^ts\.worker-/.test(f)), "the package has a TypeScript worker for the copy to leave out")
   } finally {
     fs.rmSync(to, { recursive: true, force: true })
   }
@@ -397,10 +428,13 @@ test("the editor page preloads every module editor.js imports, and nothing else,
   walk("editor.js")
   assert.deepEqual([...preloaded].sort(), [...imported].sort())
   const monaco = path.join(web, "..", "node_modules", "monaco-editor", "min")
-  for (const [, href] of html.matchAll(/<link rel="preload" href="vendor\/monaco\/([^"]+)"/g)) {
+  const monacoPreloads = [...html.matchAll(/<link rel="preload" href="vendor\/monaco\/([^"]+)"/g)].map((m) => m[1])
+  for (const href of monacoPreloads) {
     assert.ok(fs.existsSync(path.join(monaco, href)), `${href} is in Monaco's package`)
     assert.ok(wanted(path.join(monaco, href)), `${href} is copied by the build`)
   }
+  // Monaco's code: editor.main.js and every file it loads, and nothing else.
+  assert.deepEqual(monacoPreloads.sort(), [...monacoModules(path.join(monaco, "vs"), "editor/editor.main")].map((f) => `vs/${f}`).sort())
 })
 
 test("the dead prototype is gone, and so is the script that served it", () => {
