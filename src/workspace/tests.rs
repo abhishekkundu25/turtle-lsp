@@ -13,6 +13,8 @@ fn file_uri_name_is_the_decoded_last_segment() {
 }
 
 use super::*;
+use crate::jsonld::{LoadError, RemoteDocument};
+use std::sync::Mutex;
 
 #[cfg(not(debug_assertions))]
 include!("../../tests/support/corpus.rs");
