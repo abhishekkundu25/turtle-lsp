@@ -253,13 +253,13 @@ impl Analysis {
         let base = Some(uri);
         splice::applies(&self.parsed, change, &self.external, external, base)?;
         let tokens = self.tokens.get().ok_or(Fallback::NoTokens)?;
-        // The splice works on the parse as the parser made it: with its
-        // tokens and comment spans, which this analysis keeps apart or
-        // drops. It is shared (the knowledge index holds it too), so the
-        // splice works on a copy.
+        // The splice works on the parse with its tokens, which this analysis
+        // keeps apart. The parse is shared (the knowledge index holds it
+        // too), so the splice works on a copy. Its comment spans stay empty:
+        // the analysis reads the comments from the tokens and drops the
+        // list the splice returns.
         let mut old = self.parsed.clone();
         old.tokens = tokens.clone();
-        old.comments = comments_of(tokens).collect();
         splice::splice(old, change, &self.external, external, base)
     }
 
