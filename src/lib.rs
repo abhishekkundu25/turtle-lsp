@@ -270,8 +270,8 @@ mod boundaries {
     ];
 
     /// The product files outside `src/oracle.rs` that may name `crate::oracle`:
-    /// the incremental check.
-    const ORACLE_USERS: &[&str] = &["src/workspace.rs"];
+    /// none.
+    const ORACLE_USERS: &[&str] = &[];
 
     /// The protocol crates. The libraries of `LAYERS` name none of them.
     const PROTOCOL: &[&str] = &["lsp_types", "lsp_server", "serde_json"];
@@ -489,9 +489,9 @@ mod boundaries {
     /// Only `ORACLE_USERS` name `crate::oracle`.
     #[test]
     fn only_the_listed_files_name_the_oracle() {
-        let call = "let x = crate::oracle::same_analysis(a, b);\n";
+        let call = "let x = crate::oracle::check(a, b);\n";
         assert_eq!(count("src/features/hover.rs", call), 1);
-        assert_eq!(count("src/workspace.rs", call), 0);
+        assert_eq!(count("src/workspace.rs", call), 1);
         assert_eq!(
             count(
                 "src/oracle.rs",

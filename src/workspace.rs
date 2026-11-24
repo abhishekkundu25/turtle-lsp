@@ -797,7 +797,7 @@ fn analyze_open(
         // From the text alone, the line index too.
         let (u, ext) = (uri.to_string(), external.clone());
         let full = Analysis::with_loader(u, text, ext, keep_tokens, syntax, loader);
-        match crate::oracle::same_analysis(&a, &full) {
+        match crate::analysis::same_analysis(&a, &full) {
             Ok(()) => (a, None),
             Err(diff) => {
                 window = None;

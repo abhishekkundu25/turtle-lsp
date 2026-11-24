@@ -2177,7 +2177,7 @@ fn timing_typing_in_the_middle_of_a_big_file_is_spliced() {
     let mut fresh = Workspace::default();
     fresh.open_doc(uri.into(), got.text.to_string(), 1);
     let want = fresh.analysis(uri).unwrap();
-    assert_eq!(crate::oracle::same_analysis(&got, &want), Ok(()));
+    assert_eq!(crate::analysis::same_analysis(&got, &want), Ok(()));
 
     let median = |v: &mut [std::time::Duration]| {
         v.sort();
