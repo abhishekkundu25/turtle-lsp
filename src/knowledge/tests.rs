@@ -2,7 +2,7 @@ use super::facts::{Subj, subj};
 use super::*;
 use crate::shacl::vocab;
 use crate::syntax::PrefixMap;
-use crate::syntax::{self, Node, Syntax};
+use crate::syntax::{self, Node, Span, Syntax};
 use std::path::Path;
 
 #[test]
