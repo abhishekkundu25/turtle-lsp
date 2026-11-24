@@ -158,7 +158,7 @@ impl Worker {
         let seen = latest.clone();
         // Always a thread: the loop waits for jobs. Embedded, the server
         // validates inline instead and never starts one.
-        crate::server::worker::Spawn::Thread.run(
+        crate::worker::Spawn::Thread.run(
             "shacl",
             // Defence in depth: recursion is bounded, but generously.
             16 << 20,

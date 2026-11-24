@@ -38,10 +38,10 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::features::diagnostics::SOURCE;
 use crate::knowledge::{DocFacts, Knowledge, Source};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::worker::Fed;
-use crate::server::worker::{Feed, Spawn};
 use crate::syntax::{self, Iri, Node, PrefixMap};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::worker::Fed;
+use crate::worker::{Feed, Spawn};
 use crate::workspace::{MAX_FILE_BYTES, MAX_FILES, SKIP_DIRS, canonical, path_to_uri, uri_to_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::RecvError;

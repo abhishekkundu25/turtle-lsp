@@ -1,7 +1,7 @@
 //! Background threads and the channels that bring their answers back.
 //!
-//! One execution mode for the server's jobs ([`Spawn`]): on threads of their
-//! own, or inline when the server is embedded in a host without threads. One
+//! One execution mode for background jobs ([`Spawn`]): on threads of their
+//! own, or inline in a host without threads. One
 //! way to start a thread ([`spawn_guarded`]): a panic in it is caught and
 //! handed back as a message instead of ending the thread silently. One way to
 //! read a channel ([`Feed`]): when the thread behind it is gone, the feed

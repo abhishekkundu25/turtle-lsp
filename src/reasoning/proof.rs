@@ -154,7 +154,7 @@ mod tests {
 
     /// The inferred types of `ex:<local>` after a run over `docs`.
     fn inferred(docs: Vec<(Source, Arc<Analysis>)>, local: &str) -> Arc<Vec<Inferred>> {
-        let shared = Arc::new(Shared::new(crate::server::worker::Spawn::Thread));
+        let shared = Arc::new(Shared::new(crate::worker::Spawn::Thread));
         run_inline(
             &shared,
             &Job {

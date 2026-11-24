@@ -78,7 +78,7 @@ mod registrations;
 mod shacl;
 mod timers;
 pub(crate) mod wire;
-pub(crate) mod worker;
+use crate::worker;
 mod workspace_diagnostics;
 
 use client::Client;

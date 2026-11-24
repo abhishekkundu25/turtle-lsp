@@ -280,9 +280,7 @@ mod tests {
         .to_string();
         assert!(!today.contains("Inferred"), "{today}");
 
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let hover = |ws: &mut Workspace| hover_at(ws, &settings, &shared, &uris[0], pos);
         // No run has finished: today's hover.
         assert_eq!(hover(&mut ws), today);
@@ -342,9 +340,7 @@ mod tests {
         );
         let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
         let settings = Settings::default();
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let docs = vec![(
             crate::knowledge::Source::Open,
             ws.analysis(&uris[0]).unwrap(),
@@ -427,9 +423,7 @@ mod tests {
                 docs.push(("prefixes.ttl", "@prefix ex: <http://example.org/> .\n"));
             }
             let (mut ws, uris) = workspace(&dir, &docs);
-            let shared = Arc::new(crate::reasoning::Shared::new(
-                crate::server::worker::Spawn::Thread,
-            ));
+            let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
             let docs = ws
                 .knowledge()
                 .docs()
@@ -623,9 +617,7 @@ mod tests {
             ]
         );
         // Reasoning: ex:w1 is a Widget by the Functional SubClassOf.
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let docs = ws
             .knowledge()
             .docs()

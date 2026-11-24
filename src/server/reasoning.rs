@@ -188,7 +188,7 @@ pub(super) fn summary(by_uri: &ByUri) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::worker::Spawn;
+    use crate::worker::Spawn;
     use crossbeam_channel::RecvTimeoutError;
     use std::time::Duration;
 

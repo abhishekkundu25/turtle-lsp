@@ -227,14 +227,15 @@ pub mod shacl;
 pub mod sparql;
 pub mod syntax;
 pub(crate) mod vocab;
+pub(crate) mod worker;
 pub(crate) mod workspace;
 
 /// The version of this build, as the server reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The module boundaries that `AGENTS.md` ("Where things live") states, and
-/// the upward edges that `SERVER_USERS` and `ORACLE_USERS` list, read from the
-/// source. Comments, literals, `#[cfg(test)]` items and the files that a
+/// the upward edges that `ORACLE_USERS` lists, read from the source.
+/// Comments, literals, `#[cfg(test)]` items and the files that a
 /// `#[cfg(test)] mod x;` declares are not checked. Paths are read from the
 /// tokens: `use` groups expanded, `self` and `super` resolved.
 ///
@@ -256,18 +257,6 @@ mod boundaries {
     ];
     /// The core files that may name `extensions`: the router and the Run query lens.
     const EXTENSION_USERS: &[&str] = &["src/server.rs", "src/features/lens.rs"];
-
-    /// The files outside `src/server.rs`, `src/server/` and `src/extensions/`
-    /// that may name `crate::server`: the users of its job runner.
-    const SERVER_USERS: &[&str] = &[
-        "src/workspace.rs",
-        "src/features/shacl_validate.rs",
-        "src/imports/mod.rs",
-        "src/imports/worker.rs",
-        "src/jsonld/loader.rs",
-        "src/reasoning/state.rs",
-        "src/reasoning/worker.rs",
-    ];
 
     /// The product files outside `src/oracle.rs` that may name `crate::oracle`:
     /// none.
@@ -464,18 +453,18 @@ mod boundaries {
         );
     }
 
-    /// Below the server, only `SERVER_USERS` name `crate::server`.
+    /// Below the server, no file names `crate::server`.
     #[test]
     fn only_the_listed_files_name_the_server() {
-        let spawn = "let s = crate::server::worker::Spawn::Thread;\n";
+        let spawn = "let s = crate::server::WORKER_STACK;\n";
         assert_eq!(count("src/features/hover.rs", spawn), 1);
+        assert_eq!(count("src/workspace.rs", spawn), 1);
         assert_eq!(
             count("src/workspace/kinds.rs", "use super::super::server::X;\n"),
             1
         );
         assert_eq!(count("src/server_x.rs", spawn), 1);
         for name in [
-            "src/workspace.rs",
             "src/server.rs",
             "src/server/index.rs",
             "src/extensions/mod.rs",
@@ -569,8 +558,7 @@ mod boundaries {
         let core = !name.starts_with("src/extensions/") && !EXTENSION_USERS.contains(&name);
         let below_server = !(name == "src/server.rs"
             || name.starts_with("src/server/")
-            || name.starts_with("src/extensions/")
-            || SERVER_USERS.contains(&name));
+            || name.starts_with("src/extensions/"));
         let outside_oracle = !(name == "src/oracle.rs"
             || name.starts_with("src/oracle/")
             || ORACLE_USERS.contains(&name));
@@ -605,7 +593,7 @@ mod boundaries {
                         report(offset, "core code may not name extensions".into());
                     }
                     if below_server && first == Some("server") {
-                        report(offset, "only SERVER_USERS may name crate::server".into());
+                        report(offset, "this file may not name crate::server".into());
                     }
                     if outside_oracle && first == Some("oracle") {
                         report(offset, "only ORACLE_USERS may name crate::oracle".into());
