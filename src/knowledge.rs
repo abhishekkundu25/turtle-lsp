@@ -19,7 +19,7 @@
 //! keeps the sources that use it, and each source keeps its own entries.
 //! What the curation checks read of other documents about a term or an
 //! ontology (its kind, whether it has a label, a comment or each header
-//! property, which documents declare it) each source keeps as a [`Curated`]
+//! property, which documents declare it) each source keeps as a [`Curated`](facts::Curated)
 //! summary per IRI.
 
 use crate::analysis::Analysis;
@@ -147,7 +147,7 @@ struct Marks {
     defined: u32,
     deprecated: u32,
     undeprecated: u32,
-    /// Sources whose [`Curated`] summary types it `owl:Ontology`.
+    /// Sources whose [`Curated`](facts::Curated) summary types it `owl:Ontology`.
     ontology: u32,
 }
 
@@ -182,7 +182,7 @@ struct Namespace {
 pub(crate) struct Changes {
     /// IRIs that became or stopped being described, or a term; terms that
     /// gained their first `skos:definition` or lost their last; IRIs that
-    /// became or stopped being deprecated here; IRIs whose [`TermState`]
+    /// became or stopped being deprecated here; IRIs whose [`TermState`](facts::TermState)
     /// changed. Sorted by [`Iri::id`].
     pub(crate) iris: Vec<Iri>,
     /// Text keys under which the source's entries changed and the terms

@@ -26,7 +26,7 @@ impl Workspace {
 
     /// The prefixes a document at `uri` gets, by its name alone: a name whose
     /// syntax its content gives counts as Turtle here, and a parse whose
-    /// text turns out otherwise drops them ([`parse_files`]).
+    /// text turns out otherwise drops them (`parse_files` in `disk`).
     pub(crate) fn external_prefixes_for(&mut self, uri: &str) -> Arc<PrefixMap> {
         let syntax = if Syntax::by_content(uri) {
             Syntax::Turtle

@@ -355,8 +355,8 @@ impl Kept {
 }
 
 /// Whether the findings of a document of `syntax` are brought up to date
-/// by what changed: the Turtle family's. A JSON-LD, RDF/XML or OWL
-/// Functional document is checked again in full ([`Kept::of`]), which runs
+/// by what changed: the Turtle family's. A JSON-LD, RDF/XML, OWL
+/// Functional or OWL/XML document is checked again in full ([`Kept::of`]), which runs
 /// only the checks of its syntax.
 pub(super) fn follows(syntax: Syntax) -> bool {
     match syntax.family() {

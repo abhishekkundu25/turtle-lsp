@@ -246,8 +246,8 @@ impl Knowledge {
         self.marks.get(iri).is_some_and(|m| m.term > 0)
     }
 
-    /// What sort of term the workspace makes `iri`, as [`TERM_CLASS`],
-    /// [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits: from the types and the
+    /// What sort of term the workspace makes `iri`, as [`TERM_CLASS`](super::TERM_CLASS),
+    /// [`TERM_PROPERTY`](super::TERM_PROPERTY) and [`TERM_CONCEPT`](super::TERM_CONCEPT) bits: from the types and the
     /// `rdfs:subClassOf` and `rdfs:subPropertyOf` statements of workspace
     /// sources (external ones say nothing).
     pub(crate) fn term_kind<K: IriKey + ?Sized>(&self, iri: &K) -> u8 {
