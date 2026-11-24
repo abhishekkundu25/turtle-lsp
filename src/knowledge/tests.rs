@@ -1,5 +1,8 @@
+use super::facts::{Subj, subj};
 use super::*;
+use crate::shacl::vocab;
 use crate::syntax::PrefixMap;
+use crate::syntax::{self, Node, Syntax};
 use std::path::Path;
 
 #[test]
