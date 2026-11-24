@@ -47,7 +47,7 @@ pub fn inlay_hints(
 /// element name between it and its attributes; the editor's XML support
 /// owns that text. Nor OWL Functional syntax and OWL/XML, which are
 /// read-only as RDF/XML is: no text is put between their terms.
-fn hinted(syntax: Syntax) -> bool {
+pub(super) fn hinted(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
         Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
