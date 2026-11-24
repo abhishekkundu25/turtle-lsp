@@ -693,7 +693,7 @@ fn norm(iri: &str) -> &str {
 
 mod catalog;
 mod load;
-mod rdfxml;
+mod ntriples;
 mod worker;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -705,7 +705,7 @@ pub use catalog::parse_catalog;
 pub(crate) use load::fs_policy;
 pub use load::sniff;
 pub(crate) use load::{fs_policy_path, is_network_path};
-pub use rdfxml::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
+pub use ntriples::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
 
 /// Whether web fetches may reach internal addresses: set by the environment
 /// (`fetch::ALLOW_PRIVATE_ENV`), never by a file of the workspace.

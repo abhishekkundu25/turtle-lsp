@@ -21,10 +21,10 @@
 //! refused.
 
 use super::catalog::{Catalog, Target};
-use super::rdfxml::stopped_at;
+use super::ntriples::stopped_at;
 // Fetching converts; the browser build fetches nothing.
 #[cfg(not(target_arch = "wasm32"))]
-use super::rdfxml::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
+use super::ntriples::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
 use super::worker::{Memo, Ontology, RETRY_FETCH_AFTER};
 use super::*;
 use crate::syntax::Syntax;
