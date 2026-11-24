@@ -362,6 +362,8 @@ pub(super) fn step(n: &mut u32, add: bool) -> bool {
 
 impl Namespace {
     /// [`Knowledge::is_own_namespace`] without the well-known vocabulary check.
+    ///
+    /// [`Knowledge::is_own_namespace`]: super::Knowledge::is_own_namespace
     pub(super) fn is_own(&self) -> bool {
         self.described >= OWN_MIN_DESCRIBED
             && self.described * 100 >= OWN_MIN_SHARE_PERCENT * self.referenced

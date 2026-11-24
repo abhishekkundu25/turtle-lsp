@@ -137,7 +137,8 @@ pub(crate) struct Change<'t> {
 /// Why a splice gave up; the caller parses the new text in full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallback {
-    /// JSON-LD or RDF/XML, which have their own frontends.
+    /// A syntax outside the Turtle family: JSON-LD, or a read-only one
+    /// (RDF/XML, OWL Functional, OWL/XML). Each has its own frontend.
     Syntax,
     /// The edit does not fit the two texts.
     Edit,

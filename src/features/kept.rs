@@ -3,7 +3,8 @@
 //! statements the parse splice took again are checked again
 //! ([`Window`]); after a change of the knowledge index, only what its
 //! change set names ([`Changes`]). What this cannot follow (a full parse,
-//! more than one index change, JSON-LD, RDF/XML) checks everything again.
+//! more than one index change, a syntax outside the Turtle family: JSON-LD,
+//! RDF/XML, OWL Functional, OWL/XML) checks everything again.
 //!
 //! By what each kept check reads ([`Reads`]):
 //! - statement-local, `invalid-literal` and `label-whitespace`: kept per

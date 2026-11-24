@@ -7,7 +7,7 @@ edition = "2024"
 # with rust-toolchain.toml. Lower this only after clippy passes on the lower number.
 rust-version = "1.99"
 license = "MIT"
-description = "Fast language server and command-line checker for RDF (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation"
+description = "Fast language server and command-line checker for RDF (Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML), OWL 2 (Functional syntax, OWL/XML) and SPARQL, with SHACL validation"
 repository = "https://github.com/abhishekkundu25/turtle-lsp"
 
 # main.rs has no tests of its own, so `cargo test` does not link it as a test

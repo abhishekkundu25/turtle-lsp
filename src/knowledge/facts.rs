@@ -92,6 +92,8 @@ pub(crate) struct DocFacts {
     /// declaration, and one for a namespace supplied from outside and used.
     pub(super) bindings: Counts<(Iri, Iri)>,
     /// IRIs this source makes terms, one per triple: see [`Knowledge::is_term`].
+    ///
+    /// [`Knowledge::is_term`]: super::Knowledge::is_term
     pub(super) terms: Counts<Iri>,
     /// The first triple of each statement, so that [`Keyed`] positions
     /// can be relative to their statement: kept only when there are
@@ -121,6 +123,8 @@ pub(crate) struct DocFacts {
 
 /// What one workspace source says about an IRI that the curation checks of
 /// other documents read ([`Knowledge::term_kind`], [`TermState`]).
+///
+/// [`Knowledge::term_kind`]: super::Knowledge::term_kind
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct Curated {
     /// [`TERM_CLASS`], [`TERM_PROPERTY`] and [`TERM_CONCEPT`] bits.
@@ -157,6 +161,8 @@ impl Curated {
 /// `owl:Class` or `rdfs:Class`, or the subject of `rdfs:subClassOf`), a
 /// property (one of the four property types, or the subject of
 /// `rdfs:subPropertyOf`), a concept (`skos:Concept`).
+///
+/// [`Knowledge::term_kind`]: super::Knowledge::term_kind
 pub(crate) const TERM_CLASS: u8 = 1;
 pub(crate) const TERM_PROPERTY: u8 = 2;
 pub(crate) const TERM_CONCEPT: u8 = 4;
@@ -166,6 +172,8 @@ pub(crate) const TERM_CONCEPT: u8 = 4;
 /// change to decide whether it bumps [`Knowledge::described_generation`].
 /// Facts that no check reads (a non-term's kind, a non-ontology's header)
 /// are left at their default.
+///
+/// [`Knowledge::described_generation`]: super::Knowledge::described_generation
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(super) struct TermState {
     pub(super) kind: u8,
@@ -350,6 +358,8 @@ pub(super) fn subj(n: &Node) -> Option<Subj> {
 impl DocFacts {
     /// Everything [`Knowledge`] needs from one analysis beyond its own indexes.
     /// Pure, so callers may compute it in parallel.
+    ///
+    /// [`Knowledge`]: super::Knowledge
     pub(crate) fn new(a: &Analysis) -> DocFacts {
         let v = vocab::get();
         let l = links();

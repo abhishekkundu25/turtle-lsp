@@ -2,39 +2,14 @@
 //!
 //! # Modules
 //!
-//! | Module | Owns | Called by |
-//! |---|---|---|
-//! | [`syntax`] | Turtle, TriG, N-Triples and N-Quads lexer and parser | every feature |
-//! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
-//! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
-//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle; its XML scanner (`rdfxml::xml`) | [`analysis`], [`imports`]; `owx` (the scanner) |
-//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the axioms mapped to RDF (the W3C mapping) into the same parse as Turtle, with the exact span of every IRI, and the errors; the tree, the signature table and the mapping that `owx` shares | [`analysis`], [`imports`], `owx` |
-//! | `owx` | OWL 2 XML Serialization (OWL/XML) frontend: a reader over the `rdfxml` scanner into the `ofn` tree, mapped by the `ofn` mapping | [`analysis`], [`imports`] |
-//! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
-//! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
-//! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
-//! | `vocab` | Embedded well-known vocabularies | [`knowledge`], [`features`] |
-//! | [`imports`] | `owl:imports` resolution and the import cache | `workspace`, [`server`], [`batch`] |
-//! | `fetch` | Web requests: redirects, the address rule, size, time and request budgets, the cache file layout | [`imports`], [`jsonld`] |
-//! | [`features`] | Completion, hover, diagnostics, formatting and the other editor features | [`server`], `ide`, [`batch`] |
-//! | `diagnose` | The diagnostics composer: one document's diagnostics, the same for the editor and `check` | `ide`, [`server`], [`batch`] |
-//! | [`shacl`] | Shapes, SHACL Core and SHACL-SPARQL validation | [`features`], [`knowledge`] |
-//! | [`rdf`] | The union of documents' triples as a graph and a SPARQL dataset | [`query`], [`shacl`] |
-//! | [`query`] | Running SPARQL queries and rendering results | [`cli`], [`server`], [`batch`], the browser engine |
-//! | `reasoning` | Reasoning over the workspace with TurbOWL: the base, the shared state, the reasoning thread, findings as diagnostics, proofs for hover | [`server`], `ide`, [`features`] |
-//! | [`settings`] | Client settings and their layers | [`server`], [`cli`] |
-//! | `commands` | `workspace/executeCommand` commands | [`server`] |
-//! | [`server`] | The LSP main loop, and the worker threads other modules start | `main`, the browser engine |
-//! | [`batch`] | Files analysed as one workspace without the event loop | [`cli`], the browser engine |
-//! | [`cli`] | `check`, `format` and `query` | `main` |
-//! | [`clock`] | The time the server's timers read | [`server`], [`query`], [`features`] |
-//! | `ide` | `ide::Session`: the editor requests over one workspace, routed by document kind | [`server`] |
-//! | `extensions` | The requests beyond the LSP standard: `turtle/graph`, "▶ Run query" | [`server`], [`features`] (the Run query lens) |
-//! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
+//! `ARCHITECTURE.md`, at the root of the repository, has the module table
+//! (what each module owns and which modules call it), the layer rules that
+//! the `boundaries` test checks, and the files that hold one part each of
+//! the larger modules. The module doc at the top of each file says the rest.
 //!
 //! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `ofn`,
-//! `owx`, `rdfxml`, `reasoning`, `vocab` and `workspace` are private to the
-//! crate: no consumer uses them.
+//! `owx`, `rdfxml`, `reasoning`, `vocab`, `worker` and `workspace` are
+//! private to the crate: no consumer uses them.
 //!
 //! # Public interface
 //!
@@ -233,11 +208,16 @@ pub(crate) mod workspace;
 /// The version of this build, as the server reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The module boundaries that `AGENTS.md` ("Where things live") states, and
-/// the upward edges that `ORACLE_USERS` lists, read from the source.
-/// Comments, literals, `#[cfg(test)]` items and the files that a
-/// `#[cfg(test)] mod x;` declares are not checked. Paths are read from the
-/// tokens: `use` groups expanded, `self` and `super` resolved.
+/// The module boundaries, read from the source: each library and frontend
+/// names only what its layer allows (`LAYERS`) and no protocol crate; core
+/// code names no `extensions` (`EXTENSION_USERS` excepted); no file outside
+/// `server` and `extensions` names `crate::server`; and no product file
+/// outside `src/oracle.rs` and `ORACLE_USERS` names `crate::oracle`.
+/// `AGENTS.md` ("Where things live") and `ARCHITECTURE.md` ("The modules")
+/// state the layer and `extensions` rules. Comments, literals, `#[cfg(test)]`
+/// items and the files that a `#[cfg(test)] mod x;` declares are not checked.
+/// Paths are read from the tokens: `use` groups expanded, `self` and `super`
+/// resolved.
 ///
 /// Limits: a path that a macro builds, or that a re-export reaches (`pub use`
 /// in an allowed module), is not seen.

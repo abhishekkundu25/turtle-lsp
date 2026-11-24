@@ -50,12 +50,13 @@ where
         .map(|_| ())
 }
 
-/// How the server's jobs run. The server holds one and hands it to each job.
-/// Each job decides what running inline means for it: imports resolve
-/// without loading, SHACL validation runs with a time limit of its own,
-/// workspace diagnostics are off, a query run shows its summary as a
-/// message, reindexing parses at once, and JSON-LD contexts get no
-/// background loader.
+/// How a background job runs: on a thread of its own, or inline. The server
+/// holds one, chosen by its host, and hands it to each job it starts; the
+/// SHACL worker and `Imports::new` always use [`Spawn::Thread`]. Each job
+/// decides what running inline means for it: imports resolve without loading,
+/// SHACL validation runs with a time limit of its own, workspace diagnostics
+/// are off, a query run shows its summary as a message, reindexing parses at
+/// once, and JSON-LD contexts get no background loader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Spawn {
     /// On threads of their own (the stdio server).
