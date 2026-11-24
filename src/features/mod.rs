@@ -19,16 +19,16 @@ pub(crate) mod shacl_lint;
 pub mod shacl_validate;
 pub mod symbols;
 
-use crate::syntax::Syntax;
+use crate::syntax::{Family, Syntax};
 
 /// Whether the features that write text (quick fixes, refactorings,
 /// rename) may edit a document of `syntax`. RDF/XML is read-only: nothing
 /// writes XML, whatever form its references have. OWL Functional syntax and
 /// OWL/XML are read-only too: turtle-lsp reads them and writes none of them.
 pub(crate) fn writes(syntax: Syntax) -> bool {
-    match syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
+    match syntax.family() {
+        Family::Turtle | Family::JsonLd => true,
+        Family::ReadOnly => false,
     }
 }
 

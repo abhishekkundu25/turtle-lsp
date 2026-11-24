@@ -16,7 +16,7 @@ use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Token;
 use crate::syntax::names::newline;
-use crate::syntax::{Iri, Node, Span, Syntax};
+use crate::syntax::{Family, Iri, Node, Span, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::*;
 use rustc_hash::FxHashMap;
@@ -401,17 +401,15 @@ impl<'a> Fixer<'a> {
                     return Vec::new();
                 };
                 let span = Span::new(start, end);
-                let edits = match a.parsed.syntax {
-                    Syntax::JsonLd => vec![TextEdit {
+                let edits = match a.parsed.syntax.family() {
+                    Family::JsonLd => vec![TextEdit {
                         range: a.range(enc, span),
                         new_text: replace,
                     }],
-                    Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
-                        self.text_edits(vec![(span, replace)])
-                    }
+                    Family::Turtle => self.text_edits(vec![(span, replace)]),
                     // The span is the triple's, not a string written there;
                     // nothing writes OWL Functional syntax or OWL/XML.
-                    Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return Vec::new(),
+                    Family::ReadOnly => return Vec::new(),
                 };
                 vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]
             }

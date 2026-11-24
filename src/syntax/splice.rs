@@ -197,11 +197,11 @@ pub(crate) fn applies(
     external: &PrefixMap,
     base: Option<&str>,
 ) -> Result<(), Fallback> {
-    match old.syntax {
-        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+    match old.syntax.family() {
+        Family::JsonLd | Family::ReadOnly => {
             return Err(Fallback::Syntax);
         }
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
+        Family::Turtle => {}
     }
     if old_external != external || old.document_base.as_deref() != base {
         return Err(Fallback::Context);

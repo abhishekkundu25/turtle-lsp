@@ -10,7 +10,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Iri, Ref, Role, Severity, Span, Syntax, SyntaxError};
+use crate::syntax::{Family, Form, Iri, Ref, Role, Severity, Span, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
@@ -346,12 +346,10 @@ impl Check {
 
     /// Whether the check runs on a document of `syntax`.
     pub(crate) fn runs_on(self, syntax: Syntax) -> bool {
-        match syntax {
-            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
-                true
-            }
+        match syntax.family() {
+            Family::Turtle | Family::JsonLd => true,
             // Read-only, as RDF/XML: the same checks.
-            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => self.runs_read_only(),
+            Family::ReadOnly => self.runs_read_only(),
         }
     }
 

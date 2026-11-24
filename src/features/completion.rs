@@ -29,7 +29,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
 use crate::syntax::names::{is_pn_chars, is_pn_local};
-use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
+use crate::syntax::{Family, Iri, PrefixMap, RDF_TYPE, Role, Span};
 use crate::vocab::{TermKind, VOCABS, split_namespace};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -97,13 +97,13 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
         return CompletionResponse::Array(vec![]);
     };
     let offset = offset as usize;
-    match a.parsed.syntax {
-        Syntax::JsonLd => return jsonld::complete(a, k, enc, offset),
+    match a.parsed.syntax.family() {
+        Family::JsonLd => return jsonld::complete(a, k, enc, offset),
         // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML.
-        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+        Family::ReadOnly => {
             return CompletionResponse::Array(vec![]);
         }
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
+        Family::Turtle => {}
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
         return r;

@@ -25,7 +25,7 @@ use super::diagnostics::{self, Check, Found};
 use crate::analysis::Analysis;
 use crate::knowledge::{Changes, Knowledge, Text};
 use crate::syntax::splice::Window;
-use crate::syntax::{Iri, Syntax};
+use crate::syntax::{Family, Iri, Syntax};
 use lsp_types::DiagnosticSeverity;
 use rustc_hash::FxHashSet;
 use std::sync::{Arc, Weak};
@@ -356,9 +356,9 @@ impl Kept {
 /// Functional document is checked again in full ([`Kept::of`]), which runs
 /// only the checks of its syntax.
 pub(super) fn follows(syntax: Syntax) -> bool {
-    match syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
-        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
+    match syntax.family() {
+        Family::Turtle => true,
+        Family::JsonLd | Family::ReadOnly => false,
     }
 }
 

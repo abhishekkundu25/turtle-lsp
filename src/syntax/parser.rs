@@ -135,11 +135,11 @@ impl Syntax {
     /// what it keeps as [`Parsed::tokens`]. None for JSON-LD, RDF/XML, OWL
     /// Functional syntax and OWL/XML, which have their own frontends.
     pub(crate) fn tokens(self, src: &str) -> Vec<Token> {
-        match self {
-            Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+        match self.family() {
+            Family::JsonLd | Family::ReadOnly => {
                 return Vec::new();
             }
-            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
+            Family::Turtle => {}
         }
         let mut all = tokenize(src);
         if self != Syntax::TriG {

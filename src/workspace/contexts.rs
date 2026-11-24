@@ -71,7 +71,13 @@ impl<'a> DocContexts<'a> {
     pub(super) fn asked(self, syntax: Syntax) -> Vec<String> {
         match syntax {
             Syntax::JsonLd => self.asked.into_inner().unwrap_or_default(),
-            _ => Vec::new(),
+            Syntax::Turtle
+            | Syntax::TriG
+            | Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::RdfXml
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => Vec::new(),
         }
     }
 

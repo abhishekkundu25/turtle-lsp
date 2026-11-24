@@ -56,7 +56,38 @@ pub enum Syntax {
     OwlXml,
 }
 
+/// The family of a [`Syntax`] ([`Syntax::family`]). It decides the
+/// document's token and statement representation, and what writes its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Family {
+    /// Turtle, TriG, N-Triples and N-Quads: one parser gives the tokens and
+    /// the Turtle statements, which the statement splice and the formatter
+    /// work on.
+    Turtle,
+    /// JSON-LD: no tokens and no statement splice; its own frontend gives
+    /// the statements (node objects) and writes the text.
+    JsonLd,
+    /// RDF/XML, OWL Functional syntax and OWL/XML: no tokens, no formatting
+    /// and no statement splice. Nothing writes the text.
+    ReadOnly,
+}
+
 impl Syntax {
+    /// The family of the syntax: the one place that groups the syntaxes by
+    /// their token and statement representation and what writes their text.
+    pub(crate) const fn family(self) -> Family {
+        match self {
+            Syntax::Turtle => Family::Turtle,
+            Syntax::TriG => Family::Turtle,
+            Syntax::NTriples => Family::Turtle,
+            Syntax::NQuads => Family::Turtle,
+            Syntax::JsonLd => Family::JsonLd,
+            Syntax::RdfXml => Family::ReadOnly,
+            Syntax::OwlFunctional => Family::ReadOnly,
+            Syntax::OwlXml => Family::ReadOnly,
+        }
+    }
+
     /// From an LSP language id (`turtle`, `trig`, `ntriples` / `n-triples`,
     /// `nquads` / `n-quads`, `jsonld`, `ofn`).
     pub(crate) fn from_language_id(id: &str) -> Option<Syntax> {

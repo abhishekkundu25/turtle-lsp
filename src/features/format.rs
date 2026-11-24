@@ -28,7 +28,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::layout::{Blank, Doc, Groups, Ix, Obj, Po, Printer, Semicolons, Style, Term};
 use crate::syntax::lexer::{Kind, Token};
-use crate::syntax::{Parsed, PrefixMap, Severity, Syntax, Triple};
+use crate::syntax::{Family, Parsed, PrefixMap, Severity, Syntax, Triple};
 use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -85,8 +85,8 @@ fn format_with<'t>(
     opts: &Options,
     tokens: impl FnOnce() -> Cow<'t, [Token]>,
 ) -> Option<String> {
-    match parsed.syntax {
-        Syntax::JsonLd => {
+    match parsed.syntax.family() {
+        Family::JsonLd => {
             // Only JSON syntax errors stop it; context problems do not.
             if parsed.errors.iter().any(|e| e.code == "json-syntax") {
                 return None;
@@ -94,8 +94,8 @@ fn format_with<'t>(
             return crate::jsonld::format::format(text, opts);
         }
         // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML.
-        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return None,
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
+        Family::ReadOnly => return None,
+        Family::Turtle => {}
     }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
         return None;

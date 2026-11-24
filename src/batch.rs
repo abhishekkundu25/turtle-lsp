@@ -886,7 +886,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
             Some(DocKind::Rdf(Syntax::OwlFunctional)) => "ofn",
             Some(DocKind::Rdf(Syntax::OwlXml)) => "owx",
-            _ => "turtle",
+            Some(DocKind::Rdf(Syntax::Turtle)) | None => "turtle",
         }
     }
 }
