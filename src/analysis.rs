@@ -1683,4 +1683,55 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_spliced_analysis_has_the_comments_of_a_fresh_one() {
+        let uri = "file:///w/a.ttl";
+        let mut text = String::from(
+            "# at the start\n\
+             @prefix ex: <http://example.org/> .\n\
+             ex:a ex:p 1 . # after a triple\n\
+             # between statements\n\
+             ex:b ex:p ex:c ;\n\
+             \x20   # inside a statement\n\
+             \x20   ex:q 2 , # after a triple too\n\
+             \x20       3 .\n\
+             ex:d ex:p ex:e .\n\
+             # at the end\n",
+        );
+        let mut a = Arc::new(Analysis::new(uri.into(), &text, Arc::default(), true));
+        let edits = [
+            ("ex:d ex:p", "# inserted\nex:d ex:p"),
+            ("    # inside a statement\n", ""),
+            ("ex:b ex:p ex:c", "ex:b ex:p ex:longer"),
+        ];
+        for (old, new) in edits {
+            let at = text.find(old).unwrap();
+            let range = at..at + old.len();
+            let parsed = a.parsed.clone();
+            let tokens = a.tokens().to_vec();
+            let next = text.replacen(old, new, 1);
+            let edit = Edit::new(range, new.len());
+            let (p, _) = a.splice(uri, &next, edit, &a.external).expect(old);
+            let lines = LineIndex::new(&next);
+            let spliced = Analysis::with_parse(uri.into(), &next, Arc::default(), true, p, lines);
+            let fresh = Analysis::new(uri.into(), &next, Arc::default(), true);
+            assert!(fresh.comments().count() > 0);
+            assert_eq!(
+                spliced.comments().collect::<Vec<_>>(),
+                fresh.comments().collect::<Vec<_>>(),
+                "{old:?}"
+            );
+            assert_eq!(spliced.tokens(), fresh.tokens(), "{old:?}");
+            assert_eq!(
+                crate::features::symbols::folding_ranges(&spliced),
+                crate::features::symbols::folding_ranges(&fresh),
+                "{old:?}"
+            );
+            // The splice works on a copy: the old analysis is as it was.
+            assert_eq!(a.parsed, parsed, "{old:?}");
+            assert_eq!(a.tokens(), tokens, "{old:?}");
+            (text, a) = (next, Arc::new(spliced));
+        }
+    }
 }
