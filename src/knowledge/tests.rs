@@ -1,4 +1,4 @@
-use super::facts::{Subj, subj};
+use super::facts::{Subj, TermState, subj};
 use super::*;
 use crate::shacl::vocab;
 use crate::syntax::PrefixMap;

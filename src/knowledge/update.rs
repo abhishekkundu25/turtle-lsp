@@ -3,9 +3,10 @@
 //! by URI or id, and the sorted walks that apply a source's old and new
 //! contributions side by side and record what changed ([`Changes`]).
 
+use super::counts::{diff, differing, entry, merge, ns_step, repost, step, toggle};
+use super::facts::{Curated, DocFacts, TermState};
 use super::{
-    Changes, Collisions, Curated, DocFacts, DocId, Index, Key, Keyed, Knowledge, Marks, Namespace,
-    Slot, Source, TermState, Text, diff, differing, entry, merge, ns_step, repost, step, toggle,
+    Changes, Collisions, DocId, Index, Key, Keyed, Knowledge, Marks, Namespace, Slot, Source, Text,
 };
 use crate::analysis::Analysis;
 use crate::syntax::Iri;

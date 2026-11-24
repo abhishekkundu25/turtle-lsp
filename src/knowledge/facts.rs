@@ -4,7 +4,8 @@
 //! label and definition entries by text key, the curation summaries per IRI
 //! ([`Curated`]), and the term kinds and states they feed.
 
-use super::{ByIri, Counts, Ided, Index, Keyed, OWL_ONTOLOGY, Slot, counted, summed};
+use super::counts::{ByIri, Counts, Ided, counted, summed};
+use super::{Index, Keyed, OWL_ONTOLOGY, Slot};
 use crate::analysis::Analysis;
 use crate::shacl::vocab;
 use crate::syntax::{self, BlankId, Iri, IriMap, Node, PrefixUse, Role, Span, Syntax};

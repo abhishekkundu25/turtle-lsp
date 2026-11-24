@@ -3,9 +3,10 @@
 //! and ontologies of a namespace, the prefix bindings, the label and
 //! definition collisions, and a sorted dump of the index for tests.
 
+use super::counts::Posting;
+use super::facts::{DocFacts, Shape, folded, literal, same_text, text_key};
 use super::{
-    Collisions, DocFacts, DocId, Index, Keyed, Knowledge, Marks, Namespace, OWL_ONTOLOGY, Posting,
-    Shape, Slot, Source, Text, folded, literal, same_text, text_key,
+    Collisions, DocId, Index, Keyed, Knowledge, Marks, Namespace, OWL_ONTOLOGY, Slot, Source, Text,
 };
 use crate::analysis::Analysis;
 use crate::syntax::{Iri, IriKey, Span};

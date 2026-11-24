@@ -29,12 +29,8 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 mod counts;
-use counts::{
-    ByIri, Counts, Ided, Posting, counted, diff, differing, entry, merge, ns_step, repost, step,
-    summed, toggle,
-};
+use counts::Posting;
 mod facts;
-use facts::{Curated, TermState, folded, literal, same_text};
 pub(crate) use facts::{
     DocFacts, PropertyConstraint, Shape, TERM_CLASS, TERM_CONCEPT, TERM_PROPERTY,
     header_properties, text_key,
