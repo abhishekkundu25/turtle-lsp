@@ -1,0 +1,8 @@
+ <ObjectPropertyDomain>
+   <ObjectProperty IRI="hasWife"/>
+   <Class IRI="Man"/>
+ </ObjectPropertyDomain>
+ <ObjectPropertyRange>
+   <ObjectProperty IRI="hasWife"/>
+   <Class IRI="Woman"/>
+ </ObjectPropertyRange>

@@ -1,0 +1,8 @@
+<ClassAssertion>
+    <Class IRI="Father"/>
+    <NamedIndividual IRI="John"/>
+</ClassAssertion>
+<ClassAssertion>
+    <Class IRI="SocialRole"/>
+    <NamedIndividual IRI="Father"/>
+</ClassAssertion>

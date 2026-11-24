@@ -188,7 +188,7 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
         // Its prefixes are the XML namespaces of its qualified names.
         Syntax::RdfXml => (true, true),
         // Its names are written as in Turtle: `pfx:local` or `<…>`.
-        Syntax::OwlFunctional => (false, false),
+        Syntax::OwlFunctional | Syntax::OwlXml => (false, false),
     };
     let mut found = undescribed_written(
         uses,

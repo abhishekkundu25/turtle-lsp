@@ -67,14 +67,16 @@ impl Naming {
         let own = match a.parsed.syntax {
             Syntax::JsonLd => context_prefixes(&a.source_index, offset),
             // RDF/XML declares none: its XML namespaces are not prefixes. An
-            // OWL Functional document's `Prefix( … )` declarations hold for
-            // the whole document, written before the ontology.
+            // OWL Functional document's `Prefix( … )` declarations, and an
+            // OWL/XML document's `Prefix` elements, hold for the whole
+            // document.
             Syntax::Turtle
             | Syntax::TriG
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => a
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => a
                 .parsed
                 .prefixes
                 .iter()

@@ -1,0 +1,24 @@
+ <SameIndividual>
+   <NamedIndividual IRI="John"/>
+   <NamedIndividual abbreviatedIRI="otherOnt:JohnBrown"/>
+ </SameIndividual>
+
+ <SameIndividual>
+   <NamedIndividual IRI="Mary"/>
+   <NamedIndividual abbreviatedIRI="otherOnt:MaryBrown"/>
+ </SameIndividual>
+
+ <EquivalentClasses>
+   <Class IRI="Adult"/>
+   <Class abbreviatedIRI="otherOnt:Grownup"/>
+ </EquivalentClasses>
+
+ <EquivalentObjectProperties>
+   <ObjectProperty IRI="hasChild"/>
+   <ObjectProperty abbreviatedIRI="otherOnt:child"/>
+ </EquivalentObjectProperties>
+
+ <EquivalentDataProperties>
+   <DataProperty IRI="hasAge"/>
+   <DataProperty abbreviatedIRI="otherOnt:age"/>
+ </EquivalentDataProperties>

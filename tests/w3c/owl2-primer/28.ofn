@@ -1,0 +1,4 @@
+ ClassAssertion( 
+   ObjectExactCardinality( 3 :hasChild :Parent ) 
+   :John
+ ) 

@@ -269,7 +269,17 @@ test("query: turtle-lsp.json's query.reasoning applies without the flag; the fla
   assert.deepEqual([off.out, off.err], ["p\r\n", ""])
 })
 
-test("query: .owl, .rdf and .ofn files are data, as their content gives it; a broken one up to its error, a Functional one its axioms", (t) => {
+// An OWL/XML ontology with one data assertion per name, and an axiom
+// between them broken by `broken` when given.
+const owlXml = (iri, names, broken = "") => `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/${iri}">
+    <Prefix name="" IRI="http://example.org/"/>
+${names
+  .map((name, i) => `${i === 1 ? broken : ""}    <DataPropertyAssertion><DataProperty abbreviatedIRI=":name"/><NamedIndividual abbreviatedIRI=":${name.toLowerCase().replaceAll(/\W+/g, "-")}"/><Literal>${name}</Literal></DataPropertyAssertion>\n`)
+  .join("")}</Ontology>
+`
+
+test("query: .owl, .rdf, .ofn and .owx files are data, as their content gives it; a broken one up to its error, an OWL one its axioms", (t) => {
   const owl = (name) => `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">
     <ex:Person rdf:about="http://example.org/${name}">
@@ -285,14 +295,18 @@ test("query: .owl, .rdf and .ofn files are data, as their content gives it; a br
     "onto/erin.owl": 'ex:erin ex:name "Erin" .\n',
     "onto/functional.owl": 'Prefix(:=<http://example.org/>)\nOntology(<http://example.org/f>\nDeclaration(Class(:Person))\nDataPropertyAssertion(:name :frank "Frank")\n)\n',
     "onto/gina.ofn": 'Prefix(:=<http://example.org/>)\nOntology(<http://example.org/g>\nDataPropertyAssertion(:name :gina "Gina")\nSubClassOf(:A nope:B)\n)\n',
+    // OWL/XML: its axioms before and after the broken one.
+    "onto/hank.OWX": owlXml("h", ["Hank", "Hank's friend"], '    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>\n'),
+    "onto/ivy.owl": owlXml("i", ["Ivy"]),
   })
   const r = query(ws, ["names.rq", "--format", "csv"])
   assert.equal(r.code, 0, r.err)
   assert.equal(
     r.out.replaceAll("\r\n", "\n"),
     // Ordered by name: upper case first. Dave's friend is after the error;
-    // Gina's axiom is before hers.
-    "s,name\nhttp://example.org/alice,\"Alice, A\"\nhttp://example.org/bob,Bob\nhttp://example.org/erin,Erin\nhttp://example.org/frank,Frank\nhttp://example.org/gina,Gina\nhttp://example.org/carol,carol\nhttp://example.org/carol-friend,carol's friend\nhttp://example.org/dave,dave\n",
+    // Gina's axiom is before hers; Hank's is before his and his friend's
+    // after it.
+    "s,name\nhttp://example.org/alice,\"Alice, A\"\nhttp://example.org/bob,Bob\nhttp://example.org/erin,Erin\nhttp://example.org/frank,Frank\nhttp://example.org/gina,Gina\nhttp://example.org/hank,Hank\nhttp://example.org/hank-s-friend,Hank's friend\nhttp://example.org/ivy,Ivy\nhttp://example.org/carol,carol\nhttp://example.org/carol-friend,carol's friend\nhttp://example.org/dave,dave\n",
   )
   // A query on one .owl file reads that file alone.
   const one = query(ws, ["-e", "ASK { ex:carol a ex:Person }", "onto/carol.owl"])
@@ -301,6 +315,11 @@ test("query: .owl, .rdf and .ofn files are data, as their content gives it; a br
   const functional = query(ws, ["-e", "PREFIX owl: <http://www.w3.org/2002/07/owl#> ASK { ex:Person a owl:Class }", "onto/functional.owl"])
   assert.equal(functional.code, 0, functional.err)
   assert.equal(functional.out, "true\n")
+  for (const file of ["onto/hank.OWX", "onto/ivy.owl"]) {
+    const owx = query(ws, ["-e", "PREFIX owl: <http://www.w3.org/2002/07/owl#> SELECT ?o WHERE { ?o a owl:Ontology }", "--format", "csv", file])
+    assert.equal(owx.code, 0, owx.err)
+    assert.equal(owx.out.replaceAll("\r\n", "\n"), `o\nhttp://example.org/${file.includes("hank") ? "h" : "i"}\n`, file)
+  }
 })
 
 test("query: CONSTRUCT prints an OWL Functional file's triples as Turtle, as the W3C mapping gives them", (t) => {
@@ -321,4 +340,43 @@ SubClassOf(Annotation(rdfs:comment "why") :Widget ObjectSomeValuesFrom(:hasPart 
   assert.equal(all.out.replaceAll("\r\n", "\n"), "n\n11\n", all.err)
   const axiom = query(ws, ["-e", "ASK { [] a owl:Axiom ; owl:annotatedSource ex:Widget ; owl:annotatedProperty rdfs:subClassOf ; rdfs:comment \"why\" }", "onto.ofn"])
   assert.equal(axiom.out, "true\n", axiom.err)
+})
+
+test("query: CONSTRUCT prints an OWL/XML file's triples as the W3C mapping gives them: the graph of the same ontology in Functional syntax", (t) => {
+  const ofn = `Prefix(:=<http://example.org/>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://example.org/o>
+Declaration(Class(:Widget))
+SubClassOf(Annotation(rdfs:comment "why") :Widget ObjectSomeValuesFrom(:hasPart :Part))
+)
+`
+  const owx = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
+    <Prefix name="" IRI="http://example.org/"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class abbreviatedIRI=":Widget"/></Declaration>
+    <SubClassOf>
+        <Annotation><AnnotationProperty abbreviatedIRI="rdfs:comment"/><Literal>why</Literal></Annotation>
+        <Class abbreviatedIRI=":Widget"/>
+        <ObjectSomeValuesFrom><ObjectProperty abbreviatedIRI=":hasPart"/><Class IRI="http://example.org/Part"/></ObjectSomeValuesFrom>
+    </SubClassOf>
+</Ontology>
+`
+  const prefixes = `${PREFIXES}@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n`
+  const ws = workspace(t, { ".git/HEAD": "", "prefixes.ttl": prefixes, "onto.ofn": ofn, "onto.owx": owx, "owlxml.owl": owx })
+  const construct = (file) => query(ws, ["-e", "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", file])
+  const functional = construct("onto.ofn")
+  assert.equal(functional.code, 0, functional.err)
+  for (const file of ["onto.owx", "owlxml.owl"]) {
+    const r = construct(file)
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.err, "", file)
+    // The same triples, with the same blank-node labels in the same order.
+    assert.equal(r.out, functional.out, file)
+    assert.match(r.out, /\nex:o a owl:Ontology \.\n\nex:Widget a owl:Class ;\n {4}rdfs:subClassOf _:g0 \.\n/)
+    const all = query(ws, ["-e", "SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }", "--format", "csv", file])
+    assert.equal(all.out.replaceAll("\r\n", "\n"), "n\n11\n", all.err)
+    const axiom = query(ws, ["-e", "ASK { [] a owl:Axiom ; owl:annotatedSource ex:Widget ; owl:annotatedProperty rdfs:subClassOf ; owl:annotatedTarget [ owl:onProperty ex:hasPart ; owl:someValuesFrom ex:Part ] ; rdfs:comment \"why\" }", file])
+    assert.equal(axiom.out, "true\n", axiom.err)
+  }
 })

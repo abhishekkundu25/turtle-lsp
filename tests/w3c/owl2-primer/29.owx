@@ -1,0 +1,6 @@
+ <ClassAssertion>
+   <ObjectExactCardinality cardinality="5">
+     <ObjectProperty IRI="hasChild"/>
+   </ObjectExactCardinality>
+   <NamedIndividual IRI="John"/>
+ </ClassAssertion>

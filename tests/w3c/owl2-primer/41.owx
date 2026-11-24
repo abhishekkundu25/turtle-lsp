@@ -1,0 +1,7 @@
+ <SubObjectPropertyOf>
+   <ObjectPropertyChain>
+     <ObjectProperty IRI="hasParent"/>
+     <ObjectProperty IRI="hasParent"/>
+   </ObjectPropertyChain>
+   <ObjectProperty IRI="hasGrandparent"/>
+ </SubObjectPropertyOf>

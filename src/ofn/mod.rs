@@ -10,13 +10,20 @@
 //!   2.2), with the span of each;
 //! - [`grammar`]: the productions (section 13) over [`lexer`], into a
 //!   [`tree::Document`], read on past each error to the next axiom;
+//! - [`signature`]: the operands of each construct, which the grammar
+//!   reads its productions from;
 //! - [`tree`]: the document's constructs as a flat tree with exact spans;
 //! - [`rdf`]: the mapping of the tree to the triples of the W3C mapping,
-//!   with the references, statements and prefixes of the shared parse.
+//!   with the references, statements and prefixes of the shared parse; it
+//!   asks a source ([`rdf::Source`]) how the text spells each term.
 //!
 //! [`parse`] gives the shared [`Parsed`], as Turtle, JSON-LD and RDF/XML
 //! do, so the workspace, knowledge, SHACL, reasoning, the query graph and
-//! the editor features that read need no Functional-specific code. An item
+//! the editor features that read need no Functional-specific code. The
+//! OWL/XML frontend (`owx`) builds the same tree, checked against the same
+//! [`signature`] table, and maps it with [`rdf`] through a source of its
+//! own; it is the one module besides `analysis` and `imports` that names
+//! this one. An item
 //! with an error gives no triples; what the mapping takes as a definition,
 //! and its own departures (SWRL), are in [`rdf`]. Every error has the code
 //! [`CODE`].
@@ -52,19 +59,23 @@
 //!
 //! Limits: constructs nest at most [`grammar::MAX_NESTING`] deep (deeper is
 //! an error, never a deep stack), and at most [`MAX_ERRORS`] errors are
-//! reported, the last saying so. Time is linear in the text.
+//! reported, then one more error that says so, and apart from them at
+//! most [`MAX_WARNINGS`] warnings, then one more warning. Time is linear
+//! in the text.
 
 mod grammar;
 mod lexer;
-mod rdf;
+pub(crate) mod rdf;
 #[cfg(test)]
 mod rdf_tests;
+pub(crate) mod signature;
 #[cfg(test)]
 mod tests;
-mod tree;
+pub(crate) mod tree;
 
 #[cfg(test)]
 use crate::syntax::Syntax;
+pub(crate) use crate::syntax::shown;
 use crate::syntax::{Parsed, Severity, Span, SyntaxError};
 use std::borrow::Cow;
 
@@ -74,12 +85,33 @@ pub(crate) const CODE: &str = "ofn-syntax";
 /// The most errors one document reports.
 pub(crate) const MAX_ERRORS: usize = 10_000;
 
+/// The most warnings one document reports, apart from its errors: past
+/// it, one warning says so ([`more_warnings`]).
+pub(crate) const MAX_WARNINGS: usize = 10_000;
+
+/// The warning that says the warnings past [`MAX_WARNINGS`] are not
+/// reported, at the first of them.
+pub(crate) fn more_warnings(span: Span, code: &'static str) -> SyntaxError {
+    SyntaxError::new(
+        span,
+        format!("More than {MAX_WARNINGS} warnings; the rest are not reported"),
+        Severity::Warning,
+        code,
+    )
+}
+
 /// Parse an OWL Functional document into the shared parse model: its
 /// axioms as RDF triples ([`rdf`]), with their references, statements and
 /// prefixes, and its errors. `base` is the document's URL (every IRI in
 /// the syntax is absolute: nothing resolves against it).
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     rdf::map(text, grammar::parse(text), base)
+}
+
+/// The grammar's tree of `text`, for the tests of another producer.
+#[cfg(test)]
+pub(crate) fn tree(text: &str) -> tree::Document {
+    grammar::parse(text)
 }
 
 /// The errors of a parse, at most [`MAX_ERRORS`].
@@ -138,15 +170,6 @@ impl Errors {
             ));
         }
         errors
-    }
-}
-
-/// `s` as an error quotes it: at most 60 characters.
-pub(crate) fn shown(s: &str) -> Cow<'_, str> {
-    const MAX: usize = 60;
-    match s.char_indices().nth(MAX) {
-        None => Cow::Borrowed(s),
-        Some((i, _)) => Cow::Owned(format!("{}…", &s[..i])),
     }
 }
 

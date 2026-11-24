@@ -19,13 +19,15 @@
 //! below a workspace import, cycles stop) and join the knowledge index as
 //! read-only external sources: hover, completion and lints know their terms,
 //! but they are never diagnosed. Each is read in its own syntax (Turtle, TriG,
-//! N-Triples, N-Quads, JSON-LD, RDF/XML) with our parser, chosen by the
-//! file's extension, else by what it starts with, never by the import IRI, so
-//! every source is an [`Analysis`] like any other. A local RDF/XML file is
-//! analysed over its own text, so locations point into it; a fetched one is
-//! converted to N-Triples text first, which is what the cache keeps. A document in OWL/XML, Functional or Manchester syntax is not
-//! read, and the import says so; one whose RDF/XML has errors is loaded but for
-//! what they break, with a warning on the import that says where the first is.
+//! N-Triples, N-Quads, JSON-LD, RDF/XML, OWL Functional syntax, OWL/XML)
+//! with our parser, chosen by the file's extension, else by what it starts
+//! with, never by the import IRI, so every source is an [`Analysis`] like
+//! any other. A local RDF/XML, Functional or OWL/XML file is analysed over
+//! its own text, so locations point into it; a fetched one is converted to
+//! N-Triples text first, which is what the cache keeps. A document in
+//! Manchester syntax is not read, and the import says so; one with errors
+//! (RDF/XML, Functional syntax, OWL/XML) is loaded but for what they
+//! break, with a warning on the import that says where the first is.
 //!
 //! All file and network work happens on one background thread, started on the
 //! first import and blocked on its job channel when there is nothing to do.
@@ -395,18 +397,18 @@ impl Imports {
             return None;
         }
         self.seen = seen;
-        // The documents that write the vocabulary, and every OWL Functional
-        // document: its `Ontology(…)` header and `Import(…)` are keywords,
-        // so no reference names `owl:Ontology` or `owl:imports` there.
-        let functional = k
+        // The documents that write the vocabulary, and every document whose
+        // syntax writes its header and imports as keywords (OWL Functional,
+        // OWL/XML): no reference names `owl:Ontology` or `owl:imports` there.
+        let keyword_header = k
             .docs()
-            .filter(|(_, _, a)| a.parsed.syntax == crate::syntax::Syntax::OwlFunctional)
+            .filter(|(_, _, a)| a.parsed.syntax.has_keyword_header())
             .map(|(id, src, _)| (id, src));
         let mut ids: Vec<_> = [OWL_IMPORTS, OWL_ONTOLOGY, OWL_VERSION_IRI]
             .iter()
             .flat_map(|p| k.docs_referencing(*p))
             .map(|(id, src, _)| (id, src))
-            .chain(functional)
+            .chain(keyword_header)
             .filter(|(_, src)| *src != Source::External)
             .map(|(id, _)| id)
             .collect();
@@ -578,9 +580,8 @@ pub fn diagnostics_with<'s>(
     status: impl Fn(&str) -> Option<&'s Status>,
 ) -> Vec<Diagnostic> {
     // A document with no `owl:imports` written has no import triple, but
-    // in OWL Functional syntax, which writes the keyword `Import`.
-    let functional = a.parsed.syntax == crate::syntax::Syntax::OwlFunctional;
-    if !functional && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
+    // in a syntax that writes the keyword `Import`.
+    if !a.parsed.syntax.has_keyword_header() && !a.refs_by_iri.contains_key(OWL_IMPORTS) {
         return vec![];
     }
     let p = preds();
@@ -704,7 +705,7 @@ pub use catalog::parse_catalog;
 pub(crate) use load::fs_policy;
 pub use load::sniff;
 pub(crate) use load::{fs_policy_path, is_network_path};
-pub use rdfxml::{functional_to_ntriples, rdf_xml_to_ntriples};
+pub use rdfxml::{functional_to_ntriples, owl_xml_to_ntriples, rdf_xml_to_ntriples};
 
 /// Whether web fetches may reach internal addresses: set by the environment
 /// (`fetch::ALLOW_PRIVATE_ENV`), never by a file of the workspace.
@@ -825,6 +826,54 @@ mod tests {
                 lsp_types::Position::new(1, 7),
                 lsp_types::Position::new(1, 24)
             )
+        );
+    }
+
+    /// An OWL/XML document writes `<Import>`, no `owl:imports`: its imports
+    /// get their diagnostics all the same, at the content of the element.
+    #[test]
+    fn the_imports_of_an_owl_xml_document_are_diagnosed_at_their_content() {
+        let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://ex.com/me\">\n<Import>http://ex.com/x</Import>\n<Import> http://ex.com/y </Import>\n<Import>http://ex.com/z</Import>\n</Ontology>\n";
+        let a = Analysis::new("file:///d.owx".into(), text, Arc::default(), false);
+        assert_eq!(a.parsed.syntax, syntax::Syntax::OwlXml);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert!(!a.refs_by_iri.contains_key(OWL_IMPORTS));
+        let missing = Status::Unresolved("nope".into());
+        let part = Status::Truncated("/w/y.owl".into(), "cut".into());
+        let ok = Status::Loaded("/w/z.owl".into());
+        let d = diagnostics_with(&a, Encoding::Utf16, |i| {
+            Some(match i.as_bytes().last() {
+                Some(b'x') => &missing,
+                Some(b'y') => &part,
+                _ => &ok,
+            })
+        });
+        let got: Vec<_> = d
+            .iter()
+            .map(|d| {
+                let NumberOrString::String(code) = d.code.clone().unwrap() else {
+                    unreachable!()
+                };
+                (code, d.severity, d.range.start, d.range.end)
+            })
+            .collect();
+        let at = |l, c| lsp_types::Position::new(l, c);
+        assert_eq!(
+            got,
+            [
+                (
+                    UNRESOLVED.to_string(),
+                    Some(DiagnosticSeverity::INFORMATION),
+                    at(1, 8),
+                    at(1, 23)
+                ),
+                (
+                    TRUNCATED.to_string(),
+                    Some(DiagnosticSeverity::WARNING),
+                    at(2, 9),
+                    at(2, 24)
+                ),
+            ]
         );
     }
 
@@ -1102,6 +1151,41 @@ mod tests {
         assert!(imports.sync(&k, &[], false).is_none());
         let req = imports.last.clone().unwrap();
         assert_eq!(req.imports, ["http://ex.com/absent", "http://ex.com/lib"]);
+        assert_eq!(req.local, ["http://ex.com/lib", "http://ex.com/lib/1.0"]);
+    }
+
+    /// An OWL/XML document writes its header and imports as an element and
+    /// attributes, so no reference names `owl:Ontology`, `owl:imports` or
+    /// `owl:versionIRI`: a document with only `<Import>` elements is
+    /// collected all the same, and a Turtle import of its ontology is local.
+    #[test]
+    fn owl_xml_ontologies_and_imports_are_found() {
+        let mut k = Knowledge::default();
+        let none = Arc::new(PrefixMap::default());
+        let lib = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://ex.com/lib\" versionIRI=\"http://ex.com/lib/1.0\">\n<Import>http://ex.com/absent</Import>\n<Import>http://ex.com/other</Import>\n</Ontology>\n";
+        let app = format!("<http://ex.com/app> <{OWL_IMPORTS}> <http://ex.com/lib> .\n");
+        for (uri, text) in [("file:///lib.owx", lib), ("file:///app.ttl", &app)] {
+            let a = Analysis::new(uri.into(), text, none.clone(), false);
+            assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+            k.set(uri, Source::Disk, Arc::new(a));
+        }
+        let owx = k.get("file:///lib.owx").unwrap();
+        assert_eq!(owx.parsed.syntax, syntax::Syntax::OwlXml);
+        for iri in [OWL_IMPORTS, OWL_ONTOLOGY, OWL_VERSION_IRI] {
+            assert!(!owx.refs_by_iri.contains_key(iri), "{iri}");
+        }
+        let mut imports = Imports::new();
+        imports.cache = None;
+        assert!(imports.sync(&k, &[], false).is_none());
+        let req = imports.last.clone().unwrap();
+        assert_eq!(
+            req.imports,
+            [
+                "http://ex.com/absent",
+                "http://ex.com/lib",
+                "http://ex.com/other"
+            ]
+        );
         assert_eq!(req.local, ["http://ex.com/lib", "http://ex.com/lib/1.0"]);
     }
 }

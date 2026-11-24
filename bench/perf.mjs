@@ -659,6 +659,84 @@ scenario("big-functional", "an OWL Functional document over 1 MB: open and keyst
   })
 })
 
+// The classes of functionalDoc as OWL API writes them in OWL/XML: prefixes,
+// abbreviated IRIs, one element per line, indented.
+function owlXmlDoc(n) {
+  const cls = (iri) => `<Class abbreviatedIRI="${iri}"/>`
+  let out = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://example.org/o"
+     ontologyIRI="http://example.org/o">
+    <Prefix name="obo" IRI="http://purl.obolibrary.org/obo/"/>
+    <Prefix name="oboInOwl" IRI="http://www.geneontology.org/formats/oboInOwl#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+`
+  for (let i = 0; i < n; i++) {
+    const c = `obo:EX_${String(i).padStart(7, "0")}`
+    const p = `obo:EX_${String(i >> 1).padStart(7, "0")}`
+    const assertion = (property, value, annotation = "") => `    <AnnotationAssertion>
+${annotation}        <AnnotationProperty abbreviatedIRI="${property}"/>
+        <AbbreviatedIRI>${c}</AbbreviatedIRI>
+        ${value}
+    </AnnotationAssertion>
+`
+    out += `
+
+    <!-- ${c} (Class ${i}) -->
+
+    <Declaration>
+        ${cls(c)}
+    </Declaration>
+${assertion("obo:IAO_0000115", `<Literal>A class numbered ${i}.</Literal>`, `        <Annotation>
+            <AnnotationProperty abbreviatedIRI="oboInOwl:hasDbXref"/>
+            <Literal>PMID:${i}</Literal>
+        </Annotation>
+`)}${assertion("oboInOwl:hasExactSynonym", `<Literal xml:lang="en">Synonym ${i}</Literal>`)}${assertion("rdfs:label", `<Literal xml:lang="en">Class ${i}</Literal>`)}    <SubClassOf>
+        ${cls(c)}
+        ${cls(p)}
+    </SubClassOf>
+`
+    if (i % 4 === 0)
+      out += `    <EquivalentClasses>
+        ${cls(c)}
+        <ObjectIntersectionOf>
+            ${cls(p)}
+            <ObjectSomeValuesFrom>
+                <ObjectProperty abbreviatedIRI="obo:BFO_0000050"/>
+                ${cls(p)}
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+`
+  }
+  return out + "</Ontology>\n"
+}
+
+scenario("big-owlxml", "an OWL/XML document over 1 MB: open and keystroke", async () => {
+  const target = scaled(1_050_000)
+  let n = Math.ceil(target / 1100)
+  let doc = owlXmlDoc(n)
+  while (doc.length < target) doc = owlXmlDoc((n = Math.ceil(n * 1.05)))
+  await withDir("turtle-bench-owlxml-", async (ws) => {
+    const file = path.join(ws, "onto.owx")
+    fs.writeFileSync(file, doc)
+    await withServer(ws, async (s) => {
+      const u = uriOf(file)
+      s.open(u, doc, "xml")
+      const t = performance.now()
+      await s.diagnosticsFor(u, WAIT)
+      const size = `${n} classes, ${(doc.length / 1024 / 1024).toFixed(1)} MB`
+      record("big-owlxml-open", `OWL/XML: didOpen -> diagnostics (${size})`, [performance.now() - t])
+      const keys = await time(20, async (i) => {
+        doc = typeAt(s, u, doc, `>Class ${i}<`, `>Class ${i}x<`)
+        await s.diagnosticsFor(u, WAIT)
+      })
+      record("big-owlxml-keystroke", `OWL/XML: keystroke -> diagnostics (${size})`, keys, { gate: true })
+      recordRss("rss-big-owlxml", "OWL/XML: server RSS after the edits", rssMb(s.proc.pid))
+    })
+  })
+})
+
 // Four triples per class: what the label and definition checks and the
 // workspace's term index work on, which instance data never reaches.
 function vocabDoc(n) {

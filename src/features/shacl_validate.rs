@@ -336,10 +336,11 @@ fn capped_note(kept: usize) -> Diagnostic {
 /// the shared graph: TriG, N-Triples and N-Quads always; JSON-LD when it has
 /// a named graph (`@graph` with an `@id`), as TriG with one would. A JSON-LD
 /// document without one is a fragment of the workspace graph, as Turtle,
-/// RDF/XML and OWL Functional syntax (which have no named graphs) are.
+/// RDF/XML, OWL Functional syntax and OWL/XML (which have no named graphs)
+/// are.
 fn is_dataset(a: &Analysis) -> bool {
     match a.parsed.syntax {
-        Syntax::Turtle | Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::Turtle | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
         Syntax::JsonLd => a.parsed.triples.iter().any(|t| t.graph.is_some()),
         Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
     }

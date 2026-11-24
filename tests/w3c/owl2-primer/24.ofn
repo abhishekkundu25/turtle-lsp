@@ -1,0 +1,4 @@
+ EquivalentClasses( 
+   :JohnsChildren 
+   ObjectHasValue( :hasParent :John )
+ )

@@ -1,7 +1,7 @@
 //! Randomized robustness test ("fuzzing" on stable Rust).
 //!
 //! Takes real Turtle, TriG, N-Triples and N-Quads files (SHACL shapes with
-//! embedded SPARQL among them), JSON-LD, RDF/XML and OWL Functional
+//! embedded SPARQL among them), JSON-LD, RDF/XML, OWL Functional and OWL/XML
 //! documents and SPARQL queries and updates, mutates them thousands of times (cuts, unbalanced brackets, stray
 //! quotes, multi-byte characters, CRLF and lone CR, truncation, repeated
 //! brackets, huge tokens) and runs the parser and every editor feature on each
@@ -19,7 +19,8 @@
 //! then exits the process.
 //!
 //! The mutations rarely build a 10,000-level nest or a megabyte token, so
-//! `pathological_inputs_are_survived` writes those down, each on a 2 MiB
+//! the `pathological_*` tests write those down (for OWL/XML also entity
+//! ladders, long values and bases, annotated n-ary axioms), each on a 2 MiB
 //! thread, the smallest stack a host gives its threads.
 
 use lsp_types::{
@@ -856,7 +857,10 @@ fn fix_all_leaves_rdf_xml(rng: &mut Rng, name: &str, text: &str) {
     let file = batch::BatchFile::named(name, text.to_string(), false);
     let out = batch::fix_all(&[file], &Settings::default(), unsafe_too);
     let syntax = Syntax::of(None, name, text);
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         let after = &out.files[0].text;
         assert!(
             after == text,
@@ -1337,6 +1341,7 @@ fn doc_uri(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "file:///chaos/doc.jsonld",
         Syntax::RdfXml => "file:///chaos/doc.rdf",
         Syntax::OwlFunctional => "file:///chaos/doc.ofn",
+        Syntax::OwlXml => "file:///chaos/doc.owx",
     }
 }
 
@@ -1444,12 +1449,12 @@ fn pick_offset(rng: &mut Rng, text: &str) -> u32 {
 }
 
 /// `text` parsed with its own frontend: JSON-LD with no remote contexts,
-/// RDF/XML and OWL Functional syntax (through an analysis, against `base` or
+/// RDF/XML, OWL Functional syntax and OWL/XML (through an analysis, against `base` or
 /// the document's URL), the Turtle family with `prefixes` from outside.
 fn parse_doc(text: &str, syntax: Syntax, base: Option<&str>, prefixes: &PrefixMap) -> Parsed {
     match syntax {
         Syntax::JsonLd => jsonld::parse(text, base, &jsonld::NoNetwork::default()),
-        Syntax::RdfXml | Syntax::OwlFunctional => {
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
             let uri = base.unwrap_or(doc_uri(syntax)).to_string();
             let external = Arc::new(prefixes.clone());
             Analysis::with_syntax(uri, text, external, false, syntax).parsed
@@ -1463,19 +1468,26 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     let p = parse_doc(text, syntax, None, &PrefixMap::default());
     spans_are_inside(text, &p);
     // RDF/XML's blank nodes are numbered, not named at random: a second read
-    // gives the same parse. So does OWL Functional syntax's.
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    // gives the same parse. So do OWL Functional syntax's and OWL/XML's.
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         let again = parse_doc(text, syntax, None, &PrefixMap::default());
         assert!(p == again, "two reads of one {syntax:?} text differ");
     }
-    // An OWL Functional parse: its errors under its code, and the mapping's
-    // shape, which the features rely on: references in text order, apart,
-    // each inside a statement; statements in order, apart, each subject
-    // inside its own; every triple in a statement. Its triples are RDF:
-    // they convert to N-Triples a line each, which read back.
-    if syntax == Syntax::OwlFunctional {
+    // An OWL Functional or OWL/XML parse: its errors under its codes, and
+    // the mapping's shape, which the features rely on: references in text
+    // order, apart, each inside a statement; statements in order, apart,
+    // each subject inside its own; every triple in a statement. Its triples
+    // are RDF: they convert to N-Triples a line each, which read back.
+    if matches!(syntax, Syntax::OwlFunctional | Syntax::OwlXml) {
+        let codes: &[&str] = match syntax {
+            Syntax::OwlXml => &["owx-syntax", "xml-syntax"],
+            _ => &["ofn-syntax"],
+        };
         assert!(
-            p.errors.iter().all(|e| e.code == "ofn-syntax"),
+            p.errors.iter().all(|e| codes.contains(&e.code)),
             "{:?}",
             p.errors
         );
@@ -1492,11 +1504,23 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let i = st.partition_point(|s| s.span.start <= r.span.start);
             assert!(i > 0 && r.span.end <= st[i - 1].span.end, "{r:?}");
         }
-        let (nt, _) = imports::functional_to_ntriples(text.as_bytes(), "http://example.com/chaos")
-            .unwrap_or_default();
-        let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
-        assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
-        assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
+        if syntax == Syntax::OwlXml {
+            // The scanner's errors and the reader's are one list.
+            assert!(
+                p.errors
+                    .windows(2)
+                    .all(|w| w[0].span.start <= w[1].span.start),
+                "errors out of text order: {:?}",
+                p.errors
+            );
+            owl_xml_converts(text);
+        } else {
+            let (nt, _) = imports::functional_to_ntriples(text.as_bytes(), CONVERSION_BASE)
+                .unwrap_or_default();
+            let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
+            assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
+            assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
+        }
     }
 
     // Import sources: catalogs and RDF/XML come from outside too.
@@ -1566,12 +1590,12 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     // nothing to format when empty.
     let opts = format::Options::default();
     let formatted = format::format(text, &a.parsed, &a.external, &opts);
-    // RDF/XML and OWL Functional syntax are never formatted.
+    // RDF/XML, OWL Functional syntax and OWL/XML are never formatted.
     let refused = match syntax {
         Syntax::JsonLd => {
             a.parsed.errors.iter().any(|e| e.code == "json-syntax") || text.trim().is_empty()
         }
-        Syntax::RdfXml | Syntax::OwlFunctional => true,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => true,
         _ => a
             .parsed
             .errors
@@ -1714,7 +1738,10 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
     };
     let clean = (!has_errors(text)).then_some(&has_errors as &dyn Fn(&str) -> bool);
     let name = format!("doc.{}", extension(syntax));
-    if matches!(syntax, Syntax::RdfXml | Syntax::OwlFunctional) {
+    if matches!(
+        syntax,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+    ) {
         fix_all_leaves_rdf_xml(rng, &name, text);
     } else {
         fix_all_keeps_the_tokens(rng, &name, text, lexed.lex, clean);
@@ -1924,6 +1951,7 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "jsonld",
         Syntax::RdfXml => "rdf",
         Syntax::OwlFunctional => "ofn",
+        Syntax::OwlXml => "owx",
     }
 }
 
@@ -2058,11 +2086,16 @@ const FLIPS: &[&str] = &[
 /// An edit of the first bytes of an `.owl` text, where its syntax is read:
 /// a line of another syntax put before it, or its start cut.
 fn flip(rng: &mut Rng, e: &mut Edited) {
+    flip_with(rng, e, FLIPS);
+}
+
+/// [`flip`] with the lines `flips`.
+fn flip_with(rng: &mut Rng, e: &mut Edited, flips: &[&str]) {
     if rng.below(3) == 0 {
         let end = char_boundary(&e.text, rng.below(40));
         e.replace(0..end, "");
     } else {
-        e.insert(0, FLIPS[rng.below(FLIPS.len())]);
+        e.insert(0, flips[rng.below(flips.len())]);
     }
 }
 
@@ -3327,6 +3360,756 @@ fn mutated_functional(k: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// OWL/XML: the OWL Functional shards' checks, on documents of the XML
+// serialization.
+
+/// OWL/XML documents to mutate, written for this test: one with every
+/// family of construct (a DOCTYPE with entities, `xml:base` on the root and
+/// inside, prefixes, imports, annotated and nested annotations, anonymous
+/// individuals), the rows of the literal table, a namespace prefix on the
+/// elements after a BOM with CRLF line ends, entities that cost the scanner
+/// work, and a document with an error of each kind the mapping refuses
+/// (SWRL among them). Then the fixtures' `.owx` files.
+fn owlxml_corpus() -> Vec<String> {
+    let mut out: Vec<String> = vec![
+        String::new(),
+        format!("<Ontology {OWL_NS}/>"),
+        OWLXML_DOCUMENT.to_string(),
+        OWLXML_LITERALS.to_string(),
+        OWLXML_PREFIXED.to_string(),
+        owlxml_entity_shapes(),
+        OWLXML_ERRORS.to_string(),
+    ];
+    let files = sorted_files(&root().join("test/fixtures"), true)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "owx"));
+    for p in files {
+        out.push(fs::read_to_string(p).unwrap());
+    }
+    out
+}
+
+/// The default namespace of an OWL/XML document.
+const OWL_NS: &str = "xmlns=\"http://www.w3.org/2002/07/owl#\"";
+
+/// The document level, an entity of each kind, a class expression, data
+/// range and axiom of each family.
+const OWLXML_DOCUMENT: &str = r##"<?xml version="1.0"?>
+<!DOCTYPE Ontology [
+    <!ENTITY o "http://example.org/o#" >
+    <!ENTITY xsd "http://www.w3.org/2001/XMLSchema#" >
+    <!ENTITY rdfs "http://www.w3.org/2000/01/rdf-schema#" >
+]>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://example.org/o"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     ontologyIRI="http://example.org/o"
+     versionIRI="http://example.org/o/1.0">
+    <Prefix name="" IRI="http://example.org/o#"/>
+    <Prefix name="owl" IRI="http://www.w3.org/2002/07/owl#"/>
+    <Prefix name="rdf" IRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>
+    <Prefix name="xsd" IRI="&xsd;"/>
+    <Prefix name="rdfs" IRI="&rdfs;"/>
+    <Import>http://example.org/i</Import>
+    <Import>
+        other
+    </Import>
+    <Annotation>
+        <Annotation>
+            <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+            <Literal>why</Literal>
+        </Annotation>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <Literal xml:lang="en">o</Literal>
+    </Annotation>
+
+    <!-- Declarations -->
+
+    <Declaration>
+        <Class IRI="#A"/>
+    </Declaration>
+    <Declaration>
+        <Class abbreviatedIRI=":B"/>
+    </Declaration>
+    <Declaration xml:base="http://example.org/b/">
+        <Class IRI="C"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="&o;p"/>
+    </Declaration>
+    <Declaration><ObjectProperty abbreviatedIRI=":q"/></Declaration>
+    <Declaration><DataProperty abbreviatedIRI=":d"/></Declaration>
+    <Declaration><AnnotationProperty abbreviatedIRI=":note"/></Declaration>
+    <Declaration><NamedIndividual abbreviatedIRI=":i"/></Declaration>
+    <Declaration><Datatype abbreviatedIRI=":dt"/></Declaration>
+
+    <!-- Classes -->
+
+    <SubClassOf>
+        <Annotation>
+            <Annotation>
+                <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+                <Literal>nested</Literal>
+            </Annotation>
+            <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+            <Literal xml:lang="en">annotated</Literal>
+        </Annotation>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectIntersectionOf>
+            <Class abbreviatedIRI=":B"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty abbreviatedIRI=":p"/>
+                <ObjectUnionOf>
+                    <Class IRI="http://example.org/b/C"/>
+                    <ObjectOneOf>
+                        <NamedIndividual abbreviatedIRI=":i"/>
+                        <AnonymousIndividual nodeID="j"/>
+                    </ObjectOneOf>
+                </ObjectUnionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </SubClassOf>
+    <SubClassOf>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectAllValuesFrom>
+            <ObjectInverseOf><ObjectProperty abbreviatedIRI=":q"/></ObjectInverseOf>
+            <ObjectComplementOf><Class abbreviatedIRI=":B"/></ObjectComplementOf>
+        </ObjectAllValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectHasValue><ObjectProperty abbreviatedIRI=":p"/><NamedIndividual abbreviatedIRI=":i"/></ObjectHasValue>
+    </SubClassOf>
+    <SubClassOf>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectHasSelf><ObjectProperty abbreviatedIRI=":p"/></ObjectHasSelf>
+    </SubClassOf>
+    <EquivalentClasses>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectMinCardinality cardinality="1"><ObjectProperty abbreviatedIRI=":p"/><Class abbreviatedIRI=":B"/></ObjectMinCardinality>
+        <ObjectMaxCardinality cardinality="2"><ObjectProperty abbreviatedIRI=":p"/></ObjectMaxCardinality>
+        <ObjectExactCardinality cardinality=" 3 "><ObjectProperty abbreviatedIRI=":p"/><Class abbreviatedIRI=":B"/></ObjectExactCardinality>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class abbreviatedIRI=":E"/>
+        <DataSomeValuesFrom><DataProperty abbreviatedIRI=":d"/><Datatype abbreviatedIRI="xsd:integer"/></DataSomeValuesFrom>
+        <DataAllValuesFrom><DataProperty abbreviatedIRI=":d"/><DataComplementOf><Datatype abbreviatedIRI="xsd:string"/></DataComplementOf></DataAllValuesFrom>
+        <DataHasValue><DataProperty abbreviatedIRI=":d"/><Literal datatypeIRI="&xsd;integer">1</Literal></DataHasValue>
+        <DataMinCardinality cardinality="0"><DataProperty abbreviatedIRI=":d"/></DataMinCardinality>
+        <DataMaxCardinality cardinality="1"><DataProperty abbreviatedIRI=":d"/><Datatype abbreviatedIRI="xsd:string"/></DataMaxCardinality>
+        <DataExactCardinality cardinality="1"><DataProperty abbreviatedIRI=":d"/></DataExactCardinality>
+    </EquivalentClasses>
+    <DisjointClasses><Class abbreviatedIRI=":A"/><Class abbreviatedIRI=":E"/></DisjointClasses>
+    <DisjointUnion><Class abbreviatedIRI=":A"/><Class abbreviatedIRI=":B"/><Class abbreviatedIRI=":E"/></DisjointUnion>
+
+    <!-- Object properties -->
+
+    <SubObjectPropertyOf>
+        <ObjectPropertyChain><ObjectProperty abbreviatedIRI=":p"/><ObjectInverseOf><ObjectProperty abbreviatedIRI=":q"/></ObjectInverseOf></ObjectPropertyChain>
+        <ObjectProperty abbreviatedIRI=":r"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf><ObjectProperty abbreviatedIRI=":q"/><ObjectProperty abbreviatedIRI=":r"/></SubObjectPropertyOf>
+    <EquivalentObjectProperties><ObjectProperty abbreviatedIRI=":p"/><ObjectProperty abbreviatedIRI=":r"/></EquivalentObjectProperties>
+    <DisjointObjectProperties><ObjectProperty abbreviatedIRI=":p"/><ObjectProperty abbreviatedIRI=":q"/></DisjointObjectProperties>
+    <InverseObjectProperties><ObjectProperty abbreviatedIRI=":p"/><ObjectProperty abbreviatedIRI=":s"/></InverseObjectProperties>
+    <ObjectPropertyDomain><ObjectProperty abbreviatedIRI=":p"/><Class abbreviatedIRI=":A"/></ObjectPropertyDomain>
+    <ObjectPropertyRange><ObjectProperty abbreviatedIRI=":p"/><Class abbreviatedIRI=":B"/></ObjectPropertyRange>
+    <FunctionalObjectProperty><ObjectProperty abbreviatedIRI=":p"/></FunctionalObjectProperty>
+    <InverseFunctionalObjectProperty><ObjectProperty abbreviatedIRI=":q"/></InverseFunctionalObjectProperty>
+    <ReflexiveObjectProperty><ObjectProperty abbreviatedIRI=":r"/></ReflexiveObjectProperty>
+    <IrreflexiveObjectProperty><ObjectProperty abbreviatedIRI=":s"/></IrreflexiveObjectProperty>
+    <SymmetricObjectProperty><ObjectProperty abbreviatedIRI=":r"/></SymmetricObjectProperty>
+    <AsymmetricObjectProperty><ObjectProperty abbreviatedIRI=":s"/></AsymmetricObjectProperty>
+    <TransitiveObjectProperty><ObjectInverseOf><ObjectProperty abbreviatedIRI=":r"/></ObjectInverseOf></TransitiveObjectProperty>
+
+    <!-- Data properties and datatypes -->
+
+    <SubDataPropertyOf><DataProperty abbreviatedIRI=":d"/><DataProperty abbreviatedIRI=":e"/></SubDataPropertyOf>
+    <EquivalentDataProperties><DataProperty abbreviatedIRI=":d"/><DataProperty abbreviatedIRI=":f"/></EquivalentDataProperties>
+    <DisjointDataProperties><DataProperty abbreviatedIRI=":e"/><DataProperty abbreviatedIRI=":g"/></DisjointDataProperties>
+    <DataPropertyDomain><DataProperty abbreviatedIRI=":d"/><Class abbreviatedIRI=":A"/></DataPropertyDomain>
+    <DataPropertyRange>
+        <DataProperty abbreviatedIRI=":d"/>
+        <DatatypeRestriction>
+            <Datatype abbreviatedIRI="xsd:integer"/>
+            <FacetRestriction facet="&xsd;minInclusive"><Literal datatypeIRI="&xsd;integer">0</Literal></FacetRestriction>
+            <FacetRestriction facet="http://www.w3.org/2001/XMLSchema#maxExclusive"><Literal datatypeIRI="&xsd;integer">10</Literal></FacetRestriction>
+        </DatatypeRestriction>
+    </DataPropertyRange>
+    <FunctionalDataProperty><DataProperty abbreviatedIRI=":d"/></FunctionalDataProperty>
+    <DatatypeDefinition>
+        <Datatype abbreviatedIRI=":dt"/>
+        <DataUnionOf>
+            <Datatype abbreviatedIRI="xsd:string"/>
+            <DataOneOf><Literal>a</Literal><Literal xml:lang="en">b</Literal></DataOneOf>
+            <DataIntersectionOf><Datatype abbreviatedIRI="xsd:integer"/><Datatype abbreviatedIRI="xsd:int"/></DataIntersectionOf>
+        </DataUnionOf>
+    </DatatypeDefinition>
+    <HasKey>
+        <Class abbreviatedIRI=":A"/>
+        <ObjectProperty abbreviatedIRI=":p"/>
+        <ObjectInverseOf><ObjectProperty abbreviatedIRI=":q"/></ObjectInverseOf>
+        <DataProperty abbreviatedIRI=":d"/>
+    </HasKey>
+
+    <!-- Individuals -->
+
+    <SameIndividual><NamedIndividual abbreviatedIRI=":i"/><NamedIndividual abbreviatedIRI=":k"/><AnonymousIndividual nodeID="j"/></SameIndividual>
+    <DifferentIndividuals><NamedIndividual abbreviatedIRI=":i"/><NamedIndividual abbreviatedIRI=":m"/></DifferentIndividuals>
+    <ClassAssertion><Class abbreviatedIRI=":A"/><NamedIndividual abbreviatedIRI=":i"/></ClassAssertion>
+    <ClassAssertion><ObjectComplementOf><Class abbreviatedIRI=":B"/></ObjectComplementOf><AnonymousIndividual nodeID="j"/></ClassAssertion>
+    <ObjectPropertyAssertion><ObjectProperty abbreviatedIRI=":p"/><NamedIndividual abbreviatedIRI=":i"/><AnonymousIndividual nodeID="j"/></ObjectPropertyAssertion>
+    <NegativeObjectPropertyAssertion><ObjectProperty abbreviatedIRI=":p"/><NamedIndividual abbreviatedIRI=":i"/><NamedIndividual abbreviatedIRI=":k"/></NegativeObjectPropertyAssertion>
+    <DataPropertyAssertion><DataProperty abbreviatedIRI=":d"/><NamedIndividual abbreviatedIRI=":i"/><Literal datatypeIRI="&xsd;integer">12</Literal></DataPropertyAssertion>
+    <NegativeDataPropertyAssertion><DataProperty abbreviatedIRI=":d"/><NamedIndividual abbreviatedIRI=":i"/><Literal>x</Literal></NegativeDataPropertyAssertion>
+
+    <!-- Annotations -->
+
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <IRI>#A</IRI>
+        <Literal xml:lang="en">a &quot;thing&quot;, &#233;t&#xE9; &amp; more</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:seeAlso"/>
+        <AbbreviatedIRI>:A</AbbreviatedIRI>
+        <IRI>http://example.org/elsewhere</IRI>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI=":note"/>
+        <AnonymousIndividual nodeID="j"/>
+        <AnonymousIndividual nodeID="k2"/>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+        <AbbreviatedIRI>:B</AbbreviatedIRI>
+        <Literal><![CDATA[a <b> & c]]></Literal>
+    </AnnotationAssertion>
+    <SubAnnotationPropertyOf><AnnotationProperty abbreviatedIRI=":note"/><AnnotationProperty abbreviatedIRI="rdfs:comment"/></SubAnnotationPropertyOf>
+    <AnnotationPropertyDomain><AnnotationProperty abbreviatedIRI=":note"/><IRI>#A</IRI></AnnotationPropertyDomain>
+    <AnnotationPropertyRange><AnnotationProperty abbreviatedIRI=":note"/><AbbreviatedIRI>xsd:string</AbbreviatedIRI></AnnotationPropertyRange>
+</Ontology>
+"##;
+
+/// A literal of each row of the spec's table (no datatype, with and without
+/// a language in scope; `rdf:PlainLiteral` with a language, and without one
+/// as `text@tag` and `text@`; another datatype with a language, which is
+/// not used), `xml:lang` taken from the root and undone by an empty one,
+/// and content with several scripts, kept spaces and a line break.
+const OWLXML_LITERALS: &str = r##"<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/lit" xml:lang="en">
+    <Prefix name="" IRI="http://example.org/lit#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <AnnotationAssertion xml:lang="">
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:none</AbbreviatedIRI>
+        <Literal>plain</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:inherited</AbbreviatedIRI>
+        <Literal>colour</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:tagged</AbbreviatedIRI>
+        <Literal xml:lang="fr-CA">couleur</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:plainTagged</AbbreviatedIRI>
+        <Literal xml:lang="de" datatypeIRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral">Farbe@whole</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion xml:lang="">
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:plainAt</AbbreviatedIRI>
+        <Literal datatypeIRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral">texte@fr</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion xml:lang="">
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:plainEmpty</AbbreviatedIRI>
+        <Literal datatypeIRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral">bare@</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:typed</AbbreviatedIRI>
+        <Literal xml:lang="en" datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">42</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:string</AbbreviatedIRI>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#string">s</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+        <AbbreviatedIRI>:scripts</AbbreviatedIRI>
+        <Literal xml:lang="ja">日本 😀 é</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+        <AbbreviatedIRI>:spaces</AbbreviatedIRI>
+        <Literal xml:space="preserve">  two  spaces
+and a line  </Literal>
+    </AnnotationAssertion>
+</Ontology>
+"##;
+
+/// A namespace prefix on the elements (and the default namespace again
+/// inside), after a BOM and an XML declaration, with CRLF line ends, the
+/// version IRI written before the ontology IRI, an attribute of another
+/// namespace, a processing instruction and IRIs with several scripts.
+const OWLXML_PREFIXED: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.w3.org/2002/07/owl# http://www.w3.org/2009/09/owl2-xml.xsd\" versionIRI=\"http://example.org/p/2\" ontologyIRI=\"http://example.org/p\">\r\n  <owl:Prefix name=\"ex\" IRI=\"http://example.org/\"/>\r\n  <?pi ignored?>\r\n  <owl:Declaration><owl:Class abbreviatedIRI=\"ex:Café\"/></owl:Declaration>\r\n  <owl:SubClassOf>\r\n    <owl:Class abbreviatedIRI=\"ex:Café\"/>\r\n    <owl:Class IRI=\"http://example.org/日本\"/>\r\n  </owl:SubClassOf>\r\n  <owl:ClassAssertion><owl:Class abbreviatedIRI=\"ex:Café\"/><owl:NamedIndividual IRI=\"http://example.org/x😀\"/></owl:ClassAssertion>\r\n  <Declaration xmlns=\"http://www.w3.org/2002/07/owl#\"><Class abbreviatedIRI=\"ex:D\"/></Declaration>\r\n</owl:Ontology>\r\n";
+
+/// Entities in the shapes that cost the scanner work, as
+/// [`rdfxml_entity_shapes`] has them for RDF/XML: a ladder of 40 over an
+/// empty one, used low enough to stay cheap, so that a snippet `&e40;`
+/// costs 2^41 steps without a bound; an entity that expands to an element;
+/// and runs of references to markup entities.
+fn owlxml_entity_shapes() -> String {
+    let mut ladder = String::from("<!ENTITY e0 \"\">");
+    for i in 1..=40 {
+        ladder += &format!("<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1);
+    }
+    format!(
+        r##"<!DOCTYPE Ontology [{ladder}<!ENTITY m "<Class abbreviatedIRI=':A'/>"><!ENTITY c "<!---->"><!ENTITY o "http://example.org/e#">]>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="&o;">
+    <Prefix name="" IRI="&o;"/>
+    <Declaration>&m;</Declaration>
+    <DisjointClasses>{}</DisjointClasses>
+    <Declaration>{}<Class IRI="&o;B&e8;"/></Declaration>
+    <AnnotationAssertion><AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#label"/><IRI>&o;A</IRI><Literal>a&e8;b</Literal></AnnotationAssertion>
+</Ontology>
+"##,
+        "&m;".repeat(500),
+        "&c;".repeat(500),
+    )
+}
+
+/// What the mapping refuses, beside what it reads: a header with a version
+/// IRI and no ontology IRI, a prefix declared twice, a SWRL rule, an
+/// undeclared prefix; and an `rdf:PlainLiteral` with no `@` and no
+/// language, read with a warning.
+const OWLXML_ERRORS: &str = r##"<Ontology xmlns="http://www.w3.org/2002/07/owl#" versionIRI="http://example.org/v">
+    <Prefix name="" IRI="http://example.org/x#"/>
+    <Prefix name="" IRI="http://example.org/twice#"/>
+    <AnnotationAssertion>
+        <AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#label"/>
+        <AbbreviatedIRI>:A</AbbreviatedIRI>
+        <Literal datatypeIRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral">no at sign</Literal>
+    </AnnotationAssertion>
+    <DLSafeRule>
+        <Body><ClassAtom><Class abbreviatedIRI=":A"/><Variable IRI="urn:swrl#x"/></ClassAtom></Body>
+        <Head><ClassAtom><Class abbreviatedIRI=":B"/><Variable IRI="urn:swrl#x"/></ClassAtom></Head>
+    </DLSafeRule>
+    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>
+    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI=":B"/></SubClassOf>
+</Ontology>
+"##;
+
+/// What the mutations put into an OWL/XML document: element names, start
+/// and end tags, attributes, entity and character references, CDATA,
+/// comments, `xml:base`, `xml:lang`, namespace declarations, and a few
+/// lines of the other syntaxes.
+const OWLXML_SNIPPETS: &[&str] = &[
+    "<",
+    ">",
+    "/>",
+    "</",
+    "\"",
+    "'",
+    "=",
+    "&",
+    "&o;",
+    "&xsd;",
+    "&#35;",
+    "&#x1F600;",
+    "&amp;",
+    "&lt;",
+    "&e40;",
+    " IRI=\"&e40;\"",
+    "&m;",
+    "&c;",
+    "<!--",
+    "-->",
+    "<!-- c -->",
+    "<![CDATA[",
+    "]]>",
+    "<![CDATA[x]]>",
+    "<?xml version=\"1.0\"?>",
+    "<?pi x?>",
+    "<!DOCTYPE Ontology [<!ENTITY o 'http://example.org/o#'>]>",
+    "<!ENTITY a \"&b;\">",
+    " IRI=\"#x\"",
+    " IRI=\"\"",
+    " IRI=\"http://example.org/z\"",
+    " abbreviatedIRI=\":A\"",
+    " abbreviatedIRI=\"nope:A\"",
+    " abbreviatedIRI=\"x\"",
+    " xml:base=\"http://example.org/b/\"",
+    " xml:base=\"rel/\"",
+    " xml:base=\"o o\"",
+    " xml:lang=\"en\"",
+    " xml:lang=\"\"",
+    " xml:lang=\"not a tag\"",
+    " xml:space=\"preserve\"",
+    " xmlns=\"http://www.w3.org/2002/07/owl#\"",
+    " xmlns:owl=\"http://www.w3.org/2002/07/owl#\"",
+    " xmlns=\"http://example.org/other\"",
+    " xmlns:x=\"\"",
+    " datatypeIRI=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral\"",
+    " datatypeIRI=\"http://www.w3.org/2001/XMLSchema#integer\"",
+    " datatypeIRI=\"&xsd;string\"",
+    " cardinality=\"2\"",
+    " cardinality=\"-1\"",
+    " nodeID=\"n\"",
+    " nodeID=\"1x\"",
+    " facet=\"http://www.w3.org/2001/XMLSchema#minInclusive\"",
+    " ontologyIRI=\"http://example.org/p\"",
+    " versionIRI=\"v\"",
+    " name=\"p\"",
+    " unknown=\"u\"",
+    "<Class IRI=\"http://example.org/C\"/>",
+    "<Class abbreviatedIRI=\":A\"/>",
+    "<owl:Class abbreviatedIRI=\":A\"/>",
+    "<ObjectProperty abbreviatedIRI=\":p\"/>",
+    "<DataProperty abbreviatedIRI=\":d\"/>",
+    "<NamedIndividual abbreviatedIRI=\":i\"/>",
+    "<AnonymousIndividual nodeID=\"b\"/>",
+    "<Literal>",
+    "</Literal>",
+    "<Literal xml:lang=\"en\">x</Literal>",
+    "<Literal datatypeIRI=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral\">y@</Literal>",
+    "<IRI>",
+    "</IRI>",
+    "<AbbreviatedIRI>:A</AbbreviatedIRI>",
+    "<SubClassOf>",
+    "</SubClassOf>",
+    "<ObjectIntersectionOf>",
+    "</ObjectIntersectionOf>",
+    "<ObjectMinCardinality cardinality=\"1\">",
+    "<DatatypeRestriction>",
+    "<FacetRestriction facet=\"http://www.w3.org/2001/XMLSchema#length\">",
+    "<HasKey>",
+    "</HasKey>",
+    "<SameIndividual>",
+    "<Annotation>",
+    "</Annotation>",
+    "<Annotation><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><Literal>a</Literal></Annotation>",
+    "<Declaration>",
+    "</Declaration>",
+    "<Prefix name=\"\" IRI=\"http://example.org/o#\"/>",
+    "<Prefix name=\"p\" IRI=\"http://example.org/p#\"/>",
+    "<Import>http://example.org/j</Import>",
+    "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">",
+    "</Ontology>",
+    "<DLSafeRule>",
+    "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">",
+    "\u{feff}",
+    "é",
+    "😀",
+    "\n",
+    "\r\n",
+    "\r",
+    "\t",
+    " ",
+    "Prefix(",
+    "@prefix ",
+];
+
+/// What [`flip_with`] puts before an `.owl` OWL/XML text: [`FLIPS`], and
+/// an OWL/XML root, so that each of the four syntaxes comes and goes.
+const OWLXML_FLIPS: &[&str] = &[
+    "@prefix ex: <http://example.org/> .\n",
+    "ex:a ex:b ex:c .\n",
+    "<http://example.org/a> <http://example.org/b> <http://example.org/c> .\n",
+    "{\"@id\": \"http://example.org/a\"}\n",
+    "[{\"@id\": \"http://example.org/a\"}]",
+    "Prefix(:=<http://example.org/>)\n",
+    "Ontology: <http://example.org/o>\n",
+    "<?xml version=\"1.0\"?>\n",
+    "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">",
+    "#",
+    "<",
+    "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">\n",
+];
+
+#[test]
+fn mutated_owlxml_never_panics_1() {
+    mutated_owlxml(0);
+}
+
+#[test]
+fn mutated_owlxml_never_panics_2() {
+    mutated_owlxml(1);
+}
+
+#[test]
+fn mutated_owlxml_never_panics_3() {
+    mutated_owlxml(2);
+}
+
+#[test]
+fn mutated_owlxml_never_panics_4() {
+    mutated_owlxml(3);
+}
+
+#[test]
+fn edits_match_a_fresh_open_owlxml_1() {
+    edits_match_a_fresh_open_owlxml(0);
+}
+
+#[test]
+fn edits_match_a_fresh_open_owlxml_2() {
+    edits_match_a_fresh_open_owlxml(1);
+}
+
+#[test]
+fn edits_match_a_fresh_open_owlxml_3() {
+    edits_match_a_fresh_open_owlxml(2);
+}
+
+#[test]
+fn edits_match_a_fresh_open_owlxml_4() {
+    edits_match_a_fresh_open_owlxml(3);
+}
+
+/// Mutated OWL/XML documents through every feature, as a `.owx` file, in a
+/// workspace with the OWL/XML seeds on disk; one in four is also edited as
+/// LSP changes and checked against a fresh open, with the document named
+/// `.owl` one time in two, so the syntax its text gives is decided again
+/// at each change.
+fn mutated_owlxml(k: usize) {
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 2000usize);
+    let seeds = owlxml_corpus();
+    // The workspace the document joins: some of the Turtle fixtures, and
+    // the OWL/XML inputs themselves.
+    let mut docs: Vec<(String, Syntax)> = corpus()
+        .into_iter()
+        .filter(|(t, _)| t.len() < 20_000)
+        .step_by(3)
+        .collect();
+    docs.extend(seeds.iter().map(|t| (t.clone(), Syntax::OwlXml)));
+    let mut base = knowledge_of(&docs);
+    let mut dog = Watchdog::new("owlxml", seed, iters);
+    for i in iterations(iters, k) {
+        let mut rng = Rng::at(seed, i ^ 0x0E70_0000);
+        let source = &seeds[rng.below(seeds.len())];
+        let text = mutate_with(&mut rng, source, OWLXML_SNIPPETS, true, Lexer::Turtle);
+        let edits = rng.below(4) == 0;
+        let as_owl = rng.below(2) == 0;
+        dog.start(i, &text, "owx");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exercise(
+                &mut Rng(seed ^ i as u64 ^ 0x0E70),
+                &text,
+                Syntax::OwlXml,
+                &mut base,
+            );
+            if !edits {
+                return Ok(());
+            }
+            let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
+            let mut e = Edited::new(source, Some(enc));
+            let mut batches = Vec::new();
+            for _ in 0..1 + rng.below(4) {
+                for _ in 0..1 + rng.below(4) {
+                    mutation(&mut rng, &mut e, OWLXML_SNIPPETS, true, Lexer::Turtle);
+                }
+                let analyse = rng.below(2) == 0;
+                batches.push(Batch {
+                    changes: e.take(),
+                    analyse,
+                });
+            }
+            // An `.owl` name: its syntax comes from its text at each change.
+            let syntax = if as_owl {
+                Syntax::RdfXml
+            } else {
+                Syntax::OwlXml
+            };
+            match oracle::check(syntax, source, batches, enc) {
+                Err(diff) => Err(format!("differs from a fresh open ({enc:?}): {diff}")),
+                Ok(report) if report.text != e.text => Err(format!(
+                    "the edits left another text than the mutations ({enc:?}): {}",
+                    first_difference(&e.text, &report.text)
+                )),
+                Ok(_) => Ok(()),
+            }
+        }));
+        let why = match r {
+            Ok(Ok(())) => continue,
+            Ok(Err(why)) => why,
+            Err(e) => panic_message(&*e),
+        };
+        panic!(
+            "{}",
+            failure_report("owlxml", seed, iters, i, "owx", &text, &why)
+        );
+    }
+}
+
+/// [`edits_match_a_fresh_open_functional`] on OWL/XML documents: the
+/// mutations as LSP changes, the edited document against a fresh open of
+/// the text the changes leave. One document in two is named `.owl`, and
+/// one edit in four there puts a line of another syntax before the text
+/// ([`OWLXML_FLIPS`]) or cuts its start, so the syntax is decided again at
+/// each change (RDF/XML, OWL/XML, Functional, Turtle).
+fn edits_match_a_fresh_open_owlxml(k: usize) {
+    let seed = env_or("CHAOS_SEED", 0x5EED_0019_u64);
+    let iters = env_or("CHAOS_ITERS", 2000usize);
+    let seeds = owlxml_corpus();
+    let mut dog = Watchdog::new("edits-owlxml", seed, iters);
+    let (mut owl, mut sessions) = (0, 0);
+    for i in iterations(iters, k) {
+        sessions += 1;
+        let mut rng = Rng::at(seed, i ^ 0x0E71_0000);
+        let source = &seeds[rng.below(seeds.len())];
+        let as_owl = rng.below(2) == 0;
+        owl += usize::from(as_owl);
+        let enc = [Encoding::Utf8, Encoding::Utf16][rng.below(2)];
+        let mut e = Edited::new(source, Some(enc));
+        let mut batches = Vec::new();
+        for _ in 0..1 + rng.below(4) {
+            for _ in 0..1 + rng.below(4) {
+                if as_owl && rng.below(4) == 0 {
+                    flip_with(&mut rng, &mut e, OWLXML_FLIPS);
+                } else {
+                    mutation(&mut rng, &mut e, OWLXML_SNIPPETS, true, Lexer::Turtle);
+                }
+            }
+            if rng.below(16) == 0 {
+                e.resend();
+            }
+            let analyse = rng.below(2) == 0;
+            batches.push(Batch {
+                changes: e.take(),
+                analyse,
+            });
+        }
+        // An `.owl` name: its syntax comes from its text at each change.
+        let named = if as_owl {
+            Syntax::RdfXml
+        } else {
+            Syntax::OwlXml
+        };
+        let ext = if as_owl { "owl" } else { "owx" };
+        dog.start(i, source, ext);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            oracle::check(named, source, batches, enc)
+        }));
+        let why = match r {
+            Err(e) => panic_message(&*e),
+            Ok(Err(diff)) => format!("differs from a fresh open ({enc:?}): {diff}"),
+            Ok(Ok(report)) if report.text != e.text => format!(
+                "the edits left another text than the mutations ({enc:?}): {}",
+                first_difference(&e.text, &report.text)
+            ),
+            // The final text analysed again outside the workspace, which
+            // turns a panic into a failed analysis.
+            Ok(Ok(report)) => match std::panic::catch_unwind(|| {
+                let uri = format!("file:///chaos/doc.{ext}");
+                Analysis::new(uri, &report.text, Arc::default(), false)
+            }) {
+                Ok(_) => continue,
+                Err(e) => format!("the final text: {}", panic_message(&*e)),
+            },
+        };
+        panic!(
+            "{}",
+            failure_report("edits-owlxml", seed, iters, i, ext, source, &why)
+        );
+    }
+    eprintln!("OWL/XML edits shard {k}: {sessions} sessions, {owl} of them as .owl");
+}
+
+/// The base the import cache converts a fetched document against.
+const CONVERSION_BASE: &str = "http://example.com/chaos";
+
+/// The N-Triples text [`imports::owl_xml_to_ntriples`] writes for `text`
+/// reads back as Turtle, a triple a line, to the triples the analysis has
+/// against the same base, in order and up to blank-node labels, but for
+/// those an error leaves N-Triples unable to hold. With errors and no
+/// triple, it writes nothing and says why.
+fn owl_xml_converts(text: &str) {
+    let p = parse_doc(
+        text,
+        Syntax::OwlXml,
+        Some(CONVERSION_BASE),
+        &PrefixMap::default(),
+    );
+    let (nt, stop) = match imports::owl_xml_to_ntriples(text.as_bytes(), CONVERSION_BASE) {
+        Ok(converted) => converted,
+        Err(why) => {
+            assert!(
+                p.triples.is_empty() && !p.errors.is_empty(),
+                "refused with {} triples: {why}",
+                p.triples.len()
+            );
+            return;
+        }
+    };
+    // A warning is no error: it stops nothing.
+    let error = p.errors.iter().any(|e| e.severity == Severity::Error);
+    assert_eq!(stop.is_some(), error, "{stop:?}");
+    let back = parse_with_base(&nt, &PrefixMap::default(), Syntax::Turtle, None);
+    assert!(back.errors.is_empty(), "converted: {:?}\n{nt}", back.errors);
+    assert_eq!(back.triples.len(), nt.lines().count(), "converted:\n{nt}");
+    let want: Vec<&turtle_lsp::syntax::Triple> = p
+        .triples
+        .iter()
+        .filter(|t| !error || writable_triple(t))
+        .collect();
+    assert_eq!(want.len(), back.triples.len(), "converted:\n{nt}");
+    let mut labels = (HashMap::new(), HashMap::new());
+    for (w, g) in want.iter().zip(&back.triples) {
+        assert!(
+            w.p == g.p && same_term(&w.s, &g.s, &mut labels) && same_term(&w.o, &g.o, &mut labels),
+            "the analysis has {:?} {:?} {:?}, the conversion {:?} {:?} {:?}",
+            w.s,
+            w.p,
+            w.o,
+            g.s,
+            g.p,
+            g.o
+        );
+    }
+}
+
+/// Whether N-Triples can hold triple `t`: its IRIs are absolute IRIs and
+/// its language tags are language tags.
+fn writable_triple(t: &turtle_lsp::syntax::Triple) -> bool {
+    let iri = |i: Iri| oxiri::Iri::parse(i.as_str()).is_ok();
+    fn node(n: &Node, iri: &dyn Fn(Iri) -> bool) -> bool {
+        match n {
+            Node::Iri(i) => iri(*i),
+            Node::Blank(_) => true,
+            Node::Literal { datatype, lang, .. } => {
+                iri(*datatype)
+                    && lang.is_none_or(|l| oxilangtag::LanguageTag::parse(l.as_str()).is_ok())
+            }
+            Node::Triple(t) => node(&t.0, iri) && iri(t.1) && node(&t.2, iri),
+        }
+    }
+    iri(t.p) && node(&t.s, &iri) && node(&t.o, &iri)
+}
+
+/// `a` and `b` are the same term, a blank node of one always matched to
+/// the same blank node of the other, both ways.
+fn same_term(a: &Node, b: &Node, labels: &mut (HashMap<u32, u32>, HashMap<u32, u32>)) -> bool {
+    match (a, b) {
+        (Node::Blank(x), Node::Blank(y)) => {
+            *labels.0.entry(x.0).or_insert(y.0) == y.0 && *labels.1.entry(y.0).or_insert(x.0) == x.0
+        }
+        (Node::Triple(x), Node::Triple(y)) => {
+            x.1 == y.1 && same_term(&x.0, &y.0, labels) && same_term(&x.2, &y.2, labels)
+        }
+        _ => a == b,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pathological inputs: written down, not found by chance.
 
 /// Runs `work` on a thread with the 2 MiB stack the smallest host gives: a
@@ -3760,6 +4543,251 @@ fn pathological_rdfxml_entities() {
     }
 }
 
+/// OWL/XML inputs that cost work, at full size, each through the analysis
+/// and every feature within its time limit, with the error it should give
+/// (or none): nesting past the scanner's depth limit; an entity bomb, and
+/// entities that expand to markup; values of several megabytes; a long
+/// `xml:base` and a long prefix IRI under many short IRIs (the IRI budget,
+/// in time linear in the text); annotated n-ary axioms of thousands of
+/// operands (the triple and literal budgets); a prefix declared thousands
+/// of times; documents cut at each kind of place.
+#[test]
+fn pathological_owlxml() {
+    const N: usize = 100_000;
+    let mb = 1 << 20;
+    let long = "a".repeat(4 * mb);
+    let ontology = |body: &str| {
+        format!(
+            "<Ontology {OWL_NS} ontologyIRI=\"http://example.org/o\">\n<Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n{body}\n</Ontology>\n"
+        )
+    };
+    let operands = |n: usize| -> String {
+        (0..n)
+            .map(|i| format!("<NamedIndividual abbreviatedIRI=\":i{i}\"/>"))
+            .collect()
+    };
+    let annotation = |value: &str| {
+        format!(
+            "<Annotation><AnnotationProperty IRI=\"http://www.w3.org/2000/01/rdf-schema#label\"/><Literal>{value}</Literal></Annotation>"
+        )
+    };
+    let mut ladder = String::from("<!ENTITY e0 \"\">");
+    for i in 1..200 {
+        ladder += &format!("<!ENTITY e{i} \"&e{0};&e{0};\">", i - 1);
+    }
+    // Each error with its code: the scanner's, or the reader's and the
+    // mapping's.
+    const XML: &str = "xml-syntax";
+    const OWX: &str = "owx-syntax";
+    /// An error's code and a part of its message.
+    type Error = (&'static str, &'static str);
+    const DEEP: Error = (XML, "elements nest deeper than");
+    const IRIS: Error = (OWX, "The IRIs are over");
+    let cases: Vec<(&str, String, Option<Error>)> = vec![
+        (
+            "nested class expressions",
+            ontology(&format!(
+                "<SubClassOf><Class abbreviatedIRI=\":A\"/>{}<Class abbreviatedIRI=\":B\"/>{}</SubClassOf>",
+                "<ObjectComplementOf>".repeat(N),
+                "</ObjectComplementOf>".repeat(N)
+            )),
+            Some(DEEP),
+        ),
+        (
+            "nested annotations",
+            ontology(&format!(
+                "<SubClassOf>{}<AnnotationProperty IRI=\"http://example.org/l\"/><Literal>x</Literal>{}<Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\":B\"/></SubClassOf>",
+                "<Annotation>".repeat(N),
+                "</Annotation>".repeat(N)
+            )),
+            Some(DEEP),
+        ),
+        (
+            "open elements",
+            ontology(&"<SubClassOf>".repeat(N)),
+            Some(DEEP),
+        ),
+        (
+            "unclosed axioms",
+            ontology(&"<SubClassOf><ObjectComplementOf>\n".repeat(N / 10)),
+            Some(DEEP),
+        ),
+        (
+            "entity bomb",
+            format!(
+                "<!DOCTYPE Ontology [{ladder}<!ENTITY m \"<Class IRI='http://example.org/&e199;'/>\">]>\n{}",
+                ontology(
+                    "<Declaration><Class IRI=\"http://example.org/&e199;\"/></Declaration>\n<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\":l\"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>&e199;</Literal></AnnotationAssertion>\n<Declaration>&m;</Declaration>"
+                )
+            ),
+            Some((XML, "entity expansion is over its limit")),
+        ),
+        (
+            "markup entity run",
+            format!(
+                "<!DOCTYPE Ontology [<!ENTITY m \"<Class abbreviatedIRI=':A'/>\">]>\n{}",
+                ontology(&format!(
+                    "<DisjointClasses>{}</DisjointClasses>",
+                    "&m;".repeat(300_000)
+                ))
+            ),
+            None,
+        ),
+        (
+            "comment entity run",
+            format!(
+                "<!DOCTYPE Ontology [<!ENTITY c \"<!---->\">]>\n{}",
+                ontology(&format!(
+                    "<Declaration>{}<Class abbreviatedIRI=\":A\"/></Declaration>",
+                    "&c;".repeat(300_000)
+                ))
+            ),
+            None,
+        ),
+        (
+            "attribute value",
+            ontology(&format!(
+                "<Declaration><Class IRI=\"http://example.org/{long}\"/></Declaration>"
+            )),
+            None,
+        ),
+        (
+            "unclosed attribute value",
+            ontology(&format!(
+                "<Declaration><Class IRI=\"http://example.org/{long}"
+            )),
+            Some((XML, "`<` in an attribute value")),
+        ),
+        (
+            "long base",
+            format!(
+                "<Ontology {OWL_NS} xml:base=\"http://example.org/{}/\" ontologyIRI=\"o\">\n{}\n</Ontology>\n",
+                &long[..mb],
+                (0..20_000)
+                    .map(|i| format!("<Declaration><Class IRI=\"c{i}\"/></Declaration>\n"))
+                    .collect::<String>()
+            ),
+            Some(IRIS),
+        ),
+        (
+            "long prefix IRI",
+            format!(
+                "<Ontology {OWL_NS}>\n<Prefix name=\"\" IRI=\"http://example.org/{}#\"/>\n{}\n</Ontology>\n",
+                &long[..mb],
+                (0..20_000)
+                    .map(|i| format!(
+                        "<Declaration><Class abbreviatedIRI=\":c{i}\"/></Declaration>\n"
+                    ))
+                    .collect::<String>()
+            ),
+            Some(IRIS),
+        ),
+        (
+            // 10,000 operands reach the triple budget as 50,000 did, in
+            // about a third of the time (0.75 s against 2.2 s on a Mac): the
+            // work to the budget grows with the text, and the 50,000-operand
+            // text took 11.4 s on the Windows runner, over the 10 s bound.
+            "annotated SameIndividual, many annotations",
+            ontology(&format!(
+                "<SameIndividual>{}{}</SameIndividual>",
+                annotation("x").repeat(200),
+                operands(10_000)
+            )),
+            Some((OWX, "triples per byte of text")),
+        ),
+        (
+            "annotated SameIndividual, a long literal",
+            ontology(&format!(
+                "<SameIndividual>{}{}</SameIndividual>",
+                annotation(&"v".repeat(2_000)),
+                operands(20_000)
+            )),
+            Some((OWX, "literals are over")),
+        ),
+        (
+            "annotated DifferentIndividuals",
+            ontology(&format!(
+                "<DifferentIndividuals>{}{}</DifferentIndividuals>",
+                annotation(&"v".repeat(2_000)).repeat(200),
+                operands(50_000)
+            )),
+            None,
+        ),
+        (
+            "prefixes of one name",
+            ontology(&"<Prefix name=\"p\" IRI=\"http://example.org/p#\"/>\n".repeat(N / 4)),
+            Some((OWX, "is declared twice")),
+        ),
+        (
+            "literal",
+            ontology(&format!(
+                "<AnnotationAssertion><AnnotationProperty IRI=\"http://www.w3.org/2000/01/rdf-schema#label\"/><IRI>http://example.org/a</IRI><Literal>{long}</Literal></AnnotationAssertion>"
+            )),
+            None,
+        ),
+        (
+            "unclosed literal",
+            ontology(&format!(
+                "<AnnotationAssertion><AnnotationProperty IRI=\"http://www.w3.org/2000/01/rdf-schema#label\"/><IRI>http://example.org/a</IRI><Literal>{long}"
+            )),
+            Some((XML, "<Literal> is not closed")),
+        ),
+    ];
+    // OWLXML_DOCUMENT cut inside each kind of markup: a start tag, an end
+    // tag, an attribute value, an entity and a character reference, a CDATA
+    // section and its opening, a comment, an entity declaration, the XML
+    // declaration, a literal; each with the scanner's word for it.
+    let cuts = [
+        ("<SubClassOf", "the tag is not closed"),
+        ("</SubClassOf", "the end tag does not end with `>`"),
+        ("IRI=\"http://exa", "the attribute value is not closed"),
+        ("&quo", "`&` starts no reference"),
+        ("&#23", "`&` starts no reference"),
+        ("&#xE", "`&` starts no reference"),
+        ("<![CDATA[a <", "the CDATA section is not closed"),
+        ("<![CDA", "unknown markup after `<!`"),
+        ("<!-- Decl", "the comment is not closed"),
+        (
+            "<!ENTITY o \"http",
+            "the entity declaration does not end with `>`",
+        ),
+        ("<?xml vers", "the processing instruction is not closed"),
+        ("<Literal xml:lang=\"en\">annot", "<Literal> is not closed"),
+    ];
+    let mut cases = cases;
+    for (cut, error) in cuts {
+        let at = OWLXML_DOCUMENT
+            .find(cut)
+            .expect("the cut is in the document")
+            + cut.len();
+        let name = Box::leak(format!("cut after {cut:?}").into_boxed_str());
+        cases.push((name, OWLXML_DOCUMENT[..at].to_string(), Some((XML, error))));
+    }
+    for (what, text, error) in cases {
+        let p = parse_doc(&text, Syntax::OwlXml, None, &PrefixMap::default());
+        match error {
+            None => assert!(p.errors.is_empty(), "{what}: {:?}", p.errors),
+            Some((code, m)) => assert!(
+                p.errors
+                    .iter()
+                    .any(|e| e.code == code && e.message().contains(m)),
+                "{what}: no {code} {m:?} in {:?}",
+                p.errors
+            ),
+        }
+        survive(what, text, Syntax::OwlXml, Duration::from_secs(10));
+    }
+    // And the document cut at each character: read without a panic, its
+    // spans inside the cut text, an error until the root is closed.
+    let closed = OWLXML_DOCUMENT.find("</Ontology>").unwrap() + "</Ontology>".len();
+    for (at, _) in OWLXML_DOCUMENT.char_indices().skip(1) {
+        let text = &OWLXML_DOCUMENT[..at];
+        let p = parse_doc(text, Syntax::OwlXml, None, &PrefixMap::default());
+        spans_are_inside(text, &p);
+        assert!(at >= closed || !p.errors.is_empty(), "no error cut at {at}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The harness itself.
 
@@ -3836,6 +4864,126 @@ fn corpora_are_sorted_and_cover_every_input_family() {
         assert!(p.errors.is_empty(), "{:?}\n{text}", p.errors);
         assert!(p.triples.len() >= 2, "{text}");
     }
+    // OWL/XML: the document level, every family of construct, the literal
+    // table, a prefix on the elements, the entity shapes.
+    let owx = owlxml_corpus();
+    for needle in [
+        "<!DOCTYPE",
+        "<!ENTITY",
+        "xml:base=",
+        "<Prefix ",
+        "<Import>",
+        "<Annotation>\n        <Annotation>",
+        "<AnonymousIndividual",
+        "<![CDATA[",
+        "&#233;",
+        "xml:lang=\"\"",
+        "rdf-syntax-ns#PlainLiteral\">texte@fr",
+        "rdf-syntax-ns#PlainLiteral\">no at sign",
+        "<owl:Ontology",
+        "\r\n",
+        "\u{feff}",
+        "<!ENTITY e40 \"&e39;&e39;\">",
+        "&m;&m;",
+        "&c;&c;",
+        "<DLSafeRule>",
+    ] {
+        assert!(
+            owx.iter().any(|t| t.contains(needle)),
+            "no {needle:?} in the OWL/XML corpus"
+        );
+    }
+    for family in [
+        "ObjectIntersectionOf",
+        "ObjectUnionOf",
+        "ObjectComplementOf",
+        "ObjectOneOf",
+        "ObjectSomeValuesFrom",
+        "ObjectAllValuesFrom",
+        "ObjectHasValue",
+        "ObjectHasSelf",
+        "ObjectMinCardinality",
+        "ObjectMaxCardinality",
+        "ObjectExactCardinality",
+        "DataSomeValuesFrom",
+        "DataAllValuesFrom",
+        "DataHasValue",
+        "DataMinCardinality",
+        "DataMaxCardinality",
+        "DataExactCardinality",
+        "ObjectInverseOf",
+        "DataIntersectionOf",
+        "DataUnionOf",
+        "DataComplementOf",
+        "DataOneOf",
+        "DatatypeRestriction",
+        "SubClassOf",
+        "EquivalentClasses",
+        "DisjointClasses",
+        "DisjointUnion",
+        "SubObjectPropertyOf",
+        "ObjectPropertyChain",
+        "EquivalentObjectProperties",
+        "DisjointObjectProperties",
+        "InverseObjectProperties",
+        "ObjectPropertyDomain",
+        "ObjectPropertyRange",
+        "FunctionalObjectProperty",
+        "InverseFunctionalObjectProperty",
+        "ReflexiveObjectProperty",
+        "IrreflexiveObjectProperty",
+        "SymmetricObjectProperty",
+        "AsymmetricObjectProperty",
+        "TransitiveObjectProperty",
+        "SubDataPropertyOf",
+        "EquivalentDataProperties",
+        "DisjointDataProperties",
+        "DataPropertyDomain",
+        "DataPropertyRange",
+        "FunctionalDataProperty",
+        "DatatypeDefinition",
+        "HasKey",
+        "SameIndividual",
+        "DifferentIndividuals",
+        "ClassAssertion",
+        "ObjectPropertyAssertion",
+        "NegativeObjectPropertyAssertion",
+        "DataPropertyAssertion",
+        "NegativeDataPropertyAssertion",
+        "AnnotationAssertion",
+        "SubAnnotationPropertyOf",
+        "AnnotationPropertyDomain",
+        "AnnotationPropertyRange",
+    ] {
+        assert!(
+            [">", " "]
+                .iter()
+                .any(|end| OWLXML_DOCUMENT.contains(&format!("<{family}{end}"))),
+            "no {family} in the OWL/XML document"
+        );
+    }
+    // The documents written above (after the empty text and the empty
+    // root, before the one with errors) read whole, so their mutations
+    // start from triples; the one with errors reads in part. A relative
+    // `Import` under `xml:base` that OWL API reads otherwise is a warning,
+    // which breaks nothing.
+    for text in &owx[2..6] {
+        let p = parse_doc(text, Syntax::OwlXml, None, &PrefixMap::default());
+        assert!(
+            p.errors.iter().all(|e| e.severity == Severity::Warning
+                && e.code == "owx-syntax"
+                && e.message().contains("; OWL API reads <")),
+            "{:?}\n{text}",
+            p.errors
+        );
+        assert!(p.triples.len() >= 4, "{text}");
+    }
+    let p = parse_doc(&owx[6], Syntax::OwlXml, None, &PrefixMap::default());
+    assert!(
+        p.errors.len() >= 4 && !p.triples.is_empty(),
+        "{:?}",
+        p.errors
+    );
 }
 
 #[test]
@@ -4077,7 +5225,8 @@ fn a_squeeze_keeps_the_tokens() {
 }
 
 /// A parse result with one bad span, whichever field it sits in: the check
-/// must see each. (The text is "abc": 0..99 is outside it.)
+/// must see each, on an empty parse and on an OWL/XML document's. (Past
+/// `u32::MAX / 2` is outside any text here.)
 #[test]
 fn the_span_check_sees_every_span_field() {
     use turtle_lsp::syntax::{
@@ -4085,7 +5234,8 @@ fn the_span_check_sees_every_span_field() {
         SyntaxError, Triple, lexer,
     };
     let text = "abc";
-    let bad = turtle_lsp::syntax::Span::new(0, 99);
+    let far = u32::MAX / 2;
+    let bad = turtle_lsp::syntax::Span::new(0, far);
     let ok = turtle_lsp::syntax::Span::new(0, 1);
     let statement = |span, subject, graph| Statement {
         span,
@@ -4199,7 +5349,7 @@ fn the_span_check_sees_every_span_field() {
                     span: ok,
                     name: None,
                     name_span: None,
-                    statements: 0..5,
+                    statements: 0..far,
                 })
             }),
         ),
@@ -4244,7 +5394,7 @@ fn the_span_check_sees_every_span_field() {
                     o: Node::Iri(iri),
                     p_span: ok,
                     o_span: ok,
-                    statement: 3,
+                    statement: far,
                     graph: None,
                     unresolved: false,
                 })
@@ -4262,7 +5412,7 @@ fn the_span_check_sees_every_span_field() {
             "token",
             Box::new(move |p| {
                 p.tokens
-                    .push(lexer::Token::new(lexer::Kind::Comment, 0, 99))
+                    .push(lexer::Token::new(lexer::Kind::Comment, 0, far))
             }),
         ),
         (
@@ -4274,6 +5424,24 @@ fn the_span_check_sees_every_span_field() {
         let mut p = Parsed::default();
         make(&mut p);
         assert!(span_fault(text, &p).is_some(), "a bad {what} went unseen");
+    }
+    // An OWL/XML document's parse has a span in each field the mapping
+    // fills, all good; a bad one added to it is seen.
+    for owx in [OWLXML_DOCUMENT, OWLXML_PREFIXED] {
+        let parsed = parse_doc(owx, Syntax::OwlXml, None, &PrefixMap::default());
+        assert!(
+            !parsed.prefixes.is_empty()
+                && !parsed.refs.is_empty()
+                && !parsed.statements.is_empty()
+                && !parsed.triples.is_empty(),
+            "{parsed:?}"
+        );
+        assert_eq!(span_fault(owx, &parsed), None);
+        for (what, make) in &cases {
+            let mut p = parsed.clone();
+            make(&mut p);
+            assert!(span_fault(owx, &p).is_some(), "a bad {what} went unseen");
+        }
     }
     // And a character split, on a text that has one.
     let mut p = Parsed::default();

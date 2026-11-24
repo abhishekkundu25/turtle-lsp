@@ -1,0 +1,5 @@
+ <NegativeObjectPropertyAssertion>
+   <ObjectProperty IRI="hasWife"/>
+   <NamedIndividual IRI="Bill"/>
+   <NamedIndividual IRI="Mary"/>
+ </NegativeObjectPropertyAssertion>

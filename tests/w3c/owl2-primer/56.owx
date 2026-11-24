@@ -1,0 +1,42 @@
+ <SubClassOf>
+   <Class IRI="Father"/>
+   <ObjectIntersectionOf>
+     <Class IRI="Man"/>
+     <Class IRI="Parent"/>
+   </ObjectIntersectionOf>
+ </SubClassOf>
+ 
+ <EquivalentClasses>
+   <Class IRI="Parent"/>
+   <ObjectSomeValuesFrom>
+     <ObjectProperty IRI="hasChild"/>
+     <Class IRI="Person"/>
+   </ObjectSomeValuesFrom>
+ </EquivalentClasses>
+ 
+ <EquivalentClasses>
+   <Class IRI="NarcisticPerson"/>
+   <ObjectHasSelf>
+     <ObjectProperty IRI="loves"/>
+   </ObjectHasSelf>
+ </EquivalentClasses>
+ 
+ <DisjointClasses>
+     <Class IRI="Father"/>
+     <Class IRI="Mother"/>
+     <Class IRI="YoungChild"/>
+ </DisjointClasses>
+ 
+ <SubObjectPropertyOf>
+   <ObjectPropertyChain>
+     <ObjectProperty IRI="hasFather"/>
+     <ObjectProperty IRI="hasBrother"/>
+   </ObjectPropertyChain>
+   <ObjectProperty IRI="hasUncle"/>
+ </SubObjectPropertyOf>
+ 
+ <NegativeObjectPropertyAssertion>
+   <ObjectProperty IRI="hasDaughter"/>
+   <NamedIndividual IRI="Bill"/>
+   <NamedIndividual IRI="Susan"/>
+ </NegativeObjectPropertyAssertion>

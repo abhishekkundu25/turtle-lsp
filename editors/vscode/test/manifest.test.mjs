@@ -114,19 +114,23 @@ test("one RDF glob: the workspaceContains activation, the start check, the watch
   }
 })
 
-test(".owl and .rdf files are read and watched, and the client attaches to them while VS Code's XML language keeps them", () => {
+test(".owl, .rdf and .owx files are read and watched, and the client attaches to them while VS Code's XML language keeps them", () => {
   // Workspace files: the one glob (activation, watchers, the browser's files) names them.
   const extensions = RDF_GLOB.match(/\{([^}]*)\}/)[1].split(",")
-  for (const ext of ["owl", "rdf"]) assert.ok(extensions.includes(ext), RDF_GLOB)
-  assert.ok(!extensions.includes("xml") && !extensions.includes("owx"), RDF_GLOB)
-  // No language here claims them or XML, and nothing starts on XML documents.
+  for (const ext of ["owl", "rdf", "owx"]) assert.ok(extensions.includes(ext), RDF_GLOB)
+  assert.ok(!extensions.includes("xml"), RDF_GLOB)
+  // No language here claims them or XML, and nothing starts on XML documents:
+  // a language contributed here would activate the extension on every XML file.
   const claimed = pkg.contributes.languages.flatMap((l) => l.extensions ?? [])
-  for (const ext of [".owl", ".rdf", ".xml"]) assert.ok(!claimed.includes(ext), claimed.join(", "))
+  for (const ext of [".owl", ".rdf", ".owx", ".xml"]) assert.ok(!claimed.includes(ext), claimed.join(", "))
   assert.ok(!pkg.contributes.languages.some((l) => l.id === "xml"))
   assert.ok(!pkg.activationEvents.includes("onLanguage:xml"), pkg.activationEvents.join(", "))
+  // VS Code's XML language does not list .owx: the one default the extension
+  // contributes for files.associations names it XML, and activates nothing.
+  assert.deepEqual(pkg.contributes.configurationDefaults["files.associations"], { "*.owx": "xml" })
   // The client attaches to them by name, as to JSON-LD files, in every scheme but untitled (which has no name).
   const selector = documentSelector(["file", "untitled", "vscode-vfs"])
-  assert.equal(RDFXML_PATTERN, "**/*.{owl,rdf}")
+  assert.equal(RDFXML_PATTERN, "**/*.{owl,rdf,owx}")
   assert.deepEqual([...new Set(selector.filter((f) => "pattern" in f).map((f) => f.pattern))], [JSONLD_PATTERN, RDFXML_PATTERN])
   assert.deepEqual(selector.filter((f) => f.pattern === RDFXML_PATTERN).map((f) => f.scheme), ["file", "vscode-vfs"])
   assert.ok(!selector.some((f) => "language" in f && f.language === "xml"))
@@ -134,10 +138,10 @@ test(".owl and .rdf files are read and watched, and the client attaches to them 
   const menus = pkg.contributes.menus
   const explorer = menus["explorer/context"].find((m) => m.command === "turtle.showGraph").when
   const regex = new RegExp(explorer.match(/resourceExtname =~ \/(.*)\/\)/)[1])
-  for (const name of [".owl", ".rdf", ".ttl", ".jsonld"]) assert.ok(regex.test(name), `${name}: ${explorer}`)
-  for (const name of [".xml", ".owx", ".owl.bak"]) assert.ok(!regex.test(name), `${name}: ${explorer}`)
+  for (const name of [".owl", ".rdf", ".owx", ".ttl", ".jsonld"]) assert.ok(regex.test(name), `${name}: ${explorer}`)
+  for (const name of [".xml", ".owl.bak"]) assert.ok(!regex.test(name), `${name}: ${explorer}`)
   const title = menus["editor/title"].find((m) => m.command === "turtle.showGraph").when
-  for (const ext of [".owl", ".rdf"]) assert.ok(title.includes(`resourceExtname == ${ext}`), title)
+  for (const ext of [".owl", ".rdf", ".owx"]) assert.ok(title.includes(`resourceExtname == ${ext}`), title)
 })
 
 test(".ofn files are OWL Functional syntax: a language of the extension, read and watched, served in every scheme", () => {
@@ -158,7 +162,7 @@ test(".ofn files are OWL Functional syntax: a language of the extension, read an
   assert.match(rust, /"ofn" => Some\(Syntax::OwlFunctional\)/)
 })
 
-test("the server's registered selector, in the client's schemes, leaves .owl, .rdf and .ofn out", () => {
+test("the server's registered selector, in the client's schemes, leaves .owl, .rdf, .owx and .ofn out", () => {
   // The selector src/server/registrations.rs sends: its languages and the JSON-LD pattern, no scheme.
   const rust = fs.readFileSync(new URL("../../../src/server/registrations.rs", import.meta.url), "utf8")
   const languages = JSON.parse(rust.match(/LANGUAGES: \[&str; \d+\] =\s*(\[[^\]]*\])/)[1])

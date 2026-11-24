@@ -1,0 +1,28 @@
+ SubClassOf( 
+   :ChildlessPerson 
+   ObjectIntersectionOf(
+     :Person 
+     ObjectComplementOf(
+       ObjectSomeValuesFrom(
+         ObjectInverseOf( :hasParent )
+         owl:Thing
+       )
+     )
+   )
+ ) 
+ 
+ DisjointClasses( 
+   :Mother 
+   :Father
+   :YoungChild 
+ )
+ 
+ DisjointObjectProperties( 
+   :hasSon 
+   :hasDaughter 
+ )
+ 
+ SubObjectPropertyOf( 
+   :hasFather 
+   :hasParent
+ )

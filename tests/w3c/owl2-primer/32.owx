@@ -1,0 +1,9 @@
+ <EquivalentClasses>
+   <Class IRI="Orphan"/>
+   <ObjectAllValuesFrom>
+     <ObjectInverseOf>
+       <ObjectProperty IRI="hasChild"/>
+     </ObjectInverseOf>
+     <Class IRI="Dead"/>
+   </ObjectAllValuesFrom>
+ </EquivalentClasses>

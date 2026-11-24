@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :NarcisticPerson 
+   ObjectHasSelf( :loves ) 
+ )

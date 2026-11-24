@@ -1,0 +1,8 @@
+ <EquivalentClasses>
+   <Class IRI="MyBirthdayGuests"/>
+   <ObjectOneOf>
+     <NamedIndividual IRI="Bill"/>
+     <NamedIndividual IRI="John"/>
+     <NamedIndividual IRI="Mary"/>
+   </ObjectOneOf>
+ </EquivalentClasses>

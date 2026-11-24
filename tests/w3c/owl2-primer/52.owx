@@ -1,0 +1,2 @@
+ <Prefix name="otherOnt" IRI="http://example.org/otherOntologies/families/"/>
+ <Import>http://example.org/otherOntologies/families.owl</Import>

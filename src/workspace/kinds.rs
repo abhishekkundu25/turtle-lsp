@@ -22,7 +22,8 @@ pub(crate) enum FileKind {
     /// A SPARQL query or update.
     Sparql,
     /// RDF whose syntax its content gives (`.owl`, `.rdf`): RDF/XML, or
-    /// Turtle or JSON-LD under that name (`Syntax::of`). A workspace file,
+    /// Turtle, JSON-LD, OWL Functional syntax or OWL/XML under that name
+    /// (`Syntax::of`). A workspace file,
     /// read and never written, and an `owl:imports` target through a
     /// catalog.
     Ontology,
@@ -78,6 +79,7 @@ pub(crate) const ROWS: &[Row] = &[
     ext("rdf", FileKind::Ontology, Case::Any),
     ext("owl", FileKind::Ontology, Case::Any),
     ext("ofn", FileKind::Rdf(Syntax::OwlFunctional), Case::Any),
+    ext("owx", FileKind::Rdf(Syntax::OwlXml), Case::Any),
     ext("rq", FileKind::Sparql, Case::Exact),
     ext("sparql", FileKind::Sparql, Case::Exact),
     ext("ru", FileKind::Sparql, Case::Exact),
@@ -121,8 +123,8 @@ impl Row {
 }
 
 /// A file this server reads as RDF: `.ttl`, `.turtle`, `.trig`, `.nt`, `.nq`,
-/// `.jsonld`, `.owl`, `.rdf` or `.ofn` (OWL Functional syntax, its axioms
-/// read as RDF), in any letter case.
+/// `.jsonld`, `.owl`, `.rdf`, `.ofn` (OWL Functional syntax) or `.owx`
+/// (OWL/XML), the axioms of the last two read as RDF, in any letter case.
 pub(crate) fn is_rdf_file(path: &Path) -> bool {
     matches!(
         FileKind::of_path(path),
@@ -304,6 +306,8 @@ mod tests {
             ("/w/ctx.jsonld", Some(Rdf(Syntax::JsonLd))),
             ("/w/o.ofn", Some(Rdf(Syntax::OwlFunctional))),
             ("O.OFN", Some(Rdf(Syntax::OwlFunctional))),
+            ("/w/o.owx", Some(Rdf(Syntax::OwlXml))),
+            ("O.OWX", Some(Rdf(Syntax::OwlXml))),
             ("/w/.ttl", Some(Rdf(Syntax::Turtle))),
             ("/w/prefixes.ttl", Some(Rdf(Syntax::Turtle))),
             ("/w/a.b.ttl", Some(Rdf(Syntax::Turtle))),

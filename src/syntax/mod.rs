@@ -1,8 +1,8 @@
 //! Turtle 1.2, TriG 1.2, N-Triples 1.2 and N-Quads 1.2 syntax: a lexer and a resilient
 //! recursive-descent parser that records the span of every term, so every
 //! editor feature reads one parse. JSON-LD and RDF/XML have their own
-//! frontends, which build the same [`Parsed`], and so has OWL Functional
-//! syntax; this module calls none of them.
+//! frontends, which build the same [`Parsed`], and so have OWL Functional
+//! syntax and OWL/XML; this module calls none of them.
 //! [`sniff`] tells from a text's start which syntax it is in.
 
 mod iri;
@@ -26,9 +26,9 @@ pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 /// The language a document is written in. One parser reads the first four:
 /// TriG adds graph blocks to Turtle, N-Triples is read as Turtle with every
 /// construct N-Triples forbids reported as an error, and N-Quads is N-Triples
-/// with an optional graph label before each line's `.`. JSON-LD, RDF/XML
-/// and OWL Functional syntax have their own frontends, which build the same
-/// [`Parsed`].
+/// with an optional graph label before each line's `.`. JSON-LD, RDF/XML,
+/// OWL Functional syntax and OWL/XML have their own frontends, which build
+/// the same [`Parsed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Syntax {
     #[default]
@@ -48,6 +48,12 @@ pub enum Syntax {
     /// its axioms to RDF triples by the W3C mapping. Nothing edits it, as
     /// RDF/XML: it has no tokens, no formatting and no statement splice.
     OwlFunctional,
+    /// The OWL 2 XML Serialization (OWL/XML: `.owx`, or a `.owl` or `.rdf`
+    /// text whose root is OWL/XML's `Ontology`): a notational variant of OWL
+    /// Functional syntax, read as Functional syntax is and never edited: no
+    /// tokens, no formatting and no statement splice. No language id names
+    /// it: editors keep it in their XML language.
+    OwlXml,
 }
 
 impl Syntax {
@@ -66,7 +72,8 @@ impl Syntax {
     }
 
     /// From the extension of a path or URI, in any letter case (`Data.TTL` is
-    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`, `.ofn`.
+    /// Turtle): `.ttl` / `.turtle`, `.trig`, `.nt`, `.nq`, `.jsonld`, `.ofn`,
+    /// `.owx`. Not `.xml`: an ordinary XML file is no RDF.
     pub fn from_extension(path: &str) -> Option<Syntax> {
         let name = path.rsplit(['/', '\\']).next()?;
         let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
@@ -77,13 +84,14 @@ impl Syntax {
             "nq" => Some(Syntax::NQuads),
             "jsonld" => Some(Syntax::JsonLd),
             "ofn" => Some(Syntax::OwlFunctional),
+            "owx" => Some(Syntax::OwlXml),
             _ => None,
         }
     }
 
     /// Whether a path or URI names a file whose syntax its content gives:
     /// `.owl` or `.rdf`, in any letter case. Such a name is RDF/XML, or
-    /// Turtle, JSON-LD or OWL Functional syntax written under it
+    /// Turtle, JSON-LD, OWL Functional syntax or OWL/XML written under it
     /// ([`Syntax::of_content`]).
     pub fn by_content(path: &str) -> bool {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -93,10 +101,10 @@ impl Syntax {
     }
 
     /// The syntax of a text whose name does not fix one, from how it
-    /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too), JSON-LD or OWL
-    /// Functional syntax when it is that, else RDF/XML. A text in an OWL
-    /// syntax that is not read (OWL/XML, Manchester) is RDF/XML here too:
-    /// the RDF/XML frontend names it in an `unsupported-syntax` error. A text of white
+    /// starts ([`sniff::Sniffed`]): Turtle (N-Triples too), JSON-LD, OWL
+    /// Functional syntax or OWL/XML when it is that, else RDF/XML. A text in
+    /// OWL Manchester syntax, which is not read, is RDF/XML here too: the
+    /// RDF/XML frontend names it in an `unsupported-syntax` error. A text of white
     /// space only (or nothing) is RDF/XML, as its `.owl` or `.rdf` name
     /// says: it gets no Turtle completion or formatting until Turtle is
     /// written in it.
@@ -112,9 +120,8 @@ impl Syntax {
             sniff::Sniffed::Turtle => Syntax::Turtle,
             sniff::Sniffed::JsonLd => Syntax::JsonLd,
             sniff::Sniffed::Functional => Syntax::OwlFunctional,
-            sniff::Sniffed::RdfXml | sniff::Sniffed::OwlXml | sniff::Sniffed::Manchester => {
-                Syntax::RdfXml
-            }
+            sniff::Sniffed::OwlXml => Syntax::OwlXml,
+            sniff::Sniffed::RdfXml | sniff::Sniffed::Manchester => Syntax::RdfXml,
         }
     }
 
@@ -149,10 +156,35 @@ impl Syntax {
     /// Whether the document can use `@prefix` / `PREFIX` prefixes and gets
     /// the project's (`prefixes.ttl`): Turtle and TriG. The line-based
     /// syntaxes have none, JSON-LD defines its own in `@context`, RDF/XML
-    /// in XML namespaces and OWL Functional syntax in `Prefix(…)`
-    /// declarations.
+    /// in XML namespaces, OWL Functional syntax in `Prefix(…)` declarations
+    /// and OWL/XML in `Prefix` elements.
     pub(crate) fn has_prefixes(self) -> bool {
-        matches!(self, Syntax::Turtle | Syntax::TriG)
+        match self {
+            Syntax::Turtle | Syntax::TriG => true,
+            Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::JsonLd
+            | Syntax::RdfXml
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => false,
+        }
+    }
+
+    /// Whether the document writes its ontology header and its imports as
+    /// constructs of the syntax (OWL Functional's `Ontology(…)` and
+    /// `Import(…)`, OWL/XML's `Ontology` and `Import` elements), so no
+    /// reference in it names `owl:Ontology` or `owl:imports` though its
+    /// triples hold them.
+    pub(crate) fn has_keyword_header(self) -> bool {
+        match self {
+            Syntax::OwlFunctional | Syntax::OwlXml => true,
+            Syntax::Turtle
+            | Syntax::TriG
+            | Syntax::NTriples
+            | Syntax::NQuads
+            | Syntax::JsonLd
+            | Syntax::RdfXml => false,
+        }
     }
 }
 
@@ -177,9 +209,9 @@ pub enum Role {
     /// Subject of a top-level statement: this is where a resource is described.
     Subject,
     /// The subject of a statement that says more about a resource the
-    /// document introduces elsewhere: an OWL Functional axiom about a term
-    /// whose definition (its `Declaration`) is another axiom. Neither a
-    /// definition nor a use of the term.
+    /// document introduces elsewhere: an OWL axiom (Functional syntax or
+    /// OWL/XML) about a term whose definition (its `Declaration`) is another
+    /// axiom. Neither a definition nor a use of the term.
     About,
     Predicate,
     Object,
@@ -215,7 +247,9 @@ pub enum Form {
     A,
     /// The span is near the IRI, not its text: the XML tag of the triple it
     /// is in (RDF/XML), which may spell the IRI through a namespace or an
-    /// entity, or not at all. Nothing slices the text at it or writes there.
+    /// entity, or not at all, or an OWL/XML value with an entity or
+    /// character reference in it. Nothing slices the text at it or writes
+    /// there.
     Anchor,
 }
 
@@ -379,8 +413,8 @@ pub struct SyntaxError {
     /// The diagnostic code: `syntax` for Turtle and its relatives,
     /// `json-syntax` and `jsonld-context` for JSON-LD, `xml-syntax` and
     /// `rdfxml-syntax` for RDF/XML, `ofn-syntax` for OWL Functional syntax,
-    /// and `unsupported-syntax` for a text in an OWL syntax that is not
-    /// read.
+    /// `xml-syntax` and `owx-syntax` for OWL/XML, and `unsupported-syntax`
+    /// for a text in an OWL syntax that is not read.
     pub code: &'static str,
 }
 
@@ -402,6 +436,16 @@ impl SyntaxError {
     /// What is wrong, as shown to the user.
     pub fn message(&self) -> &str {
         &self.message
+    }
+}
+
+/// `s` as an error quotes it: at most 60 characters, then `…`. A name or
+/// value quoted in many errors costs bytes linear in the text.
+pub(crate) fn shown(s: &str) -> Cow<'_, str> {
+    const MAX: usize = 60;
+    match s.char_indices().nth(MAX) {
+        None => Cow::Borrowed(s),
+        Some((i, _)) => Cow::Owned(format!("{}…", &s[..i])),
     }
 }
 
@@ -455,6 +499,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_owl_syntaxes_write_their_header_as_keywords() {
+        let others = [
+            Syntax::Turtle,
+            Syntax::TriG,
+            Syntax::NTriples,
+            Syntax::NQuads,
+            Syntax::JsonLd,
+            Syntax::RdfXml,
+        ];
+        for syntax in others {
+            assert!(!syntax.has_keyword_header(), "{syntax:?}");
+        }
+        assert!(Syntax::OwlFunctional.has_keyword_header());
+        assert!(Syntax::OwlXml.has_keyword_header());
+        // The import sync and the import diagnostics ask the method.
+        let imports = include_str!("../imports/mod.rs");
+        assert!(!imports.contains("Syntax::OwlFunctional"));
+    }
+
+    #[test]
     fn extensions_are_read_in_any_letter_case() {
         for (path, syntax) in [
             ("a/Data.TTL", Syntax::Turtle),
@@ -465,6 +529,8 @@ mod tests {
             ("C:\\w\\ctx.JSONLD", Syntax::JsonLd),
             ("file:///w/onto.ofn", Syntax::OwlFunctional),
             ("b/Onto.OFN", Syntax::OwlFunctional),
+            ("file:///w/onto.owx", Syntax::OwlXml),
+            ("b/Onto.OWX", Syntax::OwlXml),
         ] {
             assert_eq!(Syntax::from_extension(path), Some(syntax), "{path}");
         }
@@ -487,6 +553,20 @@ mod tests {
             Syntax::of(Some("turtle"), "file:///W/DATA.NQ", ""),
             Syntax::NQuads
         );
+        // A `.owx` name is OWL/XML whatever its text says, and is never
+        // taken from its content.
+        let rdf_xml = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>";
+        for uri in ["file:///w/onto.owx", "b/Onto.OWX"] {
+            assert!(!Syntax::by_content(uri), "{uri}");
+            for id in [None, Some("xml"), Some("turtle"), Some("")] {
+                for text in ["", "@prefix ex: <http://example.org/> .", rdf_xml] {
+                    assert_eq!(Syntax::of(id, uri, text), Syntax::OwlXml, "{uri} {id:?}");
+                }
+            }
+            // A language id that names a syntax still wins.
+            assert_eq!(Syntax::of(Some("ofn"), uri, ""), Syntax::OwlFunctional);
+            assert_eq!(Syntax::of(Some("trig"), uri, ""), Syntax::TriG);
+        }
     }
 
     #[test]
@@ -494,9 +574,16 @@ mod tests {
         let xml = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>";
         let functional = "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>)\n";
         let functional_late = "# written by hand\n\n  Ontology (<http://example.org/o>\n)\n";
-        // The OWL syntaxes that are not read stay RDF/XML: its frontend
-        // names them (`unsupported-syntax`).
-        let owl_xml = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\"/>";
+        // OWL/XML, after a BOM, an XML declaration or a DOCTYPE.
+        let owl_xml = [
+            "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\"/>",
+            "\u{feff}<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\"/>",
+            "\u{feff}<?xml version=\"1.0\"?>\n<!DOCTYPE Ontology [\n  <!ENTITY ex \"http://example.org/\">\n]>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/o\" ontologyIRI=\"http://example.org/o\">\n  <Declaration><Class IRI=\"&ex;A\"/></Declaration>\n</Ontology>\n",
+        ];
+        // RDF/XML with a BOM and a DOCTYPE too.
+        let xml_doctype = "\u{feff}<?xml version=\"1.0\"?>\n<!DOCTYPE rdf:RDF [\n  <!ENTITY ex \"http://example.org/\">\n]>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>";
+        // Manchester syntax, which is not read, stays RDF/XML: its frontend
+        // names it (`unsupported-syntax`).
         let manchester = "Prefix: ex: <http://example.org/o#>\nOntology: <http://example.org/o>\n";
         let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c .\n";
         let json = "{\"@id\": \"http://example.org/a\"}";
@@ -516,6 +603,18 @@ mod tests {
                 Some("plaintext"),
             ] {
                 assert_eq!(Syntax::of(id, uri, xml), Syntax::RdfXml, "{uri} {id:?}");
+                assert_eq!(
+                    Syntax::of(id, uri, xml_doctype),
+                    Syntax::RdfXml,
+                    "{uri} {id:?}"
+                );
+                for text in owl_xml {
+                    assert_eq!(
+                        Syntax::of(id, uri, text),
+                        Syntax::OwlXml,
+                        "{uri} {id:?} {text:?}"
+                    );
+                }
                 for text in [functional, functional_late] {
                     assert_eq!(
                         Syntax::of(id, uri, text),
@@ -523,9 +622,11 @@ mod tests {
                         "{uri} {id:?} {text:?}"
                     );
                 }
-                for text in [owl_xml, manchester] {
-                    assert_eq!(Syntax::of(id, uri, text), Syntax::RdfXml, "{uri} {id:?}");
-                }
+                assert_eq!(
+                    Syntax::of(id, uri, manchester),
+                    Syntax::RdfXml,
+                    "{uri} {id:?}"
+                );
                 assert_eq!(Syntax::of(id, uri, turtle), Syntax::Turtle, "{uri} {id:?}");
                 assert_eq!(Syntax::of(id, uri, json), Syntax::JsonLd, "{uri} {id:?}");
                 // Nothing typed yet, or only white space, is RDF/XML, as
@@ -543,16 +644,20 @@ mod tests {
             }
             // A language id that names a syntax wins over the content.
             assert_eq!(Syntax::of(Some("trig"), uri, xml), Syntax::TriG);
+            assert_eq!(Syntax::of(Some("trig"), uri, owl_xml[0]), Syntax::TriG);
+            assert_eq!(
+                Syntax::of(Some("ofn"), uri, owl_xml[0]),
+                Syntax::OwlFunctional
+            );
         }
-        // Any other name keeps the syntax its extension gives, whatever the text.
-        for uri in [
-            "file:///w/a.ttl",
-            "file:///w/a.xml",
-            "file:///w/a.owx",
-            "untitled:1",
-        ] {
+        // Any other name keeps the syntax its extension gives, whatever the
+        // text: `.xml` is not taken, OWL/XML or not (`.owx` is OWL/XML by
+        // name, `extensions_are_read_in_any_letter_case`).
+        for uri in ["file:///w/a.ttl", "file:///w/a.xml", "untitled:1"] {
             assert!(!Syntax::by_content(uri), "{uri}");
-            assert_eq!(Syntax::of(None, uri, xml), Syntax::Turtle, "{uri}");
+            for text in [xml, owl_xml[0], owl_xml[2]] {
+                assert_eq!(Syntax::of(None, uri, text), Syntax::Turtle, "{uri}");
+            }
         }
         assert_eq!(Syntax::of(None, "file:///w/a.jsonld", xml), Syntax::JsonLd);
     }

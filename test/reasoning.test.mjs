@@ -361,6 +361,38 @@ ClassAssertion(ex:Dog ex:rex)
   }
 })
 
+test("an .owx file's axioms and members are reasoned over; a finding in it shows at its axiom's line", async () => {
+  // The ontology of the .ofn test above, in OWL/XML.
+  const owx = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/onto">
+<Prefix name="ex" IRI="http://example.org/"/>
+<Declaration><Class abbreviatedIRI="ex:Cat"/></Declaration>
+<DisjointClasses><Class abbreviatedIRI="ex:Cat"/><Class abbreviatedIRI="ex:Dog"/></DisjointClasses>
+<ClassAssertion><Class abbreviatedIRI="ex:Cat"/><NamedIndividual abbreviatedIRI="ex:rex"/></ClassAssertion>
+<ClassAssertion><Class abbreviatedIRI="ex:Dog"/><NamedIndividual abbreviatedIRI="ex:rex"/></ClassAssertion>
+</Ontology>
+`
+  const w = await session(
+    { "onto.owx": owx, "a.ttl": `${HEAD}ex:tom a ex:Cat .\n` },
+    { initializationOptions: { ...ON, diagnostics: { workspace: true } } },
+  )
+  const a = w.uri("a.ttl")
+  try {
+    w.s.open(a, `${HEAD}ex:tom a ex:Cat , ex:Dog .\n`)
+    const found = turbowl(await until(w.s, a, (d) => turbowl(d).length > 0))
+    assert.deepEqual(found.map((d) => [d.code, d.range.start.line]), [["turbowl/cax-dw", 2]])
+    // The axiom is cited at its line in the .owx file.
+    assert.match(found[0].message, /^onto\.owx:5 {2}ex:Cat owl:disjointWith ex:Dog$/m)
+    // The member described in the .owx file: its finding is the file's own,
+    // at an assertion of it.
+    const inOwx = turbowl(await until(w.s, w.uri("onto.owx"), (d) => turbowl(d).length > 0))
+    assert.ok(inOwx.every((d) => d.code === "turbowl/cax-dw"), JSON.stringify(inOwx))
+    assert.ok(inOwx.every((d) => d.range.start.line >= 5 && d.range.start.line <= 6), JSON.stringify(inOwx))
+  } finally {
+    await w.end()
+  }
+})
+
 test("an .owl file's axioms and members are reasoned over; a finding in it shows at its element's line", async () => {
   const owl = `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"

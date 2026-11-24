@@ -1,0 +1,4 @@
+ DatatypeDefinition(
+   :toddlerAge
+   DataOneOf( "1"^^xsd:integer "2"^^xsd:integer ) 
+ ) 

@@ -53,6 +53,7 @@ const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 fn not_formatted(syntax: Syntax) -> &'static str {
     match syntax {
         Syntax::OwlFunctional => "OWL Functional syntax",
+        Syntax::OwlXml => "OWL/XML",
         Syntax::Turtle
         | Syntax::TriG
         | Syntax::NTriples
@@ -457,7 +458,7 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        // Nothing writes RDF/XML or OWL Functional syntax: such a file is
+        // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML: such a file is
         // neither fixed nor edited by another file's fix.
         let read_only: Vec<bool> = files.iter().map(|f| input.is_read_only(&f.uri)).collect();
         for (f, _) in files
@@ -809,8 +810,8 @@ impl<'a> Input<'a> {
         }
         let a = self.ws.analysis(uri)?;
         if !features::writes(a.parsed.syntax) {
-            // Nothing writes RDF/XML or OWL Functional syntax, whatever it
-            // holds.
+            // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML,
+            // whatever it holds.
             return Some(Formatted {
                 guarantee: "same graph",
                 outcome: FormatOutcome::Refused(not_formatted(a.parsed.syntax).to_string()),
@@ -869,8 +870,8 @@ impl<'a> Input<'a> {
 
     /// Whether the file at `uri` is in a syntax nothing writes
     /// ([`features::writes`]): RDF/XML (an `.owl` or `.rdf` file whose text
-    /// is not Turtle, JSON-LD or OWL Functional syntax) or OWL Functional
-    /// syntax.
+    /// is not Turtle, JSON-LD, OWL Functional syntax or OWL/XML), OWL
+    /// Functional syntax or OWL/XML.
     fn is_read_only(&self, uri: &str) -> bool {
         matches!(self.ws.doc_kind(uri), Some(DocKind::Rdf(s)) if !features::writes(s))
     }
@@ -884,6 +885,7 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
             Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
             Some(DocKind::Rdf(Syntax::OwlFunctional)) => "ofn",
+            Some(DocKind::Rdf(Syntax::OwlXml)) => "owx",
             _ => "turtle",
         }
     }

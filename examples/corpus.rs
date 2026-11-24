@@ -1266,6 +1266,7 @@ fn oxttl_quads(src: &str, syntax: Syntax, base: &str) -> Result<Vec<oxrdf::Quad>
         Syntax::JsonLd => unreachable!("the corpus reads no JSON-LD yet"),
         Syntax::RdfXml => unreachable!("the corpus reads no RDF/XML yet"),
         Syntax::OwlFunctional => unreachable!("the corpus reads no OWL Functional syntax"),
+        Syntax::OwlXml => unreachable!("the corpus reads no OWL/XML"),
     }
 }
 

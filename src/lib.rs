@@ -1,4 +1,4 @@
-//! A language server and command-line checker for RDF 1.2 (Turtle, TriG, N-Triples, N-Quads, JSON-LD) and SPARQL, with SHACL validation.
+//! A language server and command-line checker for RDF 1.2 (Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML), OWL 2 ontologies in Functional syntax and OWL/XML, and SPARQL, with SHACL validation.
 //!
 //! # Modules
 //!
@@ -7,8 +7,9 @@
 //! | [`syntax`] | Turtle, TriG, N-Triples and N-Quads lexer and parser | every feature |
 //! | [`sparql`] | SPARQL documents: tokens, structure, checks, formatting | `ide`, [`analysis`], [`query`], [`shacl`] |
 //! | [`jsonld`] | JSON-LD 1.1 frontend producing the same parse as Turtle | [`analysis`] |
-//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle | [`analysis`], [`imports`] |
-//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the axioms mapped to RDF (the W3C mapping) into the same parse as Turtle, with the exact span of every IRI, and the errors | [`analysis`], [`imports`] |
+//! | `rdfxml` | RDF/XML 1.1 frontend producing the same parse as Turtle; its XML scanner (`rdfxml::xml`) | [`analysis`], [`imports`]; `owx` (the scanner) |
+//! | `ofn` | OWL 2 Functional-Style Syntax frontend: the axioms mapped to RDF (the W3C mapping) into the same parse as Turtle, with the exact span of every IRI, and the errors; the tree, the signature table and the mapping that `owx` shares | [`analysis`], [`imports`], `owx` |
+//! | `owx` | OWL 2 XML Serialization (OWL/XML) frontend: a reader over the `rdfxml` scanner into the `ofn` tree, mapped by the `ofn` mapping | [`analysis`], [`imports`] |
 //! | [`analysis`] | One document's parse, positions and per-IRI indexes | [`features`], `ide`, [`server`] |
 //! | `workspace` | Open documents, indexed files and project prefixes | [`server`], `ide`, [`batch`], [`cli`], [`features`], `diagnose`, [`imports`], [`jsonld`] |
 //! | [`knowledge`] | What the workspace says about each IRI | [`features`] |
@@ -32,8 +33,8 @@
 //! | `layout` | The layout layer the Turtle and SPARQL formatters share: options, token document, triple terms, printer | [`features`], [`sparql`], `ide`, [`batch`]; [`jsonld`] and [`query`] take its options |
 //!
 //! `commands`, `diagnose`, `extensions`, `fetch`, `ide`, `layout`, `ofn`,
-//! `rdfxml`, `reasoning`, `vocab` and `workspace` are private to the crate:
-//! no consumer uses them.
+//! `owx`, `rdfxml`, `reasoning`, `vocab` and `workspace` are private to the
+//! crate: no consumer uses them.
 //!
 //! # Public interface
 //!
@@ -100,6 +101,7 @@
 //! use turtle_lsp::imports::Status as _; // tests
 //! use turtle_lsp::imports::diagnostics_with as _; // tests
 //! use turtle_lsp::imports::functional_to_ntriples as _; // tests
+//! use turtle_lsp::imports::owl_xml_to_ntriples as _; // tests
 //! use turtle_lsp::imports::parse_catalog as _; // tests
 //! use turtle_lsp::imports::rdf_xml_to_ntriples as _; // tests
 //! use turtle_lsp::imports::sniff as _; // tests
@@ -213,6 +215,7 @@ pub(crate) mod layout;
 pub(crate) mod ofn;
 #[doc(hidden)]
 pub mod oracle;
+pub(crate) mod owx;
 pub mod query;
 pub mod rdf;
 pub(crate) mod rdfxml;
@@ -242,6 +245,7 @@ mod boundaries {
         ("src/shacl/", LIBRARIES),
         ("src/rdfxml/", "syntax rdfxml"),
         ("src/ofn/", "syntax ofn"),
+        ("src/owx/", "syntax ofn rdfxml::xml owx"),
     ];
     /// The core files that may name `extensions`: the router and the Run query lens.
     const EXTENSION_USERS: &[&str] = &["src/server.rs", "src/features/lens.rs"];
@@ -265,6 +269,25 @@ mod boundaries {
             }
         }
         assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+
+    /// The OWL/XML frontend names `syntax`, `ofn` and the XML scanner of
+    /// `rdfxml`, and nothing else: not the RDF/XML grammar, not a feature.
+    #[test]
+    fn owx_names_syntax_ofn_and_the_xml_scanner_only() {
+        let errors = |text: &str| {
+            let mut errors = Vec::new();
+            check("src/owx/reader.rs", text, &mut errors);
+            errors.len()
+        };
+        let allowed = "use crate::syntax::Span;\nuse crate::ofn::tree::Document;\nuse crate::rdfxml::xml::{self, Scanner};\nuse super::source::OwlXml;\n";
+        assert_eq!(errors(allowed), 0);
+        assert_eq!(errors("use crate::rdfxml::parse;\n"), 1);
+        assert_eq!(errors("use crate::rdfxml::xmlish::X;\n"), 1);
+        assert_eq!(errors("use crate::features::writes;\n"), 1);
+        assert_eq!(errors("let a = crate::analysis::Analysis::new;\n"), 1);
+        // Test items are not checked.
+        assert_eq!(errors("#[cfg(test)]\nuse crate::features::writes;\n"), 0);
     }
 
     fn check(name: &str, text: &str, errors: &mut Vec<String>) {

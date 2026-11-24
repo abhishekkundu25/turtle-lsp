@@ -1,0 +1,7 @@
+ DatatypeDefinition(
+   :personAge
+   DatatypeRestriction( xsd:integer           
+     xsd:minInclusive "0"^^xsd:integer
+     xsd:maxInclusive "150"^^xsd:integer
+   )
+ ) 

@@ -1,7 +1,8 @@
 //! RDF/XML 1.1: a frontend that turns an RDF/XML document into the same
 //! [`Parsed`] Turtle and JSON-LD produce, so knowledge, SHACL, reasoning,
 //! the CLI and the browser engine need no RDF/XML-specific code. It names
-//! only `syntax`.
+//! only `syntax`. Its scanner, [`xml`], is also the OWL/XML frontend's
+//! (`owx`).
 //!
 //! The stages, one module each:
 //! - [`xml`]: a fault-tolerant XML scanner that keeps the span of every
@@ -11,9 +12,11 @@
 //!   with the exact span of every term, read on past each error.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
-//! not RDF (OWL/XML, Manchester, and Functional given as RDF/XML: a
-//! Functional `.owl` reaches `ofn` instead, and so does an import of one)
-//! gives no triples and one `unsupported-syntax` error that names it. What a [`Parsed`] of RDF/XML
+//! not RDF gives no triples and one `unsupported-syntax` error that names
+//! it: Manchester, which is not read, and Functional syntax or OWL/XML
+//! given as RDF/XML (a Functional or OWL/XML `.owl` reaches `ofn` or `owx`
+//! instead, and so does an import of one), which the error says are read
+//! as such. What a [`Parsed`] of RDF/XML
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
@@ -27,26 +30,31 @@
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
 mod grammar;
-mod xml;
+pub(crate) mod xml;
 
 use crate::syntax::sniff::Sniffed;
 use crate::syntax::{Parsed, Severity, Span, Syntax, SyntaxError};
 
-/// The diagnostic code of a text in an OWL syntax that is not RDF.
+/// The diagnostic code of a text in an OWL syntax that is not RDF: OWL
+/// Manchester syntax, or Functional syntax or OWL/XML given as RDF/XML.
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// What a Functional text given as RDF/XML is said to hold.
 const FUNCTIONAL: &str =
     "holds OWL Functional syntax, which turtle-lsp reads as such, not as RDF/XML";
 
+/// What an OWL/XML text given as RDF/XML is said to hold.
+const OWL_XML: &str = "holds OWL/XML, which turtle-lsp reads as such, not as RDF/XML";
+
 /// Parse an RDF/XML document into the shared parse model. `base` is the
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     let unread = match Sniffed::of(text) {
-        // Read by its own frontend, never given here but by a caller that
-        // names the syntax.
+        // Read by their own frontends, never given here but by a caller
+        // that names the syntax.
         Sniffed::Functional => Some(FUNCTIONAL.to_string()),
+        Sniffed::OwlXml => Some(OWL_XML.to_string()),
         other => other.unread(),
     };
     let Some(unread) = unread else {
@@ -104,17 +112,24 @@ mod tests {
                 "{}",
                 e.message()
             );
-            // The words the import loader uses; Functional syntax is read
-            // there.
-            match Sniffed::of(text).unread() {
-                Some(unread) => {
+            // The words the import loader uses for a syntax that is not
+            // read; the OWL syntaxes that are read are named as such.
+            match name {
+                "OWL Functional syntax" => {
+                    assert_eq!(e.message(), format!("The document {FUNCTIONAL}"));
+                }
+                "OWL/XML" => assert_eq!(
+                    e.message(),
+                    "The document holds OWL/XML, which turtle-lsp reads as such, not as RDF/XML"
+                ),
+                _ => {
+                    let unread = Sniffed::of(text).unread().unwrap();
                     assert_eq!(e.message(), format!("The document {unread}"));
                     assert!(
                         e.message()
                             .ends_with("In Protégé: File > Save as > RDF/XML or Turtle")
                     );
                 }
-                None => assert_eq!(e.message(), format!("The document {FUNCTIONAL}")),
             }
         }
     }

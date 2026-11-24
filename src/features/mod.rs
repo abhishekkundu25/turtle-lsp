@@ -23,12 +23,12 @@ use crate::syntax::Syntax;
 
 /// Whether the features that write text (quick fixes, refactorings,
 /// rename) may edit a document of `syntax`. RDF/XML is read-only: nothing
-/// writes XML, whatever form its references have. OWL Functional syntax is
-/// read-only too: turtle-lsp checks it and writes none of it.
+/// writes XML, whatever form its references have. OWL Functional syntax and
+/// OWL/XML are read-only too: turtle-lsp reads them and writes none of them.
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
     }
 }
 

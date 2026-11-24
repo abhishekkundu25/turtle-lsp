@@ -60,7 +60,7 @@
   "main": "./out/extension.js",
   "browser": "./out/web/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}",
+    "workspaceContains:**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn,owx}",
     "onLanguage:json"
   ],
   "capabilities": {
@@ -424,14 +424,14 @@
       "editor/title": [
         {
           "command": "turtle.showGraph",
-          "when": "turtle.graphAvailable && (resourceLangId == turtle || resourceLangId == trig || resourceLangId == ntriples || resourceLangId == nquads || resourceLangId == sparql || resourceExtname == .jsonld || resourceExtname == .owl || resourceExtname == .rdf)",
+          "when": "turtle.graphAvailable && (resourceLangId == turtle || resourceLangId == trig || resourceLangId == ntriples || resourceLangId == nquads || resourceLangId == sparql || resourceExtname == .jsonld || resourceExtname == .owl || resourceExtname == .rdf || resourceExtname == .owx)",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "turtle.showGraph",
-          "when": "turtle.graphAvailable && (explorerResourceIsFolder || resourceExtname =~ /^\\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld|owl|rdf)$/)",
+          "when": "turtle.graphAvailable && (explorerResourceIsFolder || resourceExtname =~ /^\\.(ttl|turtle|trig|nt|nq|rq|sparql|ru|jsonld|owl|rdf|owx)$/)",
           "group": "navigation@90"
         }
       ]
@@ -443,6 +443,9 @@
       }
     ],
     "configurationDefaults": {
+      "files.associations": {
+        "*.owx": "xml"
+      },
       "[turtle]": {
         "editor.quickSuggestions": {
           "other": "on",

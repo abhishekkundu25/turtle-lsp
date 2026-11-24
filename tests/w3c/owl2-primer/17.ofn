@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :Parent 
+   ObjectUnionOf( :Mother :Father )
+ ) 

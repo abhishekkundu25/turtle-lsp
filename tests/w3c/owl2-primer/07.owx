@@ -1,0 +1,5 @@
+ <ObjectPropertyAssertion>
+   <ObjectProperty IRI="hasWife"/>
+   <NamedIndividual IRI="John"/>
+   <NamedIndividual IRI="Mary"/>
+ </ObjectPropertyAssertion>

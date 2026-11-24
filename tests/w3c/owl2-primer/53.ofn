@@ -1,0 +1,5 @@
+ SameIndividual( :John otherOnt:JohnBrown )
+ SameIndividual( :Mary otherOnt:MaryBrown )
+ EquivalentClasses( :Adult otherOnt:Grownup )
+ EquivalentObjectProperties( :hasChild otherOnt:child )
+ EquivalentDataProperties( :hasAge otherOnt:age )

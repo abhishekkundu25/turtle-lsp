@@ -94,7 +94,8 @@ impl Kept {
                 | Syntax::NTriples
                 | Syntax::NQuads
                 | Syntax::RdfXml
-                | Syntax::OwlFunctional => diagnostics::term_uses(a, k, a.parsed.refs.iter()),
+                | Syntax::OwlFunctional
+                | Syntax::OwlXml => diagnostics::term_uses(a, k, a.parsed.refs.iter()),
             }
         } else {
             Default::default()
@@ -357,7 +358,7 @@ impl Kept {
 fn follows(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => true,
-        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional => false,
+        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
     }
 }
 

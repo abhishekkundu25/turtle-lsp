@@ -1344,6 +1344,202 @@ fn w3c_owl2_functional_inputs_parse() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// A text with every keyword of [`Keyword`] as a construct but `Prefix` and
+/// `Ontology`, which have their own productions, and every slot shape.
+const EVERY_KEYWORD: &str = "Ontology(<http://example.org/o> <http://example.org/o/v>
+Import(<http://example.org/other>)
+Annotation(Annotation(rdfs:comment \"why\") rdfs:label \"o\"@en)
+Declaration(Class(:C))
+Declaration(Datatype(:dt))
+Declaration(ObjectProperty(:op))
+Declaration(DataProperty(:dp))
+Declaration(AnnotationProperty(:ap))
+Declaration(Annotation(:ap _:b) NamedIndividual(:i))
+SubClassOf(ObjectIntersectionOf(:C ObjectUnionOf(:D :E) ObjectComplementOf(:F)) ObjectOneOf(:i _:j))
+SubClassOf(ObjectSomeValuesFrom(ObjectInverseOf(:op) :C) ObjectAllValuesFrom(:op :D))
+SubClassOf(ObjectHasValue(:op :i) ObjectHasSelf(:op))
+SubClassOf(ObjectMinCardinality(1 :op) ObjectMaxCardinality(2 :op :C))
+SubClassOf(ObjectExactCardinality(3 :op :C) DataSomeValuesFrom(:dp :dq DataIntersectionOf(xsd:integer DataUnionOf(xsd:int xsd:long))))
+SubClassOf(DataAllValuesFrom(:dp DataComplementOf(xsd:string)) DataHasValue(:dp \"1\"^^xsd:integer))
+SubClassOf(DataMinCardinality(0 :dp) DataMaxCardinality(1 :dp DataOneOf(\"a\" \"b\"@en)))
+SubClassOf(DataExactCardinality(1 :dp DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer xsd:maxExclusive \"9\"^^xsd:integer)) :C)
+EquivalentClasses(:C :D :E)
+DisjointClasses(:C :D)
+DisjointUnion(:C :D :E)
+SubObjectPropertyOf(:op :oq)
+SubObjectPropertyOf(ObjectPropertyChain(:op ObjectInverseOf(:oq)) :or)
+EquivalentObjectProperties(:op :oq)
+DisjointObjectProperties(:op :oq :or)
+InverseObjectProperties(:op :oq)
+ObjectPropertyDomain(:op :C)
+ObjectPropertyRange(:op :C)
+FunctionalObjectProperty(:op)
+InverseFunctionalObjectProperty(:op)
+ReflexiveObjectProperty(:op)
+IrreflexiveObjectProperty(:op)
+SymmetricObjectProperty(:op)
+AsymmetricObjectProperty(:op)
+TransitiveObjectProperty(ObjectInverseOf(:op))
+SubDataPropertyOf(:dp :dq)
+EquivalentDataProperties(:dp :dq)
+DisjointDataProperties(:dp :dq)
+DataPropertyDomain(:dp :C)
+DataPropertyRange(:dp xsd:integer)
+FunctionalDataProperty(:dp)
+DatatypeDefinition(:dt DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"^^xsd:integer))
+HasKey(:C (:op ObjectInverseOf(:oq)) (:dp))
+HasKey(:C () (:dp))
+SameIndividual(:i :j)
+DifferentIndividuals(:i :j _:k)
+ClassAssertion(:C :i)
+ObjectPropertyAssertion(:op :i _:j)
+NegativeObjectPropertyAssertion(:op :i :j)
+DataPropertyAssertion(:dp :i \"1\"^^xsd:integer)
+NegativeDataPropertyAssertion(:dp _:i \"x\")
+AnnotationAssertion(Annotation(rdfs:comment \"c\") rdfs:label :C \"C\"@en)
+AnnotationAssertion(rdfs:seeAlso _:x <http://example.org/see>)
+AnnotationAssertion(:ap :C _:y)
+SubAnnotationPropertyOf(:ap rdfs:label)
+AnnotationPropertyDomain(:ap :C)
+AnnotationPropertyRange(:ap xsd:string)
+DLSafeRule(Annotation(rdfs:label \"r\") Body(ClassAtom(:C Variable(<urn:swrl:var#x>)) ObjectPropertyAtom(:p Variable(:x) :i) DataPropertyAtom(:dp Variable(:x) Variable(:v)) DataRangeAtom(xsd:integer Variable(:v)) BuiltInAtom(<http://www.w3.org/2003/11/swrlb#greaterThan> Variable(:v) \"18\"^^xsd:integer) SameIndividualAtom(Variable(:x) :j) DifferentIndividualsAtom(_:k Variable(:y)))Head(ClassAtom(ObjectSomeValuesFrom(:p :C) Variable(:x))))
+DLSafeRule(Body() Head())
+)
+";
+
+/// Remove the leaf node `i` from `d`, keeping every other node's subtree.
+fn remove(d: &mut Document, i: usize) {
+    d.nodes.remove(i);
+    for n in &mut d.nodes {
+        if n.next as usize > i {
+            n.next -= 1;
+        }
+    }
+}
+
+/// Every tree the grammar builds from the W3C texts and from a text with
+/// every keyword fills its signatures; a tree broken by hand does not, and
+/// the check names the node.
+#[test]
+fn every_tree_the_grammar_builds_fills_its_signatures() {
+    use super::signature::{Misfit, check};
+    // Every text, read whole: no item is skipped as broken.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/w3c/owl2/fs");
+    let mut texts: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ofn"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    assert_eq!(texts.len(), 78);
+    let every = format!("{HEAD}{EVERY_KEYWORD}");
+    texts.push(every.clone());
+    for text in &texts {
+        let d = clean(text);
+        assert!(d.broken.is_empty() && !d.header_broken, "{text}");
+        assert_eq!(check(&d), Ok(()), "{text}");
+    }
+    let d = clean(&every);
+    let mut seen: Vec<Keyword> = d
+        .nodes
+        .iter()
+        .filter_map(|n| match n.kind {
+            NodeKind::Construct(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    seen.sort_by_key(|k| k.as_str());
+    seen.dedup();
+    let mut want: Vec<Keyword> = Keyword::ALL
+        .iter()
+        .copied()
+        .filter(|k| !matches!(k, Keyword::Prefix | Keyword::Ontology))
+        .collect();
+    want.sort_by_key(|k| k.as_str());
+    assert_eq!(seen, want);
+    for shape in [NodeKind::Group, NodeKind::Integer, NodeKind::NodeId] {
+        assert!(d.nodes.iter().any(|n| n.kind == shape), "{shape:?}");
+    }
+
+    // An item in error is skipped; the whole one beside it is checked.
+    let text = in_ontology("SubClassOf(:A)\nSubClassOf(:A :B)");
+    let d = doc(&text);
+    assert_eq!(d.broken.len(), 1);
+    assert_eq!(check(&d), Ok(()));
+
+    let misfit = |body: &str, edit: &dyn Fn(&mut Document)| {
+        let text = format!("{HEAD}Ontology({body})");
+        let mut d = clean(&text);
+        assert_eq!(check(&d), Ok(()), "{body}");
+        edit(&mut d);
+        let Err(Misfit { node, why }) = check(&d) else {
+            panic!("{body}: the check passes")
+        };
+        (at(&text, d.nodes[node].span).to_string(), why)
+    };
+    // A missing operand, in a nested construct: the construct is named.
+    assert_eq!(
+        misfit("SubClassOf(:A ObjectComplementOf(:B))", &|d| remove(d, 3)),
+        (
+            "ObjectComplementOf(:B)".into(),
+            "'ObjectComplementOf' needs a class expression, found nothing".into()
+        )
+    );
+    assert_eq!(
+        misfit("DisjointClasses(:A :B)", &|d| remove(d, 2)),
+        (
+            "DisjointClasses(:A :B)".into(),
+            "'DisjointClasses' needs at least 2 class expressions, found 1".into()
+        )
+    );
+    // An operand of the wrong kind.
+    assert_eq!(
+        misfit("ClassAssertion(:C :i)", &|d| d.nodes[2].kind =
+            NodeKind::Integer),
+        (
+            "ClassAssertion(:C :i)".into(),
+            "'ClassAssertion' needs an individual, found an integer".into()
+        )
+    );
+    // A construct where an IRI goes.
+    assert_eq!(
+        misfit("DisjointUnion(:C :D :E)", &|d| {
+            d.nodes[1].kind = NodeKind::Construct(Keyword::ObjectComplementOf)
+        }),
+        (
+            "DisjointUnion(:C :D :E)".into(),
+            "'DisjointUnion' needs an IRI, found 'ObjectComplementOf'".into()
+        )
+    );
+    // A shape of Functional notation: a facet without its value.
+    assert_eq!(
+        misfit(
+            "DatatypeDefinition(:dt DatatypeRestriction(xsd:integer xsd:minInclusive \"0\"))",
+            &|d| remove(d, 5)
+        ),
+        (
+            "DatatypeRestriction(xsd:integer xsd:minInclusive \"0\")".into(),
+            "'DatatypeRestriction' needs a facet, found an IRI".into()
+        )
+    );
+    // A subtree that does not end past its node.
+    assert_eq!(
+        misfit("SubClassOf(:A :B)", &|d| d.nodes[1].next = 1),
+        (
+            "SubClassOf(:A :B)".into(),
+            "Node 1 ends at 1, not past itself and by 3".into()
+        )
+    );
+    // At the top level, only an import, an annotation or an axiom.
+    assert_eq!(
+        misfit("Declaration(Class(:C))", &|d| remove(d, 0)),
+        (
+            "Class(:C)".into(),
+            "Expected an import, an ontology annotation or an axiom, found 'Class'".into()
+        )
+    );
+}
+
 /// The OBO files `tools/corpus/fetch-ofn.sh` downloads into
 /// `test/corpus-ofn/`: with `OFN_REAL=1`, each parses with no error, and
 /// maps to RDF (the parse and the mapping timed apart).

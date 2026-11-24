@@ -1,0 +1,4 @@
+ <InverseObjectProperties>
+   <ObjectProperty IRI="hasParent"/>
+   <ObjectProperty IRI="hasChild"/>
+ </InverseObjectProperties>

@@ -1,0 +1,7 @@
+ EquivalentClasses(
+   :ChildlessPerson 
+   ObjectIntersectionOf(
+     :Person 
+     ObjectComplementOf( :Parent )
+   )
+ ) 

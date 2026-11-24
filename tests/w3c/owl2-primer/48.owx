@@ -1,0 +1,5 @@
+ <AnnotationAssertion>
+   <AnnotationProperty IRI="&rdfs;comment"/>
+   <IRI>Person</IRI>                       
+   <Literal>Represents the set of all people.</Literal>
+ </AnnotationAssertion>

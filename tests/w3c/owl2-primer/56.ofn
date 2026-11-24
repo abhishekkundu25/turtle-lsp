@@ -1,0 +1,34 @@
+ SubClassOf(
+   :Father 
+   ObjectIntersectionOf( :Man :Parent )
+ )
+ 
+ EquivalentClasses(
+   :Parent 
+   ObjectSomeValuesFrom(
+     :hasChild 
+     :Person
+   )
+ )
+ 
+ EquivalentClasses( 
+   :NarcisticPerson 
+   ObjectHasSelf( :loves ) 
+ )
+ 
+ DisjointClasses( 
+   :Mother 
+   :Father 
+   :YoungChild 
+ )
+ 
+ SubObjectPropertyOf( 
+   ObjectPropertyChain( :hasFather :hasBrother ) 
+   :hasUncle 
+ )
+ 
+ NegativeObjectPropertyAssertion( 
+   :hasDaughter 
+   :Bill 
+   :Susan 
+ )

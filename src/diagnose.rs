@@ -138,12 +138,12 @@ fn compose(
 }
 
 /// The code of a document in an OWL syntax that is not read (the RDF/XML
-/// frontend's: OWL/XML and Manchester; OWL Functional syntax is read).
+/// frontend's: Manchester; OWL Functional syntax and OWL/XML are read).
 const UNSUPPORTED_SYNTAX: &str = "unsupported-syntax";
 
 /// An `unsupported-syntax` error becomes a warning unless `imported` says
-/// an import is read from the document: a copy of an ontology in OWL/XML
-/// or Manchester syntax beside its RDF/XML or Turtle breaks nothing until
+/// an import is read from the document: a copy of an ontology in
+/// Manchester syntax beside its RDF/XML or Turtle breaks nothing until
 /// something imports it.
 fn soften_unsupported(out: &mut [Diagnostic], imported: impl FnOnce() -> bool) {
     let code = lsp_types::NumberOrString::String(UNSUPPORTED_SYNTAX.into());
@@ -243,6 +243,78 @@ mod tests {
         let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
         assert_eq!(d, alone);
         assert_eq!(d.iter().map(code).collect::<Vec<_>>(), ["ofn-syntax"]);
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
+    }
+
+    /// An OWL/XML document, named `.owx` or written in a `.owl`, is read as
+    /// a Functional one is: its own diagnostics and no `unsupported-syntax`,
+    /// imported or not.
+    #[test]
+    fn an_imported_owl_xml_document_is_read() {
+        let text = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n</Ontology>\n";
+        for uri in ["file:///work/o.owx", "file:///work/o.owl"] {
+            let mut ws = Workspace::new(Vec::new(), Default::default());
+            ws.open_doc(uri.into(), text.into(), 1);
+            let a = ws.analysis(uri).unwrap();
+            assert!(!a.parsed.triples.is_empty(), "{uri}");
+            let k = &*ws.knowledge_mut();
+            let settings = Settings::default();
+            let alone = document(
+                Doc::Rdf(&a),
+                k,
+                Encoding::Utf16,
+                &DiagnosticInputs::new(&settings),
+            );
+            let imported = DiagnosticInputs {
+                imported: &|u| u == uri,
+                ..DiagnosticInputs::new(&settings)
+            };
+            let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
+            assert_eq!(d, alone, "{uri}");
+            assert_eq!(d.iter().map(code).collect::<Vec<_>>(), ["owx-syntax"]);
+            assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
+        }
+    }
+
+    /// A document in an OWL syntax that is not read (Manchester) has one
+    /// `unsupported-syntax`: a warning, or an error when an import is read
+    /// from it.
+    #[test]
+    fn an_unread_syntax_is_an_error_only_when_imported() {
+        let mut ws = Workspace::new(Vec::new(), Default::default());
+        let uri = "file:///work/o.owl";
+        let text =
+            "Prefix: : <http://example.org/o#>\nOntology: <http://example.org/o>\nClass: A\n";
+        ws.open_doc(uri.into(), text.into(), 1);
+        let a = ws.analysis(uri).unwrap();
+        assert!(a.parsed.triples.is_empty());
+        let k = &*ws.knowledge_mut();
+        let settings = Settings::default();
+        let alone = document(
+            Doc::Rdf(&a),
+            k,
+            Encoding::Utf16,
+            &DiagnosticInputs::new(&settings),
+        );
+        assert_eq!(
+            alone.iter().map(code).collect::<Vec<_>>(),
+            ["unsupported-syntax"]
+        );
+        assert_eq!(alone[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert!(
+            alone[0].message.contains("OWL Manchester syntax"),
+            "{}",
+            alone[0].message
+        );
+        let imported = DiagnosticInputs {
+            imported: &|u| u == uri,
+            ..DiagnosticInputs::new(&settings)
+        };
+        let d = document(Doc::Rdf(&a), k, Encoding::Utf16, &imported);
+        assert_eq!(
+            d.iter().map(code).collect::<Vec<_>>(),
+            ["unsupported-syntax"]
+        );
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::ERROR));
     }
 

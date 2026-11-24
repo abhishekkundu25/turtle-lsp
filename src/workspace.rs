@@ -2481,6 +2481,19 @@ pub(crate) mod tests {
                 .any(|t| &*t.p == "http://www.w3.org/2002/07/owl#Annotation"
                     && matches!(&t.o, Node::Iri(i) if &**i == "urn:x"))
         );
+        // OWL/XML's `Ontology` with OWL/XML elements: read as OWL/XML, its
+        // error shown and its terms described in the workspace.
+        let mut ws = Workspace::default();
+        let uri = "file:///w/o.owl";
+        let text = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n</Ontology>\n";
+        ws.open_doc(uri.into(), text.into(), 1);
+        let a = ws.analysis(uri).unwrap();
+        assert_eq!(a.parsed.syntax, Syntax::OwlXml);
+        let codes: Vec<_> = a.parsed.errors.iter().map(|e| e.code).collect();
+        assert_eq!(codes, ["owx-syntax"]);
+        assert!(a.parsed.triples.iter().any(|t| &*t.p == rdf_type
+            && matches!(&t.s, Node::Iri(i) if &**i == "http://example.org/o#A")));
+        assert!(ws.knowledge().is_described("http://example.org/o#A"));
         // N-Triples with no space between the terms.
         let a = doc("file:///w/a.owl", "<urn:s><urn:p><urn:o>.\n");
         assert_eq!(a.parsed.syntax, Syntax::Turtle);

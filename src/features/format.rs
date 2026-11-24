@@ -93,8 +93,8 @@ fn format_with<'t>(
             }
             return crate::jsonld::format::format(text, opts);
         }
-        // Nothing writes RDF/XML or OWL Functional syntax.
-        Syntax::RdfXml | Syntax::OwlFunctional => return None,
+        // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML.
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => return None,
         Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {

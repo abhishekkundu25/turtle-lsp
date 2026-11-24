@@ -1,0 +1,15 @@
+<SubClassOf>
+  <Class IRI="Teenager"/>
+  <DataSomeValuesFrom>
+    <DataProperty IRI="hasAge"/>
+    <DatatypeRestriction>
+      <Datatype IRI="http://www.w3.org/2001/XMLSchema#integer"/>
+      <FacetRestriction facet="http://www.w3.org/2001/XMLSchema#minExclusive">
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">12</Literal>
+      </FacetRestriction>
+      <FacetRestriction facet="http://www.w3.org/2001/XMLSchema#maxInclusive">
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">19</Literal>
+      </FacetRestriction>
+    </DatatypeRestriction>
+  </DataSomeValuesFrom>
+</SubClassOf>

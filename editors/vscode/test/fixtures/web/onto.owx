@@ -1,0 +1,17 @@
+<!-- No XML declaration: VS Code takes a file that starts with one as XML by itself; this one is XML through the extension's default. -->
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/x">
+  <Prefix name="" IRI="http://example.org/x#"/>
+  <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+  <Declaration>
+    <Class abbreviatedIRI=":P"/>
+  </Declaration>
+  <SubClassOf>
+    <Class abbreviatedIRI=":P"/>
+    <Class abbreviatedIRI="nope:Fruit"/>
+  </SubClassOf>
+  <AnnotationAssertion>
+    <AnnotationProperty abbreviatedIRI="rdfs:label"/>
+    <AbbreviatedIRI>:P</AbbreviatedIRI>
+    <Literal>Pear</Literal>
+  </AnnotationAssertion>
+</Ontology>
