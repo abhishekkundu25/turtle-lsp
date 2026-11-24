@@ -71,7 +71,7 @@ impl<'a> Source<'a> for OwlXml<'a> {
                 local: &self.str(written)[colon as usize + 1..],
             },
             Value::Based { base, reference } => IriValue::Based {
-                base: self.str(self.terms.bases[base as usize]),
+                base: self.terms.base(self.text, base),
                 reference: self.str(reference),
             },
         }

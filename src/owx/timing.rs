@@ -1,12 +1,11 @@
-//! The reader's wall-clock tests: a large OWL/XML document is scanned, read
-//! and mapped within its budget, and reading takes time linear in the text
-//! however long a base is. Run them (`timing_*`) alone (`--test-threads=1`)
-//! in release mode. The large document is the Functional `large` shape
-//! written as OWL/XML by the test-only printer.
+//! The reader's wall-clock test: a large OWL/XML document is scanned, read
+//! and mapped within its budget. Run it (`timing_*`) alone
+//! (`--test-threads=1`) in release mode. The large document is the
+//! Functional `large` shape written as OWL/XML by the test-only printer.
 //!
-//! Reading under a long prefix IRI and reading many prefixes are checked by
-//! the work they count ([`work`]), not by the clock, so those two tests run
-//! with the others.
+//! Reading under a long base or a long prefix IRI, and reading many
+//! prefixes, are checked by the work they count ([`work`]), not by the
+//! clock, so those tests run with the others.
 //!
 //! `owx_real_files` reads the OWL/XML that ROBOT writes from the Functional
 //! corpus (`test/corpus-ofn/robot-owx/`, opt-in with `OWX_REAL=1`) and
@@ -14,8 +13,10 @@
 
 use super::source::OwlXml;
 use super::{CODE, printer, reader};
+use crate::ofn::rdf::{IRI_BYTES_PER_BYTE, MIN_IRI_BYTES};
 use crate::rdfxml::xml::{Event, Prolog, Scanner};
 use crate::syntax::Parsed;
+use crate::syntax::SyntaxError;
 use std::time::{Duration, Instant};
 
 /// The time of each stage of one reading of `text`: the scanner alone,
@@ -173,31 +174,13 @@ fn large(bytes: usize) -> String {
 const OPEN: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\"";
 const CLOSE: &str = "</Ontology>\n";
 
-/// The fastest of three readings of `text`, and its errors, each
-/// `owx-syntax` (none from the scanner, which reports at most 100).
-fn fastest_read(text: &str) -> (Duration, usize) {
-    (0..3)
-        .map(|_| {
-            let start = Instant::now();
-            // The terms too are dropped after the clock stops.
-            let (doc, _terms) = reader::read(text, None);
-            let took = start.elapsed();
-            assert!(
-                doc.errors.iter().all(|e| e.code == CODE),
-                "{:?}",
-                doc.errors.iter().find(|e| e.code != CODE)
-            );
-            (took, doc.errors.len())
-        })
-        .min()
-        .unwrap()
-}
-
 /// The work counted on this thread while [`work::counted`] runs: the lib
-/// test binary's allocator, which counts allocations, and the key of the
-/// reader's prefix map, which counts its hashes and comparisons.
+/// test binary's allocator, which counts allocations, the key of the
+/// reader's prefix map, which counts its hashes and comparisons, and the
+/// reader's bases, which count the bytes read through them.
 #[allow(unsafe_code)]
 pub(super) mod work {
+    use super::super::reader::Str;
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
     use std::hash::{Hash, Hasher};
@@ -214,6 +197,8 @@ pub(super) mod work {
         pub hashes: u64,
         /// Prefix names compared.
         pub comparisons: u64,
+        /// Bytes of bases read, resolved or as written ([`base_read`]).
+        pub base_bytes: u64,
     }
 
     thread_local! {
@@ -221,7 +206,7 @@ pub(super) mod work {
         /// the allocator reads it without allocating.
         static ON: Cell<bool> = const { Cell::new(false) };
         static WORK: Cell<Work> = const {
-            Cell::new(Work { allocations: 0, bytes: 0, hashes: 0, comparisons: 0 })
+            Cell::new(Work { allocations: 0, bytes: 0, hashes: 0, comparisons: 0, base_bytes: 0 })
         };
     }
 
@@ -304,12 +289,34 @@ pub(super) mod work {
     }
 
     impl Eq for PrefixKey {}
+
+    /// A base of the reader's `Terms::bases`, or an `xml:base` as written,
+    /// whose reads count their bytes.
+    #[derive(Clone, Copy, Debug)]
+    pub(in crate::owx) struct BaseStr(Str);
+
+    impl BaseStr {
+        /// Its length in bytes, not read.
+        pub(in crate::owx) fn len(self) -> usize {
+            self.0.len()
+        }
+    }
+
+    pub(in crate::owx) fn base_str(s: Str) -> BaseStr {
+        BaseStr(s)
+    }
+
+    /// Where base `b` is, to read it: its bytes count.
+    pub(in crate::owx) fn base_read(b: BaseStr) -> Str {
+        add(|w| w.base_bytes += b.len() as u64);
+        b.0
+    }
 }
 
 /// The work of reading `text` on this thread, and the reading's errors,
 /// each `owx-syntax`. A first reading, not counted, interns the IRIs, so
 /// that the counted one does not depend on what other threads interned.
-fn work_of(text: &str) -> (work::Work, usize) {
+fn work_of(text: &str) -> (work::Work, Vec<SyntaxError>) {
     drop(reader::read(text, None));
     let ((doc, terms), work) = work::counted(|| reader::read(text, None));
     drop(terms);
@@ -318,86 +325,127 @@ fn work_of(text: &str) -> (work::Work, usize) {
         "{:?}",
         doc.errors.iter().find(|e| e.code != CODE)
     );
-    (work, doc.errors.len())
+    (work, doc.errors)
+}
+
+/// One counted reading ([`work_of`]) of a text of `bytes` bytes and `items`
+/// items.
+struct Counted {
+    bytes: usize,
+    items: usize,
+    work: work::Work,
+    errors: Vec<SyntaxError>,
+}
+
+impl Counted {
+    /// Each count of [`work::Work`], per item.
+    fn per_item(&self) -> [(&'static str, f64); 5] {
+        let w = self.work;
+        [
+            ("allocations", w.allocations),
+            ("bytes", w.bytes),
+            ("hashes", w.hashes),
+            ("comparisons", w.comparisons),
+            ("base bytes", w.base_bytes),
+        ]
+        .map(|(name, c)| (name, c as f64 / self.items as f64))
+    }
+}
+
+/// `make(1)` and `make(4)` read and counted, with `want` errors each (by
+/// the number of items `make` gives).
+#[track_caller]
+fn counted_1x_4x(
+    what: &str,
+    make: impl Fn(usize) -> (String, usize),
+    want: impl Fn(usize) -> usize,
+) -> [Counted; 2] {
+    let [small, big] = [1, 4].map(|s| {
+        let (text, items) = make(s);
+        let (work, errors) = work_of(&text);
+        Counted {
+            bytes: text.len(),
+            items,
+            work,
+            errors,
+        }
+    });
+    assert_eq!(
+        (small.errors.len(), big.errors.len()),
+        (want(small.items), want(big.items)),
+        "{what}"
+    );
+    eprintln!(
+        "{what}: {} items {:?} at 1x, {} items {:?} at 4x",
+        small.items, small.work, big.items, big.work
+    );
+    [small, big]
 }
 
 /// `make(1)` and `make(4)` read in linear work, with `want` errors each (by
 /// the number of items `make` gives): per item, the larger makes as many
-/// allocations of as many bytes, and hashes and compares as many prefix
-/// names, as the smaller, within 1%. Returns the work of each. Unlike
-/// [`linear`], this holds on any machine; it misses superlinear work that
-/// neither allocates nor goes through the prefix map.
+/// allocations of as many bytes, hashes and compares as many prefix names,
+/// and reads as many bytes of bases, as the smaller, within 1%. Returns the
+/// work of each. This holds on any machine, unlike a bar on the clock; it
+/// misses superlinear work that neither allocates nor goes through the
+/// prefix map or a base.
 #[track_caller]
 fn linear_work(
     what: &str,
     make: impl Fn(usize) -> (String, usize),
     want: impl Fn(usize) -> usize,
 ) -> (work::Work, work::Work) {
-    let ((small, n_small), (big, n_big)) = (make(1), make(4));
-    let ((w_small, e_small), (w_big, e_big)) = (work_of(&small), work_of(&big));
-    assert_eq!((e_small, e_big), (want(n_small), want(n_big)), "{what}");
-    eprintln!("{what}: {n_small} items {w_small:?} at 1x, {n_big} items {w_big:?} at 4x");
-    let per_item = |w: work::Work, n: usize| {
-        [w.allocations, w.bytes, w.hashes, w.comparisons].map(|c| c as f64 / n as f64)
-    };
-    let (small_per, big_per) = (per_item(w_small, n_small), per_item(w_big, n_big));
-    for ((name, s), b) in ["allocations", "bytes", "hashes", "comparisons"]
-        .iter()
-        .zip(small_per)
-        .zip(big_per)
-    {
+    let [small, big] = counted_1x_4x(what, make, want);
+    for ((name, s), (_, b)) in small.per_item().into_iter().zip(big.per_item()) {
         assert!(
             (b - s).abs() <= s * 0.01,
             "{what}: {b} {name} per item at 4x, {s} at 1x"
         );
     }
-    (w_small, w_big)
+    (small.work, big.work)
 }
 
-/// `make(1)` and `make(4)` read in linear time: the larger in under four
-/// times the smaller plus 5 ms, with `want` errors each (by the number of
-/// IRIs `make` gives). The reader is timed, as the Functional tests time
-/// the grammar: the mapping that follows is the Functional one.
-#[track_caller]
-fn linear(what: &str, make: impl Fn(usize) -> (String, usize), want: impl Fn(usize) -> usize) {
-    let ((small, n_small), (big, n_big)) = (make(1), make(4));
-    let ((t_small, e_small), (t_big, e_big)) = (fastest_read(&small), fastest_read(&big));
-    assert_eq!((e_small, e_big), (want(n_small), want(n_big)), "{what}");
-    eprintln!("{what}: {t_small:?} at 1x, {t_big:?} at 4x");
-    assert!(
-        t_big < t_small * 4 + Duration::from_millis(5),
-        "{what}: {t_big:?} at 4x, {t_small:?} at 1x"
-    );
-}
-
-/// Relative IRIs resolve against a base of 40,000 bytes in time linear in
-/// the text, valid or not: 2,000 distinct relative IRIs, then four times
-/// both. The reader checks each reference; the mapping, which resolves
-/// them, stops at its IRI budget.
+/// Relative IRIs under a base of 40,000 bytes are read in linear work,
+/// valid or not: 2,000 distinct relative IRIs, then four times both
+/// ([`linear_work`]). The reader keeps each reference and the base's place,
+/// and reads the base once, for its shape; one that resolved or copied the
+/// base per IRI would allocate, and read, four times the bytes per item at
+/// 4x. The mapping, which resolves them, stops at its IRI budget.
 #[test]
-fn timing_relative_iris_under_a_long_base_read_in_linear_time() {
+fn relative_iris_under_a_long_base_read_in_linear_work() {
     for bad in ["", "\u{FFF0}"] {
+        let base = |s: usize| format!("http://example.org/{}/", "a".repeat(40_000 * s));
         let make = |s: usize| {
-            let base = format!("http://example.org/{}/", "a".repeat(40_000 * s));
             let items: String = (0..2_000 * s)
                 .map(|k| format!("<Declaration><Class IRI=\"c{k}{bad}\"/></Declaration>\n"))
                 .collect();
             (
-                format!("{OPEN} xml:base=\"{base}\">\n{items}{CLOSE}"),
+                format!("{OPEN} xml:base=\"{}\">\n{items}{CLOSE}", base(s)),
                 2_000 * s,
             )
         };
         let want = |n| if bad.is_empty() { 0 } else { n };
-        linear(&format!("base, {bad:?}"), make, want);
+        let (small, _) = linear_work(&format!("base, {bad:?}"), make, want);
+        // The base was read through its counted place: no reading went
+        // around it.
+        assert!(
+            small.base_bytes >= base(1).len() as u64,
+            "{bad:?}: {small:?}"
+        );
     }
 }
 
 /// Relative IRIs that OWL API reads otherwise, under an `xml:base` of
 /// 40,000 bytes whose path does not end in `/`, each get their warning in
-/// time linear in the text: 2,000 distinct ones, then four times both.
-/// Past a budget of the reader's size, a warning names no IRI.
+/// linear work: 2,000 distinct ones, then four times both. A warning that
+/// names the IRIs reads the base, resolved and as written, and copies it
+/// twice; past a budget of the reader's size, a warning names none. The budget is 16 bytes per byte of
+/// text and 1 MiB more, so the larger text names fewer IRIs per item: per
+/// item, it does at most the work of the smaller (1% more). Without the
+/// budget, every warning would name its IRIs, at four times the bytes per
+/// item at 4x.
 #[test]
-fn timing_relative_iris_owl_api_reads_otherwise_warn_in_linear_time() {
+fn relative_iris_owl_api_reads_otherwise_warn_in_linear_work() {
     let make = |s: usize| {
         let base = format!("http://example.org/{}", "a".repeat(40_000 * s));
         let items: String = (0..2_000 * s)
@@ -408,7 +456,31 @@ fn timing_relative_iris_owl_api_reads_otherwise_warn_in_linear_time() {
             2_000 * s,
         )
     };
-    linear("warnings under a long base", make, |n| n);
+    let what = "warnings under a long base";
+    let [small, big] = counted_1x_4x(what, make, |n| n);
+    for ((name, s), (_, b)) in small.per_item().into_iter().zip(big.per_item()) {
+        assert!(
+            b <= s * 1.01,
+            "{what}: {b} {name} per item at 4x, {s} at 1x"
+        );
+    }
+    for c in [&small, &big] {
+        // The budget named some warnings' IRIs, not all.
+        let named = c
+            .errors
+            .iter()
+            .filter(|e| e.message.contains("OWL API reads <"))
+            .count();
+        assert!((1..c.items).contains(&named), "{what}: {named} named");
+        // The bases read: the one in scope, once for its shape, then the
+        // warnings', resolved and as written, within their budget.
+        let budget = c.bytes * IRI_BYTES_PER_BYTE + MIN_IRI_BYTES;
+        assert!(
+            c.work.base_bytes <= (budget + c.bytes) as u64,
+            "{what}: {:?}, budget {budget}",
+            c.work
+        );
+    }
 }
 
 /// Abbreviated IRIs under a prefix IRI of 40,000 bytes are checked in
