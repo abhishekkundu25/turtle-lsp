@@ -1,4 +1,5 @@
 use super::*;
+use crate::analysis::SparqlAnalysis;
 use std::path::Path;
 
 const QUERY: &str = "SELECT * WHERE { ?s ?p ?o }\n";

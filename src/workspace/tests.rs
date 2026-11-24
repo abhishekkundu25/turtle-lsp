@@ -13,7 +13,9 @@ fn file_uri_name_is_the_decoded_last_segment() {
 }
 
 use super::*;
+use crate::analysis::ParsePath;
 use crate::jsonld::{LoadError, RemoteDocument};
+use crate::syntax::Span;
 use std::path::Path;
 use std::sync::Mutex;
 
