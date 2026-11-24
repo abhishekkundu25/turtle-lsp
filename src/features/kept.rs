@@ -310,14 +310,12 @@ impl Kept {
                 .filter(|(t, _)| *t == Text::Label)
                 .map(|&(_, key)| key)
                 .collect();
-            let under: Vec<Label> = if keys.is_empty() {
-                Vec::new()
-            } else {
-                (self.labels.iter())
-                    .filter(|l| keys.contains(&l.key))
-                    .copied()
-                    .collect()
-            };
+            let under: Vec<Label> = self
+                .labels
+                .iter()
+                .filter(|l| keys.contains(&l.key))
+                .copied()
+                .collect();
             if !under.is_empty() {
                 let mut lc = LabelChecks::new(a, k);
                 let found: Vec<_> = under.iter().map(|l| lc.duplicate(l)).collect();
