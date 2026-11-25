@@ -729,7 +729,7 @@ fn relatives(base: &oxiri::Iri<String>, raw: &str, new: &str) -> Vec<String> {
 }
 
 /// `s` as attribute value text between `quote`s.
-fn escaped(s: &str, quote: u8) -> String {
+pub(crate) fn escaped(s: &str, quote: u8) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

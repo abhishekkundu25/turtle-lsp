@@ -717,6 +717,68 @@ fn functional_imports_declare(text: &str, a: &Analysis, items: &[CompletionItem]
     }
 }
 
+/// The `additional_text_edits` of completion `items` in an RDF/XML document
+/// `text` (a namespace declared on the way), each set once: one insertion of
+/// one attribute, `xmlns:name="namespace"`, after which the document has no
+/// more errors than before. (Not the same errors: where the document used
+/// the prefix undeclared, its elements now read as RDF/XML, and the errors
+/// are capped.)
+fn rdfxml_imports_declare(text: &str, a: &Analysis, items: &[CompletionItem], enc: Encoding) {
+    let mut seen: Vec<&Vec<TextEdit>> = Vec::new();
+    for item in items {
+        let Some(edits) = &item.additional_text_edits else {
+            continue;
+        };
+        if seen.contains(&edits) {
+            continue;
+        }
+        seen.push(edits);
+        let label = &item.label;
+        let [e] = &edits[..] else {
+            panic!("completion '{label}' adds {edits:?}");
+        };
+        let Some(at) = a
+            .offset(enc, e.range.start)
+            .filter(|_| e.range.start == e.range.end)
+        else {
+            panic!("completion '{label}' adds no insertion: {e:?}");
+        };
+        let attr = e.new_text.trim_start_matches([' ', '\t', '\r', '\n']);
+        let declared = attr
+            .strip_prefix("xmlns:")
+            .and_then(|r| r.strip_suffix('"'))
+            .and_then(|r| r.split_once("=\""));
+        if declared.is_none() || attr.contains(['\r', '\n']) {
+            panic!("completion '{label}' adds {:?}", e.new_text);
+        }
+        let at = at as usize;
+        let after = format!("{}{}{}", &text[..at], e.new_text, &text[at..]);
+        let re = Analysis::with_syntax(
+            doc_uri(Syntax::RdfXml).into(),
+            &after,
+            Arc::default(),
+            false,
+            Syntax::RdfXml,
+        );
+        if re.parsed.errors.len() > a.parsed.errors.len() {
+            panic!(
+                "completion '{label}' adds {:?} at byte {at}: errors {:?} become {:?}",
+                e.new_text,
+                a.parsed
+                    .errors
+                    .iter()
+                    .map(|e| e.message())
+                    .collect::<Vec<_>>(),
+                re.parsed
+                    .errors
+                    .iter()
+                    .map(|e| e.message())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 fn completion_items(r: Option<CompletionResponse>) -> Vec<CompletionItem> {
     match r {
         Some(CompletionResponse::Array(v)) => v,
@@ -1856,6 +1918,8 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let items = completion_items(Some(completion::complete(&a, docs, enc, pos)));
             if syntax == Syntax::OwlFunctional {
                 functional_imports_declare(text, &a, &items, enc);
+            } else if syntax == Syntax::RdfXml {
+                rdfxml_imports_declare(text, &a, &items, enc);
             } else {
                 imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), pos);
             }

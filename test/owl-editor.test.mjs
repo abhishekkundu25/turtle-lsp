@@ -6,7 +6,7 @@
 // initializationOptions, as VS Code does) and registers formatting, rename,
 // completion and code actions itself gets formatting and code actions for
 // the other documents only, and rename and completion for these files too
-// (completion answers nothing in RDF/XML yet), so the editor offers no
+// (completion offers RDF/XML names and IRIs), so the editor offers no
 // other writer in them. Every other client gets the
 // static capabilities, as before, and empty answers here but for rename. A
 // client that takes change annotations gets the RDF/XML edits marked to be
@@ -166,13 +166,18 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.ok(errors.length > 0, "no error for broken XML")
   })
 
-  test("the server formats nothing in it, asked anyway, and completes nothing in it yet; a rename edits it, each RDF/XML edit to be confirmed", async () => {
+  test("the server formats nothing in it, asked anyway, and completes its IRIs; a rename edits it, each RDF/XML edit to be confirmed", async () => {
     const at = { textDocument: { uri: w.onto }, position: positionOf(ONTO, 'about="http://example.org/Widg') }
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.onto }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
-    // Completion is registered for it, and answers an empty list.
+    // Completion is registered for it, and offers the subject, replacing the whole value.
     const completion = await attempt(s, "textDocument/completion", at)
-    assert.deepEqual(completion.result?.items ?? completion.result ?? [], [], JSON.stringify(completion).slice(0, 300))
+    const widget = (completion.result?.items ?? []).find((i) => i.label === "http://example.org/Widget")
+    assert.ok(widget, JSON.stringify(completion).slice(0, 300))
+    assert.deepEqual(widget.textEdit.range, {
+      start: positionOf(ONTO, 'about="http://example.org/Widg', 'about="'.length),
+      end: positionOf(ONTO, 'about="http://example.org/Widget'),
+    })
     // The whole value, from inside the .owl.
     const prepared = await s.request("textDocument/prepareRename", at)
     const value = 'about="http://example.org/Widget"'
@@ -247,7 +252,7 @@ describe("a client that does not register features dynamically", () => {
     fs.rmSync(w.dir, { recursive: true, force: true })
   })
 
-  test("gets the static capabilities, no registration, and nothing written in a .owl but by a rename, with plain edits", async () => {
+  test("gets the static capabilities, no registration, and nothing written in a .owl but by a rename, with plain edits, or a completion", async () => {
     for (const p of PROVIDERS) assert.ok(s.init.capabilities[p], p)
     s.open(w.onto, ONTO, "xml")
     await s.diagnosticsFor(w.onto, 10000)
@@ -269,7 +274,7 @@ describe("a client that does not register features dynamically", () => {
     assert.deepEqual(edits, [], JSON.stringify(actions))
     const completion = await attempt(s, "textDocument/completion", at)
     const items = Array.isArray(completion.result) ? completion.result : (completion.result?.items ?? [])
-    assert.deepEqual(items, [], JSON.stringify(completion).slice(0, 300))
+    assert.ok(items.some((i) => i.label === "http://example.org/Widget"), JSON.stringify(completion).slice(0, 300))
   })
 })
 

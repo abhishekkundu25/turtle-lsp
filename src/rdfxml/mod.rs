@@ -32,6 +32,7 @@
 //! [`Form::PName`]: crate::syntax::Form::PName
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
+pub(crate) mod expected;
 mod grammar;
 pub(crate) mod rename;
 pub(crate) mod xml;
