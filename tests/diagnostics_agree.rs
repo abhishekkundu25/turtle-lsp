@@ -102,6 +102,23 @@ fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
         "  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n</Ontology>",
     );
     let bad_xml = owl_xml.replace("</Declaration>", "</Declaratio>");
+    // A misspelt `skos:Concept`, as each syntax writes a reference to it.
+    let misspelt_xml = xml
+        .replace(
+            "xmlns:rdfs=",
+            "xmlns:skos=\"http://www.w3.org/2004/02/skos/core#\"\n         xmlns:rdfs=",
+        )
+        .replace("<rdfs:label>a</rdfs:label>", "<rdf:type rdf:resource=\"http://www.w3.org/2004/02/skos/core#Conceptt\"/><skos:prefLabl>a</skos:prefLabl>");
+    let misspelt_functional = "Prefix(:=<http://example.org/>)\nPrefix(skos:=<http://www.w3.org/2004/02/skos/core#>)\nOntology(<http://example.org/o>\nSubClassOf(:A skos:Conceptt)\nSubClassOf(:A <http://www.w3.org/2004/02/skos/core#Conceptt>)\n)\n";
+    let misspelt_owx = owl_xml
+        .replace(
+            "  <Declaration>",
+            "  <Prefix name=\"skos\" IRI=\"http://www.w3.org/2004/02/skos/core#\"/>\n  <Declaration>",
+        )
+        .replace(
+            "</Ontology>",
+            "  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"skos:Conceptt\"/></SubClassOf>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class IRI=\"http://www.w3.org/2004/02/skos/core#Conceptt\"/></SubClassOf>\n</Ontology>",
+        );
     let manchester = "Prefix: : <http://example.org/>\nOntology: <http://example.org/o>\n";
     let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c ; ex:d \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> , \"x\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n";
     for (name, text, code) in [
@@ -115,12 +132,26 @@ fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
         ("onto.owx", owl_xml, None),
         ("Broken.OWX", broken_owx.as_str(), Some("owx-syntax")),
         ("xml-error.owx", bad_xml.as_str(), Some("xml-syntax")),
+        ("misspelt.rdf", misspelt_xml.as_str(), Some("unknown-term")),
+        ("misspelt.owl", misspelt_functional, Some("unknown-term")),
+        ("misspelt.ofn", misspelt_functional, Some("unknown-term")),
+        ("misspelt.owx", misspelt_owx.as_str(), Some("unknown-term")),
         ("manchester.owl", manchester, Some("unsupported-syntax")),
         ("turtle.owl", turtle, Some("invalid-literal")),
     ] {
         let check = batched(name, text);
         let codes: Vec<&str> = check.iter().filter_map(|d| d["code"].as_str()).collect();
         assert_eq!(codes.first().copied(), code, "{name}: {check:?}");
+        if code == Some("unknown-term") {
+            // Two misspelt references; the "did you mean" in the message,
+            // with no fix data: nothing writes these syntaxes.
+            assert_eq!(codes, ["unknown-term", "unknown-term"], "{name}: {check:?}");
+            for d in &check {
+                let message = d["message"].as_str().unwrap();
+                assert!(message.contains("Did you mean '"), "{name}: {message}");
+                assert_eq!(d.get("data"), None, "{name}: {d}");
+            }
+        }
         for id in ["turtle", "", "xml"] {
             assert_eq!(published_as(name, text, id), check, "{name} as {id:?}");
         }

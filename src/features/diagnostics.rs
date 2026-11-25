@@ -357,15 +357,14 @@ impl Check {
     /// document, which nothing edits. Its syntax errors do (`xml-syntax`,
     /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`, `owx-syntax`); SHACL results
     /// and reasoning findings come from outside these checks. Of the lints,
-    /// those that need no edit (decision 8 of the RDF/XML plan), at the
-    /// exact spans of its references; none offers a fix.
+    /// those of its terms and literals, at the exact spans of its
+    /// references; none offers a fix.
     fn runs_read_only(self) -> bool {
         match self {
             Check::Syntax => true,
-            // `invalid-literal`, `undescribed-term` (its suggestion in the
-            // message only), and of the term uses `deprecated-term` alone
-            // ([`term_uses`]): `unknown-term` is a misspelling, which asks
-            // for an edit.
+            // `invalid-literal`, `undescribed-term` and the term uses
+            // (`unknown-term`, `deprecated-term`; [`term_uses`]), each
+            // suggestion in the message only.
             Check::Literals | Check::UndescribedTerms | Check::TermUses => true,
             // Lints of Turtle prefixes or a JSON-LD context, which RDF/XML
             // has not, the shape lint, and the curation checks.
@@ -763,10 +762,11 @@ pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>>
     }
 }
 
-/// [`Check::TermUses`] for the references `refs` of a Turtle-family or
-/// RDF/XML document: the findings of [`vocabulary_terms`] (in RDF/XML its
-/// `deprecated-term` alone), and those of [`own_deprecations`] (subjects
-/// left out), each in the order of `refs`.
+/// [`Check::TermUses`] for the references `refs` of a Turtle-family,
+/// RDF/XML, OWL Functional or OWL/XML document: the findings of
+/// [`vocabulary_terms`] (in a document nothing edits, without the fix data
+/// of `unknown-term`), and those of [`own_deprecations`] (subjects left
+/// out), each in the order of `refs`.
 pub(crate) fn term_uses<'a>(
     a: &Analysis,
     k: &Knowledge,
@@ -790,11 +790,12 @@ pub(crate) fn term_uses<'a>(
         &mk,
         &mut vocab,
     );
-    // Only the uses that need no edit, where nothing is edited.
+    // Nothing edits the document: the "did you mean" stays in the message,
+    // with no fix to apply.
     if !super::writes(a.parsed.syntax) {
-        vocab.retain(
-            |f| matches!(&f.diagnostic.code, Some(NumberOrString::String(c)) if c == DEPRECATED),
-        );
+        for f in &mut vocab {
+            f.diagnostic.data = None;
+        }
     }
     (vocab, own)
 }
@@ -1287,6 +1288,200 @@ mod tests {
         );
     }
 
+    /// The `unknown-term` warnings of `text`, a document of `syntax` open in
+    /// the workspace, as (the text covered, the message). None carries fix
+    /// data where nothing edits the document.
+    fn unknown_terms(uri: &str, text: &str, syntax: Syntax) -> Vec<(String, String)> {
+        use crate::knowledge::Source;
+        let a = Arc::new(Analysis::with_syntax(
+            uri.into(),
+            text,
+            Arc::default(),
+            true,
+            syntax,
+        ));
+        assert_eq!(a.parsed.syntax, syntax);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let mut k = Knowledge::default();
+        k.set(uri, Source::Open, a.clone());
+        diagnostics(&a, &k, Encoding::Utf8)
+            .into_iter()
+            .filter(|d| d.code == Some(NumberOrString::String("unknown-term".into())))
+            .map(|d| {
+                assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+                assert_eq!(d.data.is_none(), !super::super::writes(syntax), "{d:?}");
+                let start = a.offset(Encoding::Utf8, d.range.start).unwrap() as usize;
+                let end = a.offset(Encoding::Utf8, d.range.end).unwrap() as usize;
+                (text[start..end].to_string(), d.message)
+            })
+            .collect()
+    }
+
+    const SKOS: &str = "http://www.w3.org/2004/02/skos/core#";
+
+    /// The message for a misspelt `skos:` term: `local`, and what it means.
+    fn misspelt(local: &str, meant: &str) -> String {
+        format!("'{local}' is not defined in the skos vocabulary <{SKOS}>. Did you mean '{meant}'?")
+    }
+
+    /// RDF/XML reports a misspelt term at a typed node element's name, a
+    /// property element's, a property attribute's and an `rdf:resource`
+    /// value, with the "did you mean" in the message and no fix. A
+    /// reference whose text is not the term's ([`Form::Anchor`]) gets
+    /// none: an IRI written through an entity, and an unprefixed name in a
+    /// default namespace.
+    #[test]
+    fn rdfxml_reports_a_misspelt_term_where_it_is_written() {
+        let text = "<?xml version=\"1.0\"?>\n\
+            <!DOCTYPE rdf:RDF [<!ENTITY skos \"http://www.w3.org/2004/02/skos/core#\">]>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:skos=\"http://www.w3.org/2004/02/skos/core#\">\n\
+            \x20 <skos:Conceptt rdf:about=\"http://example.org/a\">\n\
+            \x20   <skos:prefLabl>a</skos:prefLabl>\n\
+            \x20   <rdf:type rdf:resource=\"http://www.w3.org/2004/02/skos/core#Conceptt\"/>\n\
+            \x20   <rdf:type rdf:resource=\"&skos;Conceptt\"/>\n\
+            \x20 </skos:Conceptt>\n\
+            \x20 <rdf:Description rdf:about=\"http://example.org/b\" skos:prefLabl=\"b\"/>\n\
+            \x20 <Conceptt xmlns=\"http://www.w3.org/2004/02/skos/core#\" rdf:about=\"http://example.org/c\"/>\n\
+            </rdf:RDF>\n";
+        let concept = misspelt("Conceptt", "Concept");
+        let label = misspelt("prefLabl", "prefLabel");
+        assert_eq!(
+            unknown_terms("file:///w/a.rdf", text, Syntax::RdfXml),
+            [
+                ("skos:Conceptt".to_string(), concept.clone()),
+                ("skos:prefLabl".to_string(), label.clone()),
+                (format!("{SKOS}Conceptt"), concept),
+                ("skos:prefLabl".to_string(), label),
+            ]
+        );
+    }
+
+    /// OWL Functional syntax reports a misspelt term written as a prefixed
+    /// name and as a full IRI, at its text (the brackets with the IRI).
+    #[test]
+    fn functional_syntax_reports_a_misspelt_term_where_it_is_written() {
+        let text = format!(
+            "Prefix(:=<http://example.org/o#>)\n\
+             Prefix(skos:=<{SKOS}>)\n\
+             Ontology(<http://example.org/o>\n\
+             Declaration(Class(:A))\n\
+             SubClassOf(:A skos:Conceptt)\n\
+             SubClassOf(:A <{SKOS}Conceptt>)\n\
+             AnnotationAssertion(skos:prefLabl :A \"a\")\n\
+             )\n"
+        );
+        let concept = misspelt("Conceptt", "Concept");
+        assert_eq!(
+            unknown_terms("file:///w/o.ofn", &text, Syntax::OwlFunctional),
+            [
+                ("skos:Conceptt".to_string(), concept.clone()),
+                (format!("<{SKOS}Conceptt>"), concept),
+                (
+                    "skos:prefLabl".to_string(),
+                    misspelt("prefLabl", "prefLabel")
+                ),
+            ]
+        );
+    }
+
+    /// OWL/XML reports a misspelt term in an `abbreviatedIRI` and an `IRI`
+    /// attribute, and in an `AbbreviatedIRI` and an `IRI` element, at the
+    /// value (without the quotes) or the content; not where it is written
+    /// through an entity, whose text is not the term's.
+    #[test]
+    fn owl_xml_reports_a_misspelt_term_where_it_is_written() {
+        let text = format!(
+            "<?xml version=\"1.0\"?>\n\
+             <!DOCTYPE Ontology [<!ENTITY skos \"{SKOS}\">]>\n\
+             <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+             \x20 <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n\
+             \x20 <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n\
+             \x20 <Prefix name=\"skos\" IRI=\"{SKOS}\"/>\n\
+             \x20 <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n\
+             \x20 <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"skos:Conceptt\"/></SubClassOf>\n\
+             \x20 <SubClassOf><Class abbreviatedIRI=\":A\"/><Class IRI=\"{SKOS}Conceptt\"/></SubClassOf>\n\
+             \x20 <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:seeAlso\"/><AbbreviatedIRI>:A</AbbreviatedIRI><AbbreviatedIRI>skos:Conceptt</AbbreviatedIRI></AnnotationAssertion>\n\
+             \x20 <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:seeAlso\"/><AbbreviatedIRI>:A</AbbreviatedIRI><IRI>{SKOS}Conceptt</IRI></AnnotationAssertion>\n\
+             \x20 <SubClassOf><Class abbreviatedIRI=\":A\"/><Class IRI=\"&skos;Conceptt\"/></SubClassOf>\n\
+             </Ontology>\n"
+        );
+        let concept = misspelt("Conceptt", "Concept");
+        let (pname, iri) = ("skos:Conceptt".to_string(), format!("{SKOS}Conceptt"));
+        assert_eq!(
+            unknown_terms("file:///w/o.owx", &text, Syntax::OwlXml),
+            [
+                (pname.clone(), concept.clone()),
+                (iri.clone(), concept.clone()),
+                (pname, concept.clone()),
+                (iri, concept),
+            ]
+        );
+    }
+
+    /// A correct document of each read-only syntax gets no `unknown-term`:
+    /// not for the syntax's own names (RDF/XML's `rdf:li`, `rdf:_n`,
+    /// `rdf:parseType`, `rdf:datatype`; the element names of OWL/XML), nor
+    /// for the built-in datatypes and facets of OWL 2.
+    #[test]
+    fn a_correct_read_only_document_has_no_unknown_term() {
+        let rdfxml = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n\
+            \x20        xmlns:owl=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/\">\n\
+            \x20 <owl:Ontology rdf:about=\"http://example.org/o\"/>\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/A\">\n\
+            \x20   <rdfs:subClassOf rdf:resource=\"http://www.w3.org/2002/07/owl#Thing\"/>\n\
+            \x20   <rdfs:label xml:lang=\"en\">a</rdfs:label>\n\
+            \x20   <rdfs:comment rdf:parseType=\"Literal\"><b>x</b></rdfs:comment>\n\
+            \x20 </owl:Class>\n\
+            \x20 <rdf:Description rdf:ID=\"l\">\n\
+            \x20   <rdfs:member><rdf:Bag><rdf:li>1</rdf:li><rdf:_2>2</rdf:_2></rdf:Bag></rdfs:member>\n\
+            \x20   <rdfs:seeAlso rdf:parseType=\"Collection\"><rdf:Description rdf:about=\"http://example.org/x\"/></rdfs:seeAlso>\n\
+            \x20   <rdfs:seeAlso rdf:parseType=\"Resource\"><rdfs:label>r</rdfs:label></rdfs:seeAlso>\n\
+            \x20   <rdfs:seeAlso rdf:nodeID=\"n1\"/>\n\
+            \x20   <rdf:value rdf:datatype=\"http://www.w3.org/2001/XMLSchema#integer\">1</rdf:value>\n\
+            \x20   <rdf:value rdf:datatype=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral\">p@en</rdf:value>\n\
+            \x20 </rdf:Description>\n\
+            </rdf:RDF>\n";
+        assert_eq!(unknown_terms("file:///w/a.rdf", rdfxml, Syntax::RdfXml), []);
+        let functional = "Prefix(:=<http://example.org/o#>)\n\
+            Ontology(<http://example.org/o>\n\
+            Declaration(Class(:A))\n\
+            Declaration(ObjectProperty(:p))\n\
+            Declaration(DataProperty(:d))\n\
+            SubClassOf(:A owl:Thing)\n\
+            SubObjectPropertyOf(:p owl:topObjectProperty)\n\
+            DataPropertyRange(:d DatatypeRestriction(xsd:integer xsd:minInclusive \"1\"^^xsd:integer xsd:maxExclusive \"9\"^^xsd:integer))\n\
+            DataPropertyRange(:d DatatypeRestriction(rdf:PlainLiteral rdf:langRange \"en\"))\n\
+            DataPropertyRange(:d DataUnionOf(owl:real owl:rational rdfs:Literal xsd:dateTimeStamp))\n\
+            AnnotationAssertion(rdfs:label :A \"a\"@en)\n\
+            AnnotationAssertion(rdfs:comment :A \"c@en\"^^rdf:PlainLiteral)\n\
+            )\n";
+        assert_eq!(
+            unknown_terms("file:///w/o.ofn", functional, Syntax::OwlFunctional),
+            []
+        );
+        let owl_xml = "<?xml version=\"1.0\"?>\n\
+            <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+            \x20 <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n\
+            \x20 <Prefix name=\"owl\" IRI=\"http://www.w3.org/2002/07/owl#\"/>\n\
+            \x20 <Prefix name=\"rdf\" IRI=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>\n\
+            \x20 <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n\
+            \x20 <Prefix name=\"xsd\" IRI=\"http://www.w3.org/2001/XMLSchema#\"/>\n\
+            \x20 <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n\
+            \x20 <Declaration><DataProperty abbreviatedIRI=\":d\"/></Declaration>\n\
+            \x20 <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"owl:Thing\"/></SubClassOf>\n\
+            \x20 <DataPropertyRange><DataProperty abbreviatedIRI=\":d\"/><DatatypeRestriction><Datatype abbreviatedIRI=\"xsd:integer\"/><FacetRestriction facet=\"http://www.w3.org/2001/XMLSchema#minInclusive\"><Literal datatypeIRI=\"http://www.w3.org/2001/XMLSchema#integer\">1</Literal></FacetRestriction></DatatypeRestriction></DataPropertyRange>\n\
+            \x20 <DataPropertyRange><DataProperty abbreviatedIRI=\":d\"/><DataUnionOf><Datatype abbreviatedIRI=\"owl:real\"/><Datatype abbreviatedIRI=\"owl:rational\"/><Datatype abbreviatedIRI=\"rdf:PlainLiteral\"/></DataUnionOf></DataPropertyRange>\n\
+            \x20 <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal xml:lang=\"en\">a</Literal></AnnotationAssertion>\n\
+            </Ontology>\n";
+        assert_eq!(
+            unknown_terms("file:///w/o.owx", owl_xml, Syntax::OwlXml),
+            []
+        );
+    }
+
     fn codes_of(ds: &[Diagnostic]) -> Vec<String> {
         ds.iter()
             .filter_map(|d| match &d.code {
@@ -1296,13 +1491,13 @@ mod tests {
             .collect()
     }
 
-    /// Decision 8: on RDF/XML run the syntax errors and the lints that need
-    /// no edit (`invalid-literal`, `undescribed-term`, `deprecated-term`),
-    /// none with a fix; not `unknown-term`, the prefix lints or curation.
-    /// SHACL results and reasoning findings come through the composer as
-    /// for any document.
+    /// On RDF/XML run the syntax errors and the lints of its terms and
+    /// literals (`invalid-literal`, `undescribed-term`,
+    /// `unknown-term`, `deprecated-term`), none with a fix; not the prefix
+    /// lints or curation. SHACL results and reasoning findings come through
+    /// the composer as for any document.
     #[test]
-    fn rdfxml_gets_its_syntax_errors_and_the_lints_that_need_no_edit() {
+    fn rdfxml_gets_its_syntax_errors_and_the_lints_of_its_terms() {
         use crate::features::rdfxml_fixture as fx;
         let uri = "file:///w/onto.owl";
         let k = Knowledge::default();
@@ -1321,20 +1516,36 @@ mod tests {
         ] {
             assert!(linted.iter().any(|c| c == code), "{code}: {linted:?}");
         }
-        assert_eq!(codes(&fx::written(uri, fx::TURTLE)), ["invalid-literal"]);
+        assert_eq!(
+            codes(&fx::written(uri, fx::TURTLE)),
+            ["unknown-term", "invalid-literal"]
+        );
         let read = fx::read(uri);
         let found = diagnostics_with(&read, &k, Encoding::Utf8, &opts);
-        assert_eq!(codes_of(&found), ["invalid-literal"]);
-        // At the literal's text, between the tags.
-        assert_eq!(found[0].range.start, lsp_types::Position::new(11, 66));
+        assert_eq!(codes_of(&found), ["unknown-term", "invalid-literal"]);
+        // The misspelt `rdfs:labl` at its element name, the "did you mean"
+        // in the message only; the literal at its text, between the tags.
+        assert_eq!(
+            found[0].range,
+            lsp_types::Range::new(
+                lsp_types::Position::new(10, 5),
+                lsp_types::Position::new(10, 14)
+            )
+        );
+        assert!(
+            found[0].message.ends_with("Did you mean 'label'?"),
+            "{found:?}"
+        );
+        assert_eq!(found[1].range.start, lsp_types::Position::new(11, 66));
         assert!(found.iter().all(|d| d.data.is_none()));
         let broken = fx::TEXT.replace("</ex:A>", "</ex:B>");
         for (text, want) in [
-            // Read on past the error: the literal after it is still checked;
-            // the second error (`ex:A` not closed) is past the cap.
+            // Read on past the error: the term and the literal after it are
+            // still checked; the second error (`ex:A` not closed) is past
+            // the cap.
             (
                 broken.as_str(),
-                &["xml-syntax", "syntax", "invalid-literal"][..],
+                &["xml-syntax", "syntax", "unknown-term", "invalid-literal"][..],
             ),
             ("Prefix: : <http://example.org/o#>", &["unsupported-syntax"]),
         ] {
@@ -1386,6 +1597,7 @@ mod tests {
             [
                 "xml-syntax",
                 "xml-syntax",
+                "unknown-term",
                 "invalid-literal",
                 "shacl-violation",
                 "turbowl/cax-dw"
