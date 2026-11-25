@@ -35,16 +35,18 @@ export const JSONLD_PATTERN = "**/*.jsonld"
 
 // RDF/XML files keep VS Code's XML language too. The server reads them by
 // their content, and only a rename writes them: asked with OPT_IN, it
-// registers formatting, completion and code actions for the other documents
-// only, so VS Code lists no turtle-lsp formatter for XML files, and rename
-// for these files too (its selector has this pattern; the server's
-// RDFXML_PATTERN in src/server/registrations.rs must equal it).
+// registers formatting and code actions for the other documents only, so
+// VS Code lists no turtle-lsp formatter for XML files, and rename and
+// completion for these files too (their selectors have this pattern; the
+// server's RDFXML_PATTERN in src/server/registrations.rs must equal it).
 export const RDFXML_PATTERN = "**/*.{owl,rdf}"
 
 // OWL/XML files keep VS Code's XML language too (through the manifest's
 // `files.associations` default, as VS Code's XML language does not list
 // `.owx`). The server reads them by their name and content and does not
-// write them: it registers nothing that writes for them, rename included.
+// write them: it registers nothing that writes for them, rename included,
+// and completion for them (its selector has this pattern; the server's
+// OWX_PATTERN in src/server/registrations.rs must equal it).
 export const OWX_PATTERN = "**/*.owx"
 
 /**

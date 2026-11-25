@@ -36,13 +36,18 @@ pub(crate) fn writes(syntax: Syntax) -> bool {
 
 /// Whether completion offers anything in a document of `syntax`. Everything
 /// it offers is a keyword or a prefixed name: N-Triples and N-Quads allow
-/// neither. RDF/XML and OWL/XML get none. OWL Functional syntax gets its
-/// keywords and terms, and completion is the one feature that edits it: an
-/// accepted term may add its `Prefix( … )` declaration.
+/// neither. OWL Functional syntax gets its keywords and terms, and
+/// completion is the one feature that edits it: an accepted term may add its
+/// `Prefix( … )` declaration. RDF/XML and OWL/XML get none yet: each has its
+/// arm here and its module in `completion` (`completion::rdfxml`,
+/// `completion::owx`), which answers nothing.
 pub(crate) fn completes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::JsonLd | Syntax::OwlFunctional => true,
-        Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml | Syntax::OwlXml => false,
+        Syntax::NTriples | Syntax::NQuads => false,
+        Syntax::RdfXml => false,
+        // RdfXml above offers through `completion::rdfxml`, OwlXml below through `completion::owx`.
+        Syntax::OwlXml => false,
     }
 }
 

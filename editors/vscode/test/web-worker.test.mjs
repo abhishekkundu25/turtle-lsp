@@ -89,7 +89,7 @@ test("a client that can register features but does not opt in gets them in the i
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
 })
 
-test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf and .owx out but for rename, which leaves .owx out (and .ofn, but for completion)", { skip }, async () => {
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf, .owx and .ofn out but for completion, which takes them all, and rename, which takes .owl and .rdf", { skip }, async () => {
   const real = await createEngine(bytes)
   let crashNext = false
   const engine = {
@@ -120,12 +120,16 @@ test("the features the server writes with are registered after the initialize an
   for (const x of regs) {
     const selector = x.registerOptions.documentSelector
     const text = JSON.stringify(selector)
-    assert.doesNotMatch(text, /owx/, x.method)
-    // Completion is the one feature OWL Functional syntax gets.
-    if (x.method === "textDocument/completion") assert.match(text, /"language":"ofn"/)
-    else assert.doesNotMatch(text, /ofn/, x.method)
-    if (x.method !== "textDocument/rename") assert.doesNotMatch(text, /owl|rdf|xml/, x.method)
-    else assert.deepEqual(selector.filter((f) => /owl|rdf|xml/.test(JSON.stringify(f))), [{ pattern: "**/*.{owl,rdf}" }])
+    const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
+    // Completion is asked in OWL Functional, RDF/XML and OWL/XML files;
+    // rename in RDF/XML ones; nothing else in any of them.
+    if (x.method === "textDocument/completion") {
+      assert.match(text, /"language":"ofn"/)
+      assert.deepEqual(xml, [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }])
+    } else {
+      assert.doesNotMatch(text, /ofn/, x.method)
+      assert.deepEqual(xml, x.method === "textDocument/rename" ? [{ pattern: "**/*.{owl,rdf}" }] : [], x.method)
+    }
   }
   // A crash restarts the server, which registers again: the client accepted
   // them, so nothing is sent.

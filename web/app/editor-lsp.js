@@ -22,9 +22,10 @@ export function languageOf(path) {
 // The languages whose documents the server reads and never writes.
 export const READ_ONLY = ["xml", "ofn"]
 
-// The read-only languages the server completes all the same: in OWL
-// Functional syntax, an accepted term may add its `Prefix( … )` line.
-export const COMPLETED = ["ofn"]
+// The read-only languages the server is asked to complete all the same: in
+// OWL Functional syntax, an accepted term may add its `Prefix( … )` line;
+// in XML (RDF/XML, OWL/XML) the server answers by the syntax it reads.
+export const COMPLETED = ["ofn", "xml"]
 
 // Monaco's JSON support keeps only what the server does not do: colours,
 // brackets and selection. Its own checks, hovers and completion would
@@ -243,8 +244,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // OWL/XML or OWL Functional syntax: such a model gets the features that
   // read (and an xml model rename, which the server refuses in an OWL/XML
   // one), without formatting, code actions, semantic tokens (Monaco's
-  // colours stay) and inlay hints, and without completion but in OWL
-  // Functional syntax (COMPLETED).
+  // colours stay) and inlay hints, with completion (COMPLETED).
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)
     const renames = lang !== "ofn"

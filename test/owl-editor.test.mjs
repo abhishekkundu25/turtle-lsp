@@ -4,9 +4,10 @@
 // an IRI it uses edits it too, and one can start in it (`rename.rdfXml` off:
 // neither). A client that opts in (`registerOutsideRdfXml` in
 // initializationOptions, as VS Code does) and registers formatting, rename,
-// completion and code actions itself gets formatting, completion and code
-// actions for the other documents only, and rename for these files too, so
-// the editor offers no other writer in them. Every other client gets the
+// completion and code actions itself gets formatting and code actions for
+// the other documents only, and rename and completion for these files too
+// (completion answers nothing in RDF/XML yet), so the editor offers no
+// other writer in them. Every other client gets the
 // static capabilities, as before, and empty answers here but for rename. A
 // client that takes change annotations gets the RDF/XML edits marked to be
 // confirmed.
@@ -96,7 +97,7 @@ describe("a client that opts in and registers features dynamically", () => {
     fs.rmSync(w.dir, { recursive: true, force: true })
   })
 
-  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced; rename for RDF/XML too", async () => {
+  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced; rename for RDF/XML too, completion for RDF/XML and OWL/XML", async () => {
     for (const p of PROVIDERS) assert.equal(s.init.capabilities[p], undefined, p)
     // What reads stays static, and applies to .owl too.
     for (const p of ["hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider", "foldingRangeProvider"]) {
@@ -114,16 +115,17 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.deepEqual(features.map((r) => r.method).sort(), [...FEATURES].sort())
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
-      // Completion's also has OWL Functional syntax's language, rename's
-      // the RDF/XML pattern.
-      const ofn = r.method === "textDocument/completion" ? ["ofn"] : []
+      // Completion's also has OWL Functional syntax's language and the
+      // RDF/XML and OWL/XML patterns, rename's the RDF/XML pattern.
+      const completion = r.method === "textDocument/completion"
       const rename = r.method === "textDocument/rename"
+      const added = completion ? ["ofn", "**/*.{owl,rdf}", "**/*.owx"] : rename ? ["**/*.{owl,rdf}"] : []
       assert.deepEqual(
         selector.map((f) => f.language ?? f.pattern),
-        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...ofn, ...(rename ? ["**/*.{owl,rdf}"] : [])],
+        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...added],
         r.method,
       )
-      if (!rename) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)
+      if (!rename && !completion) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)
     }
     const options = Object.fromEntries(features.map((r) => [r.method, r.registerOptions]))
     assert.equal(options["textDocument/rename"].prepareProvider, true)
@@ -164,10 +166,13 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.ok(errors.length > 0, "no error for broken XML")
   })
 
-  test("the server formats nothing in it, asked anyway; a rename edits it, each RDF/XML edit to be confirmed", async () => {
+  test("the server formats nothing in it, asked anyway, and completes nothing in it yet; a rename edits it, each RDF/XML edit to be confirmed", async () => {
     const at = { textDocument: { uri: w.onto }, position: positionOf(ONTO, 'about="http://example.org/Widg') }
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.onto }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
+    // Completion is registered for it, and answers an empty list.
+    const completion = await attempt(s, "textDocument/completion", at)
+    assert.deepEqual(completion.result?.items ?? completion.result ?? [], [], JSON.stringify(completion).slice(0, 300))
     // The whole value, from inside the .owl.
     const prepared = await s.request("textDocument/prepareRename", at)
     const value = 'about="http://example.org/Widget"'

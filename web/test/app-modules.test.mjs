@@ -117,7 +117,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   for (const name of ["onto.owl", "dir/data.RDF", "a.owx", "dir/O.OWX"]) assert.equal(languageOf(name), "xml", name)
   for (const name of ["onto.ofn", "dir/O.OFN"]) assert.equal(languageOf(name), "ofn", name)
   assert.deepEqual(READ_ONLY, ["xml", "ofn"])
-  assert.deepEqual(COMPLETED, ["ofn"])
+  assert.deepEqual(COMPLETED, ["ofn", "xml"])
   assert.equal(languageOf("carol.jsonld"), "json")
   assert.equal(languageOf("a.ttl"), "turtle")
   // The file tree's badge and the status bar name the language.
@@ -128,7 +128,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   assert.match(editor, /\/\\\.owx\$\/i\.test\(file\) \? "OWL\/XML" : \{/)
   // connect() registers the server's features on its languages, JSON, XML
   // and OWL Functional syntax; on the last two, only those that read, and
-  // completion in OWL Functional syntax, and on XML rename too.
+  // completion, and on XML rename too.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
   assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n\s*const renames = lang !== "ofn"\n/)
   const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()

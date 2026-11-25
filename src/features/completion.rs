@@ -9,6 +9,7 @@
 //!   ([`super::embedded`]).
 //! - In OWL Functional syntax: the keywords and the terms of the kinds the
 //!   grammar takes at the cursor (`ofn`).
+//! - In OWL/XML and RDF/XML: nothing yet (`owx`, `rdfxml`).
 //!
 //! Candidates are ranked by position: after `a` classes come first, in predicate
 //! position properties come first. Before that, [`ranking`] puts what the
@@ -22,7 +23,9 @@
 
 mod jsonld;
 mod ofn;
+mod owx;
 pub(crate) mod ranking;
+mod rdfxml;
 
 // `ranking` and the other modules of this directory write IRIs through here.
 pub(crate) use crate::syntax::names::shorten;
@@ -32,7 +35,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
 use crate::syntax::names::{is_pn_chars, is_pn_local};
-use crate::syntax::{Family, Iri, PrefixMap, RDF_TYPE, Role, Span};
+use crate::syntax::{Iri, PrefixMap, RDF_TYPE, Role, Span, Syntax};
 use crate::vocab::{TermKind, VOCABS, split_namespace};
 use lsp_types::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -111,12 +114,14 @@ pub(crate) fn complete_in(
         return CompletionResponse::Array(vec![]);
     };
     let offset = offset as usize;
-    match a.parsed.syntax.family() {
-        Family::JsonLd => return jsonld::complete(a, k, enc, offset),
-        // Of the read-only syntaxes, only OWL Functional syntax completes
-        // (`completes`).
-        Family::ReadOnly => return ofn::complete(a, k, enc, offset, snippets),
-        Family::Turtle => {}
+    // JSON-LD and the read-only syntaxes each have their module; the Turtle
+    // family goes on below, on the tokens.
+    match a.parsed.syntax {
+        Syntax::JsonLd => return jsonld::complete(a, k, enc, offset),
+        Syntax::OwlFunctional => return ofn::complete(a, k, enc, offset, snippets),
+        Syntax::OwlXml => return owx::complete(a, k, enc, offset, snippets),
+        Syntax::RdfXml => return rdfxml::complete(a, k, enc, offset, snippets),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
         return r;
