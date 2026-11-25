@@ -239,3 +239,66 @@ ex:c a schema:Comment ; ex:unit unit:BAR_A .
     ],
   )
 })
+
+test("RDF/XML, OWL Functional syntax and OWL/XML report a misspelt term at its text, with no fix", async () => {
+  const skos = "http://www.w3.org/2004/02/skos/core#"
+  const message = `'Conceptt' is not defined in the skos vocabulary <${skos}>. Did you mean 'Concept'?`
+  const files = [
+    [
+      "misspelt.owl",
+      "xml",
+      `<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:skos="${skos}">
+  <skos:Conceptt rdf:about="http://example.org/a"/>
+  <rdf:Description rdf:about="http://example.org/b"><rdf:type rdf:resource="${skos}Conceptt"/></rdf:Description>
+</rdf:RDF>
+`,
+      ["skos:Conceptt", `${skos}Conceptt`],
+    ],
+    [
+      "misspelt.ofn",
+      "ofn",
+      `Prefix(:=<http://example.org/>)
+Prefix(skos:=<${skos}>)
+Ontology(<http://example.org/o>
+SubClassOf(:A skos:Conceptt)
+SubClassOf(:B <${skos}Conceptt>)
+)
+`,
+      ["skos:Conceptt", `<${skos}Conceptt>`],
+    ],
+    [
+      "misspelt.owx",
+      "xml",
+      `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
+  <Prefix name="" IRI="http://example.org/"/>
+  <Prefix name="skos" IRI="${skos}"/>
+  <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="skos:Conceptt"/></SubClassOf>
+  <SubClassOf><Class abbreviatedIRI=":B"/><Class IRI="${skos}Conceptt"/></SubClassOf>
+</Ontology>
+`,
+      ["skos:Conceptt", `${skos}Conceptt`],
+    ],
+  ]
+  for (const [name, languageId, text, written] of files) {
+    const uri = uriOf(path.join(ws, name))
+    s.open(uri, text, languageId)
+    const w = unknown(await s.diagnosticsFor(uri))
+    const lines = text.split("\n")
+    const covered = (r) => lines[r.start.line].slice(r.start.character, r.end.character)
+    assert.deepEqual(
+      w.map((d) => [covered(d.range), d.severity, d.message]),
+      written.map((t) => [t, 2, message]),
+      name,
+    )
+    // The "did you mean" is in the message only: nothing writes these files.
+    assert.ok(w.every((d) => d.data === undefined), JSON.stringify(w))
+    const actions = await s.request("textDocument/codeAction", {
+      textDocument: { uri },
+      range: w[0].range,
+      context: { diagnostics: w },
+    })
+    assert.deepEqual(actions ?? [], [], name)
+  }
+})
