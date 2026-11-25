@@ -33,8 +33,9 @@
 //! (`<Class IRI="…"/>` a class, a `datatypeIRI` a datatype); an `IRI` or
 //! `AbbreviatedIRI` element takes any. Nothing is expected in a comment, the
 //! prolog, an end tag, an attribute name, a literal's text, any other value
-//! (a `nodeID`, a prefix's), a value cut by a line break, or outside an
-//! `Ontology` in OWL's namespace.
+//! (a `nodeID`, a prefix's), a value cut by a line break, an `IRI`
+//! element's text past its first run, or outside an `Ontology` in OWL's
+//! namespace.
 
 pub(crate) use super::reader::{Element, Leaf};
 use super::reader::{Phase, element, takes};
@@ -60,8 +61,9 @@ pub(crate) enum Expected {
     Elements(Names),
     /// An IRI.
     Iri {
-        /// What its edit replaces: a value between its quotes, an
-        /// element's text without its white space; up to a line break.
+        /// What its edit replaces: a value between its quotes (one with no
+        /// closing quote to where the scanner ends it), an element's text
+        /// without its white space; up to a line break.
         span: Span,
         iris: Iris,
         form: Form,
@@ -85,9 +87,9 @@ pub(crate) enum Form {
     Full,
     /// `prefix:local`, with a prefix a `<Prefix>` element declares (none is
     /// built in): a new one is declared after the others, or after the
-    /// start tag of the root, which ends at `root` ([`declare`]).
+    /// start tag of the root, `root` ([`declare`]).
     Abbreviated {
-        root: u32,
+        root: Span,
     },
 }
 
@@ -102,7 +104,7 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
     let form = |abbreviated: bool| {
         if abbreviated {
             Form::Abbreviated {
-                root: root.tag.span.end,
+                root: root.tag.span,
             }
         } else {
             Form::Full
@@ -129,7 +131,10 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
         }
         At::Value(v) => {
             let (iris, abbreviated) = value(&v.tag.name, &v.attr.name)?;
-            let span = typed(text, v.span, offset)?;
+            // A value with no closing quote runs to where the scanner ends
+            // it (a `<`, the end of the text): the reader reads it whole.
+            let end = v.span.end.max(v.attr.value.span.end);
+            let span = typed(text, Span::new(v.span.start, end), offset)?;
             Some(Expected::Iri {
                 span,
                 iris,
@@ -137,7 +142,13 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
             })
         }
         At::Text(span) => {
-            let abbreviated = match owl(&inner.last()?.tag.name)? {
+            let e = inner.last()?;
+            // Its first run only, after its start tag: past a wrong end tag
+            // the element is still open, and its text is all its runs.
+            if span.start != e.tag.span.end {
+                return None;
+            }
+            let abbreviated = match owl(&e.tag.name)? {
                 Element::Leaf(Leaf::Iri) => false,
                 Element::Leaf(Leaf::AbbreviatedIri) => true,
                 _ => return None,
@@ -388,21 +399,32 @@ pub(crate) fn form(el: Element) -> (&'static [&'static str], bool) {
 }
 
 /// The insertion that declares the prefix `name` as `ns`: a `<Prefix>`
-/// element on a line of its own after the last one the reader declared,
-/// indented as it is; with none, after the root's start tag, which ends at
-/// `root`, indented as the line after it.
+/// element, in the prefix form of the root's name (`<owl:Prefix>` in
+/// `<owl:Ontology>`), on a line of its own after the last one the reader
+/// declared, indented as it is; with none, after the root's start tag
+/// `root`, indented as the line after it. Only for a name [`declarable`]
+/// says yes to.
 pub(crate) fn declare(
     text: &str,
     parsed: &Parsed,
-    root: u32,
+    root: Span,
     name: &str,
     ns: &str,
 ) -> (u32, String) {
+    let tag = text
+        .get(root.start as usize + 1..root.end as usize)
+        .unwrap_or("");
+    let mut qualified = tag.split(|c: char| WHITE.contains(&c) || c == '>' || c == '/');
+    let owl = match qualified.next().and_then(|q| q.rsplit_once(':')) {
+        Some((p, _)) => format!("{p}:"),
+        None => String::new(),
+    };
     let element = format!(
-        "<Prefix name=\"{}\" IRI=\"{}\"/>",
+        "<{owl}Prefix name=\"{}\" IRI=\"{}\"/>",
         escaped(name),
         escaped(ns)
     );
+    let root = root.end;
     let (at, indent) = match parsed.prefixes.last() {
         Some(p) => {
             let start = p.span.start as usize;
@@ -419,6 +441,50 @@ pub(crate) fn declare(
         }
     };
     (at, format!("{}{indent}{element}", newline(text)))
+}
+
+/// Whether a `<Prefix>` element may be added to `text` for a prefix: `None`
+/// for none at all, when the root's start tag `root` is not closed by `>`
+/// (a `<` in a value cut it, and the element would go into the value);
+/// else the names it may not be added for, those a `<Prefix>` element of
+/// `text` names, misplaced or with an error included: a second one would be
+/// declared twice.
+pub(crate) fn declarable(text: &str, root: Span) -> Option<Vec<&str>> {
+    if !text
+        .get(..root.end as usize)
+        .is_some_and(|t| t.ends_with('>'))
+    {
+        return None;
+    }
+    let named = text.match_indices("Prefix").filter_map(|(i, _)| {
+        // `<Prefix` or `<p:Prefix`, then its attributes up to `>`.
+        let head = &text[..i];
+        let head = head.strip_suffix(':').map_or(head, |h| {
+            h.trim_end_matches(|c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        });
+        if !head.ends_with('<') {
+            return None;
+        }
+        let tag = &text[i + "Prefix".len()..];
+        let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+        attribute(tag, "name")
+    });
+    Some(named.collect())
+}
+
+/// The value of attribute `name` in `attrs`, the text of a start tag after
+/// its name, as written.
+fn attribute<'t>(attrs: &'t str, name: &str) -> Option<&'t str> {
+    attrs.match_indices(name).find_map(|(i, _)| {
+        if !attrs[..i].ends_with(WHITE) {
+            return None;
+        }
+        let rest = attrs[i + name.len()..].trim_start_matches(WHITE);
+        let rest = rest.strip_prefix('=')?.trim_start_matches(WHITE);
+        let quote = rest.chars().next().filter(|&c| c == '"' || c == '\'')?;
+        let value = &rest[1..];
+        value.find(quote).map(|end| &value[..end])
+    })
 }
 
 /// `s` as XML text or an attribute value between either quote.
@@ -746,8 +812,11 @@ mod tests {
 
     #[test]
     fn a_value_takes_the_iris_of_its_element_s_kind() {
-        let root = HEAD.find(">\n  <Prefix").unwrap() as u32 + 1;
-        let abbreviated = Form::Abbreviated { root };
+        let start = HEAD.find("<Ontology").unwrap() as u32;
+        let end = HEAD.find(">\n  <Prefix").unwrap() as u32 + 1;
+        let abbreviated = Form::Abbreviated {
+            root: Span::new(start, end),
+        };
         let of = |e| Iris::Of(vec![e]);
         let cases = [
             (
@@ -855,7 +924,8 @@ mod tests {
         let check = |text: &str, want: &str| {
             let p = parsed(text);
             let ontology = text.find("<Ontology").unwrap();
-            let root = (ontology + text[ontology..].find('>').unwrap() + 1) as u32;
+            let end = ontology + text[ontology..].find('>').unwrap() + 1;
+            let root = Span::new(ontology as u32, end as u32);
             let (at, new) = declare(
                 text,
                 &p,
@@ -881,11 +951,18 @@ mod tests {
             &body[..body.len() - 12]
         );
         let p = parsed(&late);
-        let (at, _) = declare(&late, &p, 0, "skos", "http://www.w3.org/2004/02/skos/core#");
+        let root = Span::new(0, 0);
+        let (at, _) = declare(
+            &late,
+            &p,
+            root,
+            "skos",
+            "http://www.w3.org/2004/02/skos/core#",
+        );
         assert_eq!(at as usize, HEAD.len() - 1);
         // CRLF, and what XML escapes.
         let crlf = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\">\r\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\r\n</Ontology>";
-        let (_, new) = declare(crlf, &parsed(crlf), 0, "a", "http://example.org/a?b&c#");
+        let (_, new) = declare(crlf, &parsed(crlf), root, "a", "http://example.org/a?b&c#");
         assert_eq!(
             new,
             "\r\n  <Prefix name=\"a\" IRI=\"http://example.org/a?b&amp;c#\"/>"

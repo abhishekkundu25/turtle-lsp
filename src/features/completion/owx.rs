@@ -21,7 +21,10 @@
 //!   over the prefixes the `<Prefix>` elements declare (OWL/XML builds none
 //!   in). A term of a well-known prefix not declared adds its `<Prefix>`
 //!   element on accept, after the others
-//!   ([`crate::owx::expected::declare`]).
+//!   ([`crate::owx::expected::declare`]); it is not offered where none can
+//!   be added: for a name a `<Prefix>` element names already (misplaced or
+//!   with an error), or after a root start tag a `<` cut
+//!   ([`crate::owx::expected::declarable`]).
 //!
 //! A value's edit replaces it whole, escaped as XML. The kinds of a term,
 //! the ranking, the items and resolve are Functional syntax's and Turtle's.
@@ -175,10 +178,26 @@ fn iri(
     let typed = &text[span.start as usize..offset];
     let declared = declared(&a.parsed);
     let (cands, incomplete, filters) = match form {
-        Form::Abbreviated { .. } => {
+        Form::Abbreviated { root } => {
             let mut extras = Vec::new();
             let cands = terms(k, typed, iris, &declared, &mut extras)?;
-            let (cands, cut) = listed(cands, extras, typed, iris, k, &declared);
+            let (mut cands, cut) = listed(cands, extras, typed, iris, k, &declared);
+            // A term whose `<Prefix>` cannot be added is not offered.
+            let added = |c: &Candidate| {
+                c.import
+                    .as_ref()
+                    .filter(|(p, _)| !declared.contains_key(p))
+                    .is_some()
+            };
+            if cands.iter().any(added) {
+                let declarable = expected::declarable(text, root);
+                cands.retain(|c| match &c.import {
+                    Some((p, _)) if added(c) => declarable
+                        .as_ref()
+                        .is_some_and(|named| !named.contains(&p.as_str())),
+                    _ => true,
+                });
+            }
             (cands, cut || !typed.contains(':'), None)
         }
         Form::Full => {
@@ -879,6 +898,119 @@ mod tests {
                     item.label
                 );
             }
+        }
+    }
+
+    /// The errors (severity error) of OWL/XML `text`.
+    fn errors(text: &str) -> Vec<String> {
+        let a = Analysis::new(URI.into(), text, Arc::default(), true);
+        let errors = a.parsed.errors.iter();
+        let errors = errors.filter(|e| e.severity == crate::syntax::Severity::Error);
+        errors.map(|e| e.message().to_string()).collect()
+    }
+
+    /// A `<Prefix>` added on accept is written as the root's name is: in
+    /// the prefix form of `<owl:Ontology>`, OWL's namespace.
+    #[test]
+    fn an_added_prefix_is_written_as_the_root_is() {
+        let text = "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <owl:Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <owl:Declaration><owl:Class abbreviatedIRI=\"skos:Conc|\"/></owl:Declaration>\n</owl:Ontology>\n";
+        let at = at_doc(text);
+        let after = at.accepted(&at.item("skos:Concept"));
+        assert!(
+            after.contains(
+                "\n  <owl:Prefix name=\"skos\" IRI=\"http://www.w3.org/2004/02/skos/core#\"/>"
+            ),
+            "{after}"
+        );
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+    }
+
+    /// A prefix a `<Prefix>` element names, misplaced, malformed or with
+    /// an IRI the reader cannot read, is not declared again (it would be
+    /// declared twice): its terms are not offered.
+    #[test]
+    fn a_prefix_some_prefix_element_names_is_not_declared_again() {
+        let skos = "http://www.w3.org/2004/02/skos/core#";
+        for prefix in [
+            format!("<Prefix name=\"skos\" IRI=\"{skos}\"/>"),
+            format!("<Prefix name=\"skos\"IRI=\"{skos}\"/>"),
+            "<Prefix name=\"skos\" IRI=\"&skos;\"/>".to_string(),
+        ] {
+            let text = onto(&format!(
+                "<Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n    {prefix}\n    <SubClassOf><Class abbreviatedIRI=\":Pump\"/><Class abbreviatedIRI=\"skos:Conc|\"/></SubClassOf>"
+            ));
+            let at = at_doc(&text);
+            let labels = at.labels();
+            assert!(
+                !labels.iter().any(|l| l == "skos:Concept"),
+                "{prefix}: {labels:?}"
+            );
+            for item in at.items() {
+                let after = at.accepted(&item);
+                let now = errors(&after);
+                assert!(
+                    !now.iter().any(|m| m.contains("declared twice")),
+                    "{now:?}\n{after}"
+                );
+            }
+        }
+    }
+
+    /// A value the scanner ends at a `<` or at the end of the text, with no
+    /// closing quote: its edit replaces it whole, as the reader reads it.
+    #[test]
+    fn a_value_not_closed_is_replaced_whole() {
+        let xsd = "http://www.w3.org/2001/XMLSchema#integer";
+        for tail in ["</Declaration>\n</Ontology>\n", ""] {
+            let text = format!(
+                "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Declaration><Datatype IRI=\"http://www.w3.org/2001/|XMLSchema#integer{tail}"
+            );
+            let at = at_doc(&text);
+            let before = errors(&at.text);
+            let after = at.accepted(&at.item(xsd));
+            assert!(
+                after.contains(&format!("IRI=\"{xsd}{}", &tail[..tail.len().min(1)])),
+                "{after}"
+            );
+            assert!(errors(&after).len() <= before.len(), "{before:?}\n{after}");
+        }
+    }
+
+    /// An `IRI` or `AbbreviatedIRI` element's text is offered only in its
+    /// first run, after its start tag: past a wrong end tag the element is
+    /// still open, and its text is all its runs.
+    #[test]
+    fn an_iri_element_s_text_only_after_its_start_tag() {
+        let text = onto(
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/>\n        <AbbreviatedIRI>:Pu</AbbreviatedIRX>mp</Literal>\n|    </AnnotationAssertion>",
+        );
+        let at = at_doc(&text);
+        let before = errors(&at.text);
+        for item in at.items() {
+            let after = at.accepted(&item);
+            assert!(
+                errors(&after).len() <= before.len(),
+                "{}: {after}",
+                item.label
+            );
+        }
+    }
+
+    /// Where the root's start tag is cut by a `<` in a value, no `<Prefix>`
+    /// can go after it: a term that needs one is not offered.
+    #[test]
+    fn nothing_is_declared_in_a_cut_root_tag() {
+        let text = "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\" xml:lang=\"en<Declaration>\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"skos:Conc|\"/></SubClassOf>\n</Ontology>\n";
+        let at = at_doc(text);
+        let before = errors(&at.text);
+        for item in at.items() {
+            assert!(item.additional_text_edits.is_none(), "{}", item.label);
+            let after = at.accepted(&item);
+            assert!(
+                errors(&after).len() <= before.len(),
+                "{}: {after}",
+                item.label
+            );
         }
     }
 }

@@ -132,9 +132,19 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             )
         }
         At::Value(v) => {
-            // What the offer replaces: a value closed by the quote of a
-            // later attribute holds its name, white space first.
-            let value = text.get(v.span.start as usize..v.span.end as usize)?;
+            // What the offer replaces: the value whole. One with no closing
+            // quote, which the grammar reads to where the scanner ends it (a
+            // `<`, the end of the text), up to there or to the white space
+            // after the offset, which it holds already. A value closed by
+            // the quote of a later attribute holds its name, white space
+            // first.
+            let rest =
+                text.get(v.span.end as usize..v.attr.value.span.end.max(v.span.end) as usize)?;
+            let run = rest
+                .find(|c: char| c.is_ascii_whitespace())
+                .unwrap_or(rest.len());
+            let span = Span::new(v.span.start, v.span.end + run as u32);
+            let value = text.get(span.start as usize..span.end as usize)?;
             if value.contains(|c: char| c.is_ascii_whitespace()) {
                 return None;
             }
@@ -159,7 +169,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
                     let name = text.get(lead.start as usize + 1..lead.end as usize - 1)?;
                     doc.entity(name).map(|ns| (name, ns))
                 });
-            (Slot::Value { of, quote, entity }, v.span)
+            (Slot::Value { of, quote, entity }, span)
         }
         At::Text(_) | At::Elsewhere => return None,
     };

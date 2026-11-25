@@ -1203,4 +1203,33 @@ mod tests {
         }
         assert!(accepted > 10_000, "{accepted}");
     }
+
+    /// A value the scanner ends at a `<` or at the end of the text, with no
+    /// closing quote: its edit replaces it whole, as the grammar reads it.
+    #[test]
+    fn a_value_not_closed_is_replaced_whole() {
+        let errors = |text: &str| {
+            Analysis::new(URI.into(), text, Arc::default(), true)
+                .parsed
+                .errors
+                .len()
+        };
+        let integer = format!("{XSD}integer");
+        let head = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:p rdf:datatype=\"http://www.w3.org/2001/|XMLSchema#integer";
+        for tail in ["<ex:q/>\n  </rdf:Description>\n</rdf:RDF>\n", ""] {
+            let at = at(&format!("{head}{tail}"));
+            assert_eq!(at.replaced(&integer), integer);
+            let after = at.accepted(&at.item(&integer));
+            assert!(errors(&after) <= errors(&at.text), "{after}");
+        }
+        // Not closed, over the line end: to the line end, which the value
+        // holds before and after.
+        let at = at(&onto(
+            "  <ex:Pump rdf:about=\"http://example.org/p1\">\n    <rdf:type rdf:resource=\"http://example.org/P|um\n    </ex:Pump>\n",
+        ));
+        assert_eq!(
+            at.replaced("http://example.org/Pump"),
+            "http://example.org/Pum"
+        );
+    }
 }
