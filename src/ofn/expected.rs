@@ -13,6 +13,12 @@
 //! ([`super::signature`]) as the grammar fills it, and the slots that may
 //! come next say what is expected. An axiom keyword inside a construct
 //! closes what is open, as the grammar's recovery does.
+//!
+//! That slot machine is the crate's, for a reader of another syntax to
+//! feed operand by operand: a [`Construct`] takes each [`Operand`] and says
+//! what it takes next (its slots, and their keywords and IRIs); a
+//! `HasKey`'s key lists ([`Keys`]), the items of the ontology ([`items`])
+//! and of the document ([`DOCUMENT`]) say theirs.
 
 use super::grammar::STRAY_PREFIX;
 use super::lexer::{Kind, Lexer, Token};
@@ -43,7 +49,8 @@ pub(crate) enum Iris {
 }
 
 impl Iris {
-    fn with(self, other: Iris) -> Iris {
+    /// The IRIs this or `other` takes.
+    pub(crate) fn with(self, other: Iris) -> Iris {
         match (self, other) {
             (Iris::None, x) | (x, Iris::None) => x,
             (Iris::Any, _) | (_, Iris::Any) => Iris::Any,
@@ -83,12 +90,150 @@ fn word(text: &str, offset: usize) -> Span {
     Span::new(start as u32, end as u32)
 }
 
-/// What an operand read so far is.
-#[derive(Clone, Copy)]
-enum Arg {
-    Node(NodeKind),
+/// What an operand read so far is, as a slot takes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Operand {
+    Iri,
+    /// A construct of this keyword.
+    Construct(Keyword),
+    Literal,
+    NodeId,
+    Integer,
+    /// The `( … )` of a `HasKey`.
+    Group,
     /// Something the grammar would report: it fills a slot all the same.
-    Any,
+    Reported,
+}
+
+impl Operand {
+    /// The node of the tree it is, if it is one.
+    fn node(self) -> Option<NodeKind> {
+        Some(match self {
+            Operand::Iri => NodeKind::Iri { prefix_len: None },
+            Operand::Construct(k) => NodeKind::Construct(k),
+            Operand::Literal => NodeKind::Literal { string_end: 0 },
+            Operand::NodeId => NodeKind::NodeId,
+            Operand::Integer => NodeKind::Integer,
+            Operand::Group => NodeKind::Group,
+            Operand::Reported => return None,
+        })
+    }
+}
+
+/// A construct open: its keyword, and how far its operands so far fill its
+/// signature. It takes its operands one by one, in order, and says what
+/// may come next.
+#[derive(Debug)]
+pub(crate) struct Construct {
+    k: Keyword,
+    /// The slot of its signature the next operand is tried at, and how
+    /// many operands that slot took.
+    slot: usize,
+    taken: u32,
+}
+
+impl Construct {
+    /// The construct `k`, before its first operand.
+    pub(crate) fn new(k: Keyword) -> Construct {
+        Construct {
+            k,
+            slot: 0,
+            taken: 0,
+        }
+    }
+
+    /// Its keyword.
+    pub(crate) fn keyword(&self) -> Keyword {
+        self.k
+    }
+
+    /// Take one more operand, `op`: the slots it fits in none of are
+    /// passed, as the grammar would report them.
+    pub(crate) fn take(&mut self, op: Operand) {
+        let sig = signature(self.k);
+        while let Some(&(cat, rep)) = sig.get(self.slot) {
+            if accepts(cat, self.taken, op) {
+                self.taken += 1;
+                let done = match (cat, rep) {
+                    (Cat::Facets, _) => false,
+                    (Cat::DataPropertiesThenRange, _) => matches!(op, Operand::Construct(_)),
+                    (_, Rep::One | Rep::Optional) => true,
+                    (_, Rep::AtLeast(_)) => false,
+                };
+                if done {
+                    self.slot += 1;
+                    self.taken = 0;
+                }
+                return;
+            }
+            self.slot += 1;
+            self.taken = 0;
+        }
+    }
+
+    /// The slots the next operand may fill, each with how many operands
+    /// it took: the slot's and, while the slots before may be left as they
+    /// are, the next slot's. What a reader of other markup says may come
+    /// besides keywords and IRIs (a literal, an anonymous individual, a
+    /// facet) is read from their categories.
+    pub(crate) fn slots(&self) -> impl Iterator<Item = (Cat, u32)> + use<> {
+        let (slot, taken) = (self.slot, self.taken);
+        let mut open = true;
+        let sig = signature(self.k).iter().enumerate().skip(slot);
+        sig.map_while(move |(s, &(cat, rep))| {
+            let t = if s == slot { taken } else { 0 };
+            let this = open.then_some((cat, t));
+            open = match (cat, rep) {
+                (Cat::Facets, _) => t >= 2 && t.is_multiple_of(2),
+                (Cat::DataPropertiesThenRange, _) | (_, Rep::One) => false,
+                (_, Rep::Optional) => true,
+                (_, Rep::AtLeast(n)) => t >= u32::from(n),
+            };
+            this
+        })
+    }
+
+    /// The keywords (in the order of [`Keyword`]) and the IRIs it takes
+    /// next: those of its [`Construct::slots`].
+    pub(crate) fn expects(&self) -> (Vec<Keyword>, Iris) {
+        let mut keywords = Vec::new();
+        let mut iris = Iris::None;
+        for (cat, t) in self.slots() {
+            iris = iris.with(slot_expects(cat, t, &mut keywords));
+        }
+        keywords.sort_by_key(|k| Keyword::ALL.iter().position(|x| x == k));
+        (keywords, iris)
+    }
+
+    /// The key list the next operand is, if its slot is one: the `( … )`
+    /// of a `HasKey`.
+    pub(crate) fn keys(&self) -> Option<Keys> {
+        match signature(self.k).get(self.slot)?.0 {
+            Cat::ObjectKeys => Some(Keys::Object),
+            Cat::DataKeys => Some(Keys::Data),
+            _ => None,
+        }
+    }
+}
+
+/// A key list of `HasKey`: its object properties, or its data properties.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Keys {
+    Object,
+    Data,
+}
+
+impl Keys {
+    /// The keywords and the IRIs each of its properties may be.
+    pub(crate) fn expects(self) -> (Vec<Keyword>, Iris) {
+        let each = match self {
+            Keys::Object => Cat::ObjectProperty,
+            Keys::Data => Cat::DataProperty,
+        };
+        let mut keywords = Vec::new();
+        let iris = slot_expects(each, 0, &mut keywords);
+        (keywords, iris)
+    }
 }
 
 /// A construct open at the offset.
@@ -97,59 +242,27 @@ enum Frame {
     Document,
     Prefix,
     Ontology,
-    Construct {
-        k: Keyword,
-        /// The slot of its signature the next operand is tried at, and how
-        /// many operands that slot took.
-        slot: usize,
-        taken: u32,
-    },
-    /// The `( … )` of a `HasKey`, of properties of `each`.
-    Group(Cat),
+    Construct(Construct),
+    /// The `( … )` of a `HasKey`.
+    Group(Keys),
     /// A `(` after no keyword, or after a word that is none.
     Unknown,
 }
 
-/// Whether `cat`, having taken `taken`, takes `arg`.
-fn accepts(cat: Cat, taken: u32, arg: Arg) -> bool {
-    let Arg::Node(kind) = arg else {
+/// Whether `cat`, having taken `taken`, takes `op`.
+fn accepts(cat: Cat, taken: u32, op: Operand) -> bool {
+    let Some(kind) = op.node() else {
         return true;
     };
-    let iri = matches!(kind, NodeKind::Iri { .. });
+    let iri = op == Operand::Iri;
     match cat {
         Cat::DataPropertiesThenRange => {
-            iri || matches!(kind, NodeKind::Construct(k) if keyword_in(k, Cat::DataRange))
+            iri || matches!(op, Operand::Construct(k) if keyword_in(k, Cat::DataRange))
         }
         Cat::Facets if taken.is_multiple_of(2) => iri,
-        Cat::Facets => matches!(kind, NodeKind::Literal { .. }),
-        Cat::ObjectKeys | Cat::DataKeys => kind == NodeKind::Group,
+        Cat::Facets => op == Operand::Literal,
+        Cat::ObjectKeys | Cat::DataKeys => op == Operand::Group,
         _ => super::signature::fits(kind, cat),
-    }
-}
-
-/// The construct `k`'s state after one more operand, `arg`: the slots it
-/// fits in none of are passed, as the grammar would report them.
-fn advance(k: Keyword, slot: &mut usize, taken: &mut u32, arg: Arg) {
-    let sig = signature(k);
-    while let Some(&(cat, rep)) = sig.get(*slot) {
-        if accepts(cat, *taken, arg) {
-            *taken += 1;
-            let done = match (cat, rep) {
-                (Cat::Facets, _) => false,
-                (Cat::DataPropertiesThenRange, _) => {
-                    matches!(arg, Arg::Node(NodeKind::Construct(_)))
-                }
-                (_, Rep::One | Rep::Optional) => true,
-                (_, Rep::AtLeast(_)) => false,
-            };
-            if done {
-                *slot += 1;
-                *taken = 0;
-            }
-            return;
-        }
-        *slot += 1;
-        *taken = 0;
     }
 }
 
@@ -173,31 +286,12 @@ fn slot_expects(cat: Cat, taken: u32, keywords: &mut Vec<Keyword>) -> Iris {
     iris
 }
 
-/// What the construct `k` takes next, at `slot` having taken `taken`: the
-/// slot's operands and, while the slots before may be left as they are,
-/// the next slot's.
-fn construct_expects(k: Keyword, slot: usize, taken: u32) -> (Vec<Keyword>, Iris) {
-    let mut keywords = Vec::new();
-    let mut iris = Iris::None;
-    for (s, &(cat, rep)) in signature(k).iter().enumerate().skip(slot) {
-        let t = if s == slot { taken } else { 0 };
-        iris = iris.with(slot_expects(cat, t, &mut keywords));
-        let may_stop = match (cat, rep) {
-            (Cat::Facets, _) => t >= 2 && t.is_multiple_of(2),
-            (Cat::DataPropertiesThenRange, _) | (_, Rep::One) => false,
-            (_, Rep::Optional) => true,
-            (_, Rep::AtLeast(n)) => t >= u32::from(n),
-        };
-        if !may_stop {
-            break;
-        }
-    }
-    keywords.sort_by_key(|k| Keyword::ALL.iter().position(|x| x == k));
-    (keywords, iris)
-}
+/// The keywords that start an item of the document, outside
+/// `Ontology( … )`.
+pub(crate) const DOCUMENT: [Keyword; 2] = [Keyword::Prefix, Keyword::Ontology];
 
 /// The keywords that start an item of the ontology.
-fn items() -> Vec<Keyword> {
+pub(crate) fn items() -> Vec<Keyword> {
     Keyword::ALL
         .iter()
         .copied()
@@ -280,8 +374,7 @@ pub(crate) fn at(text: &str, parsed: &Parsed, offset: u32) -> Option<Expected> {
         if std::mem::take(&mut carets) && matches!(t.kind, Kind::FullIri | Kind::PName) {
             continue;
         }
-        let top = stack.last_mut().expect("the document");
-        let mut arg = None;
+        let mut op = None;
         match t.kind {
             Kind::Keyword => {
                 keyword = Some(Keyword::of(&text[t.start as usize..t.end as usize]));
@@ -297,61 +390,48 @@ pub(crate) fn at(text: &str, parsed: &Parsed, offset: u32) -> Option<Expected> {
                     if is_axiom(k) || k == Keyword::Import {
                         while matches!(
                             stack.last(),
-                            Some(Frame::Construct { .. } | Frame::Group(_) | Frame::Unknown)
+                            Some(Frame::Construct(_) | Frame::Group(_) | Frame::Unknown)
                         ) {
                             stack.pop();
                         }
                     }
-                    stack.push(Frame::Construct {
-                        k,
-                        slot: 0,
-                        taken: 0,
-                    });
+                    stack.push(Frame::Construct(Construct::new(k)));
                 }
                 Some(None) => stack.push(Frame::Unknown),
                 None => {
-                    let keys = match top {
-                        Frame::Construct { k, slot, .. } => signature(*k)
-                            .get(*slot)
-                            .map(|s| s.0)
-                            .filter(|c| matches!(c, Cat::ObjectKeys | Cat::DataKeys)),
+                    let keys = match stack.last() {
+                        Some(Frame::Construct(c)) => c.keys(),
                         _ => None,
                     };
-                    stack.push(match keys {
-                        Some(Cat::ObjectKeys) => Frame::Group(Cat::ObjectProperty),
-                        Some(_) => Frame::Group(Cat::DataProperty),
-                        None => Frame::Unknown,
-                    });
+                    stack.push(keys.map_or(Frame::Unknown, Frame::Group));
                 }
             },
             Kind::RParen => {
                 if stack.len() > 1 {
-                    arg = match stack.pop() {
-                        Some(Frame::Construct { k, .. }) => Some(Arg::Node(NodeKind::Construct(k))),
-                        Some(Frame::Group(_)) => Some(Arg::Node(NodeKind::Group)),
-                        Some(Frame::Unknown) => Some(Arg::Any),
+                    op = match stack.pop() {
+                        Some(Frame::Construct(c)) => Some(Operand::Construct(c.keyword())),
+                        Some(Frame::Group(_)) => Some(Operand::Group),
+                        Some(Frame::Unknown) => Some(Operand::Reported),
                         _ => None,
                     };
                 }
             }
-            Kind::FullIri | Kind::PName => {
-                arg = Some(Arg::Node(NodeKind::Iri { prefix_len: None }))
-            }
-            Kind::NodeId => arg = Some(Arg::Node(NodeKind::NodeId)),
-            Kind::Integer => arg = Some(Arg::Node(NodeKind::Integer)),
+            Kind::FullIri | Kind::PName => op = Some(Operand::Iri),
+            Kind::NodeId => op = Some(Operand::NodeId),
+            Kind::Integer => op = Some(Operand::Integer),
             Kind::String => {
                 literal = true;
-                arg = Some(Arg::Node(NodeKind::Literal { string_end: 0 }));
+                op = Some(Operand::Literal);
             }
             Kind::LangTag => {}
             Kind::Carets => carets = was_literal,
-            Kind::Bad => arg = Some(Arg::Any),
+            Kind::Bad => op = Some(Operand::Reported),
             Kind::Equals | Kind::Word | Kind::Eof => {}
         }
-        if let Some(arg) = arg
-            && let Some(Frame::Construct { k, slot, taken }) = stack.last_mut()
+        if let Some(op) = op
+            && let Some(Frame::Construct(c)) = stack.last_mut()
         {
-            advance(*k, slot, taken, arg);
+            c.take(op);
         }
     }
     // A comment the word is in: the last that starts before it (the lexer
@@ -370,14 +450,10 @@ pub(crate) fn at(text: &str, parsed: &Parsed, offset: u32) -> Option<Expected> {
         (Vec::new(), Iris::Of(vec![Entity::Datatype]))
     } else {
         match stack.last().expect("the document") {
-            Frame::Document => (vec![Keyword::Prefix, Keyword::Ontology], Iris::None),
+            Frame::Document => (DOCUMENT.to_vec(), Iris::None),
             Frame::Ontology => (items(), Iris::None),
-            Frame::Construct { k, slot, taken } => construct_expects(*k, *slot, *taken),
-            Frame::Group(each) => {
-                let mut keywords = Vec::new();
-                let iris = slot_expects(*each, 0, &mut keywords);
-                (keywords, iris)
-            }
+            Frame::Construct(c) => c.expects(),
+            Frame::Group(keys) => keys.expects(),
             Frame::Prefix | Frame::Unknown => return None,
         }
     };
@@ -539,5 +615,179 @@ impl Header {
         }
         let skip = if after.starts_with("\r\n") { 2 } else { 1 };
         (end + (eol + skip) as u32, format!("{line}{nl}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Keyword as K;
+
+    /// What `k` takes next after `operands`.
+    fn after(k: Keyword, operands: &[Operand]) -> (Vec<Keyword>, Iris) {
+        let mut c = Construct::new(k);
+        for &op in operands {
+            c.take(op);
+        }
+        c.expects()
+    }
+
+    fn of(cat: Cat) -> Vec<Keyword> {
+        Keyword::ALL
+            .iter()
+            .copied()
+            .filter(|&k| keyword_in(k, cat))
+            .collect()
+    }
+
+    #[test]
+    fn a_construct_says_what_its_next_operand_may_be() {
+        let classes = (of(Cat::ClassExpression), Iris::Of(vec![Entity::Class]));
+        let mut annotated = classes.0.clone();
+        annotated.insert(0, K::Annotation);
+        assert_eq!(
+            after(K::SubClassOf, &[]),
+            (annotated, Iris::Of(vec![Entity::Class]))
+        );
+        assert_eq!(after(K::SubClassOf, &[Operand::Iri]), classes);
+        let both = [Operand::Iri, Operand::Construct(K::ObjectUnionOf)];
+        assert_eq!(after(K::SubClassOf, &both), (vec![], Iris::None));
+        assert_eq!(after(K::ObjectSomeValuesFrom, &[Operand::Iri]), classes);
+        // An operand the grammar would report fills its slot all the same.
+        assert_eq!(
+            after(K::ObjectSomeValuesFrom, &[Operand::Reported]),
+            classes
+        );
+        // The class expression of a cardinality may be left out.
+        let card = [Operand::Integer, Operand::Iri];
+        assert_eq!(after(K::ObjectMinCardinality, &card), classes);
+    }
+
+    #[test]
+    fn data_properties_then_a_data_range() {
+        let properties = (vec![], Iris::Of(vec![Entity::DataProperty]));
+        assert_eq!(after(K::DataSomeValuesFrom, &[]), properties);
+        let more = (
+            of(Cat::DataRange),
+            Iris::Of(vec![Entity::DataProperty, Entity::Datatype]),
+        );
+        assert_eq!(after(K::DataSomeValuesFrom, &[Operand::Iri]), more);
+        let two = [Operand::Iri, Operand::Iri];
+        assert_eq!(after(K::DataSomeValuesFrom, &two), more);
+        // A data range construct is the last.
+        let ranged = [Operand::Iri, Operand::Construct(K::DataOneOf)];
+        assert_eq!(after(K::DataAllValuesFrom, &ranged), (vec![], Iris::None));
+    }
+
+    #[test]
+    fn a_facet_slot_alternates_iri_and_literal() {
+        use Operand::{Iri, Literal};
+        let facet = (vec![], Iris::Any);
+        let value = (vec![], Iris::None);
+        let k = K::DatatypeRestriction;
+        assert_eq!(after(k, &[]), (vec![], Iris::Of(vec![Entity::Datatype])));
+        assert_eq!(after(k, &[Iri]), facet);
+        assert_eq!(after(k, &[Iri, Iri]), value);
+        assert_eq!(after(k, &[Iri, Iri, Literal]), facet);
+        assert_eq!(after(k, &[Iri, Iri, Literal, Iri]), value);
+        // A literal where a facet goes passes the slot, the last one.
+        assert_eq!(after(k, &[Iri, Literal]), (vec![], Iris::None));
+    }
+
+    /// OWL/XML writes a `HasKey`'s properties flat, without the `( … )`:
+    /// its reader closes a key list where a property of the next comes.
+    #[test]
+    fn a_has_key_says_its_key_lists() {
+        let mut c = Construct::new(K::HasKey);
+        assert_eq!(c.keys(), None);
+        c.take(Operand::Iri);
+        assert_eq!(c.keys(), Some(Keys::Object));
+        // Functional syntax takes the `(` there, no keyword nor IRI.
+        assert_eq!(c.expects(), (vec![], Iris::None));
+        c.take(Operand::Group);
+        assert_eq!(c.keys(), Some(Keys::Data));
+        c.take(Operand::Group);
+        assert_eq!(c.keys(), None);
+        assert_eq!(c.expects(), (vec![], Iris::None));
+        assert_eq!(c.keyword(), K::HasKey);
+        assert_eq!(
+            Keys::Object.expects(),
+            (
+                vec![K::ObjectInverseOf],
+                Iris::Of(vec![Entity::ObjectProperty])
+            )
+        );
+        assert_eq!(
+            Keys::Data.expects(),
+            (vec![], Iris::Of(vec![Entity::DataProperty]))
+        );
+        // Before its first data property, a flat list takes either kind.
+        let either = Keys::Object.expects().1.with(Keys::Data.expects().1);
+        let kinds = vec![Entity::ObjectProperty, Entity::DataProperty];
+        assert_eq!(either, Iris::Of(kinds));
+    }
+
+    /// Where keywords and IRIs alike say nothing or anything, the slots
+    /// say which: a literal, a facet, a subject or a value.
+    #[test]
+    fn the_slots_say_what_keywords_and_iris_do_not() {
+        let slots = |k, operands: &[Operand]| {
+            let mut c = Construct::new(k);
+            for &op in operands {
+                c.take(op);
+            }
+            (c.expects(), c.slots().collect::<Vec<_>>())
+        };
+        let nothing = (vec![], Iris::None);
+        let any = (vec![], Iris::Any);
+        assert_eq!(
+            slots(K::DataHasValue, &[Operand::Iri]),
+            (nothing.clone(), vec![(Cat::Literal, 0)])
+        );
+        assert_eq!(
+            slots(K::DataOneOf, &[Operand::Literal]),
+            (nothing.clone(), vec![(Cat::Literal, 1)])
+        );
+        assert_eq!(
+            slots(K::DataHasValue, &[Operand::Iri, Operand::Literal]),
+            (nothing, vec![])
+        );
+        let assertion = [Operand::Iri];
+        assert_eq!(
+            slots(K::AnnotationAssertion, &assertion),
+            (any.clone(), vec![(Cat::AnnotationSubject, 0)])
+        );
+        let assertion = [Operand::Iri, Operand::NodeId];
+        assert_eq!(
+            slots(K::AnnotationAssertion, &assertion),
+            (any.clone(), vec![(Cat::AnnotationValue, 0)])
+        );
+        assert_eq!(
+            slots(K::DatatypeRestriction, &[Operand::Iri]),
+            (any, vec![(Cat::Facets, 0)])
+        );
+        // Slots that may be left as they are, then the next.
+        let sub = slots(K::SubClassOf, &[]).1;
+        assert_eq!(sub, [(Cat::Annotation, 0), (Cat::ClassExpression, 0)]);
+        let card = slots(K::DataMinCardinality, &[Operand::Integer, Operand::Iri]).1;
+        assert_eq!(card, [(Cat::DataRange, 0)]);
+    }
+
+    #[test]
+    fn the_items_of_the_ontology_and_of_the_document() {
+        let items = items();
+        for k in [
+            K::Import,
+            K::Annotation,
+            K::Declaration,
+            K::HasKey,
+            K::DLSafeRule,
+        ] {
+            assert!(items.contains(&k), "{k:?}");
+        }
+        for k in [K::Prefix, K::Ontology, K::Class, K::ObjectSomeValuesFrom] {
+            assert!(!items.contains(&k), "{k:?}");
+        }
+        assert_eq!(DOCUMENT, [K::Prefix, K::Ontology]);
     }
 }
