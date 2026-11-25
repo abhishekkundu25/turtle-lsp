@@ -36,6 +36,7 @@ the full W3C test suites and real public ontologies; see
 | | Turtle, TriG | N-Triples, N-Quads | JSON-LD | RDF/XML | OWL Functional | OWL/XML |
 |---|---|---|---|---|---|---|
 | Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Read by reasoning, SHACL validation, `query` and `check` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Label, house-style, SHACL and prefix checks | ✓ | ✓ | ✓ | | | |
 | Completion | ✓ | | ✓ | ✓ | ✓ | ✓ |
 | Rename | ✓ | ✓ | ✓ | ✓ | | |
