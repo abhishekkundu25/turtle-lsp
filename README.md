@@ -33,20 +33,22 @@ the full W3C test suites and real public ontologies; see
 
 ## What each file gets
 
-| | Turtle, TriG | N-Triples, N-Quads | JSON-LD | RDF/XML | OWL Functional | OWL/XML |
-|---|---|---|---|---|---|---|
-| Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Read by reasoning, SHACL validation, `query` and `check` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Label, house-style, SHACL and prefix checks | ✓ | ✓ | ✓ | | | |
-| Completion | ✓ | | ✓ | ✓ | ✓ | ✓ |
-| Rename | ✓ | ✓ | ✓ | ✓ | | |
-| Formatting, quick fixes | ✓ | ✓ | ✓ | | | |
-| Label hints | ✓ | ✓ | ✓ | | | |
-| Semantic colours | ✓ | ✓ | | | | |
+| | Turtle, TriG | N-Triples, N-Quads | JSON-LD | RDF/XML | OWL Functional | OWL/XML | SPARQL |
+|---|---|---|---|---|---|---|---|
+| Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Its data read by reasoning, SHACL validation and queries | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| Label, house-style and SHACL checks | ✓ | ✓ | ✓ | | | | |
+| Prefix checks | ✓ | | ✓ | | | | ✓ |
+| Completion | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Rename | ✓ | ✓ | ✓ | ✓ | | | ✓ |
+| Formatting, quick fixes | ✓ | ✓ | ✓ | | | | ✓ |
+| Label hints | ✓ | ✓ | ✓ | | | | ✓ |
+| Semantic colours | ✓ | ✓ | | | | | ✓ |
+| Run the query over the workspace | | | | | | | ✓ |
 
 A rename of a term that an OWL Functional or OWL/XML file uses is refused,
-and names the file. SPARQL files (`.rq`, `.sparql`, `.ru`) get their own
-set: see [SPARQL](#sparql).
+and names the file. Protégé and ROBOT own the layout of OWL files, so
+nothing reformats them.
 
 ## Features
 
