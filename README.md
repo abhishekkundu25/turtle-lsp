@@ -511,8 +511,9 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   outline, folding and type hierarchy, each on the exact attribute value or
   qualified name. Diagnostics: XML and RDF/XML syntax errors with recovery
   (`xml-syntax`, `rdfxml-syntax`), SHACL results, reasoning findings, and the
-  lints that need no edit (`invalid-literal`, `undescribed-term`,
-  `deprecated-term`).
+  lints of its terms and literals (`invalid-literal`, `undescribed-term`,
+  `unknown-term`, `deprecated-term`), each "did you mean" in the message
+  only.
 - **Nothing writes RDF/XML**: no formatting, rename, completion, quick fixes
   or `check --fix` on RDF/XML; `format .` passes over it. A rename of a
   term an RDF/XML workspace file uses is refused and names the file, so the
@@ -571,9 +572,10 @@ as Functional syntax, read-only, as it reads RDF/XML, but for completion.
   the outline (each term once, at its declaration; a term the file never
   declares, at the first axiom about it), workspace symbols and folding,
   as for an RDF/XML file; no semantic tokens or inlay hints (the editor's
-  grammar colours it). The lints that need no edit run on it, at the
-  exact text of each IRI: `invalid-literal`, `deprecated-term`,
-  `undescribed-term`.
+  grammar colours it). The lints of its terms and literals run on it, at
+  the exact text of each IRI: `invalid-literal`, `unknown-term`,
+  `deprecated-term`, `undescribed-term`, each "did you mean" in the
+  message only.
 - **Errors**: every error has the code `ofn-syntax` and its exact span, in
   the editors and in `check` (same exit codes as any syntax: 1 for an
   error). The parse goes on at the next axiom after an error, so each typo
@@ -689,8 +691,9 @@ read-only, as it reads OWL Functional syntax.
 - **In the editor**: hover, definition, references, document highlight,
   the outline, workspace symbols and folding, as for a Functional file, at
   the exact text of each IRI (the attribute value, or the content of an
-  `IRI` element). The lints that need no edit run on it: `invalid-literal`,
-  `deprecated-term`, `undescribed-term`.
+  `IRI` element). The lints of its terms and literals run on it:
+  `invalid-literal`, `unknown-term`, `deprecated-term`, `undescribed-term`,
+  each "did you mean" in the message only.
 - **Errors**: two codes. `xml-syntax` is what the XML scanner reports, as
   in RDF/XML: an unclosed element, a broken attribute, an undeclared
   entity. `owx-syntax` is the rest, each at its exact span: an element

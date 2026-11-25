@@ -73,8 +73,8 @@
   prose) and builds the tree the Functional parser builds, so the axioms
   become the triples of the same W3C mapping and every feature that reads
   Functional syntax reads OWL/XML: hover, definition, references,
-  highlights, the outline, workspace symbols, folding, the lints that need
-  no edit, `check`, `query`, SHACL validation and reasoning. Relative IRIs
+  highlights, the outline, workspace symbols, folding, the lints RDF/XML
+  gets, `check`, `query`, SHACL validation and reasoning. Relative IRIs
   resolve against `xml:base` and the file's URL, as XML Base says; where
   OWL API, which joins a relative IRI to the `xml:base` as strings, reads
   another IRI (ROBOT writes `IRI="/Book"` under
@@ -131,8 +131,10 @@
   reference lens, outline, folding and type hierarchy on the exact attribute
   value or qualified name, and diagnostics: `xml-syntax` and `rdfxml-syntax`
   with recovery, SHACL results, reasoning findings, `invalid-literal`,
-  `undescribed-term` and `deprecated-term`. VS Code, Neovim and the browser
-  editor attach to these files and keep them in their XML language.
+  `undescribed-term`, `unknown-term` (a misspelt vocabulary term, its "did
+  you mean" in the message, with no fix) and `deprecated-term`. VS Code,
+  Neovim and the browser editor attach to these files and keep them in
+  their XML language.
 - **turtle-lsp's own RDF/XML parser**, which keeps the place of every term:
   166/166 on the W3C RDF/XML suite, and the same graph as oxrdfxml on BFO, RO
   and PATO (FOAF differs in two comments, where XML makes a line end in an

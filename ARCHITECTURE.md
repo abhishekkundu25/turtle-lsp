@@ -139,13 +139,13 @@ use (the use checks skip it as they skip a subject); so the
 knowledge index, SHACL, reasoning, the query graph and the reading features
 need no Functional-specific code. The analysis does not keep the tree.
 It gets the checks and gates of RDF/XML: read-only (`features::writes`),
-no splice, semantic tokens or inlay hints, and the lints that need no edit
-(`Check::runs_on`), but for completion (`features::completes`), the one
-edit it gets: `ofn::expected` reads what the grammar takes at the cursor
-from the tokens before it (from the end of the last item mapped whole),
-and `features::completion::ofn` offers the keywords and the terms of the
-slot's kind, a term of an undeclared prefix adding its `Prefix( … )`
-line. An import of a Functional file is read by
+no splice, semantic tokens or inlay hints, and the lints of its terms and
+literals, with no fix (`Check::runs_on`), but for completion
+(`features::completes`), the one edit it gets: `ofn::expected` reads what
+the grammar takes at the cursor from the tokens before it (from the end of
+the last item mapped whole), and `features::completion::ofn` offers the
+keywords and the terms of the slot's kind, a term of an undeclared prefix
+adding its `Prefix( … )` line. An import of a Functional file is read by
 the same frontend (`imports::load::Format::Functional`), and a fetched one
 is converted to N-Triples for the cache. OWL/XML (`Syntax::OwlXml`: a
 `.owx` name, or a `.owl` or `.rdf` text whose root is OWL/XML's `Ontology`;
