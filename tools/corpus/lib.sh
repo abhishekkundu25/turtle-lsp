@@ -16,14 +16,21 @@ sha256_of() {
 }
 
 # sha256 of a directory: the hash of one "HASH  ./path" line per file, sorted by
-# path in the C locale.
+# path in the C locale. Hashes all files in batched tool calls rather than
+# spawning a subprocess per file (large speedup on Windows Git Bash).
 sha256_tree() {
-  local dir=$1 f
+  local dir=$1 cmd files
+  if command -v sha256sum >/dev/null 2>&1; then
+    cmd=(sha256sum)
+  else
+    cmd=(shasum -a 256)
+  fi
   (
     cd "$dir"
-    find . -type f | LC_ALL=C sort | while IFS= read -r f; do
-      printf '%s  %s\n' "$(sha256_of "$f")" "$f"
-    done
+    files=$(find . -type f | LC_ALL=C sort)
+    if [ -n "$files" ]; then
+      printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 "${cmd[@]}" | sed 's/^\([0-9a-f]\{64\}\) ./\1  /'
+    fi
   ) | sha256_of
 }
 

@@ -1,0 +1,88 @@
+name: Run Node, Neovim and memory-budget tests
+description: Download the prebuilt native binary and run memory budget, Node LSP tests and Neovim checks.
+inputs:
+  artifact:
+    description: Artifact name holding the prebuilt native binary
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.artifact }}
+        path: target/release
+    - if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x target/release/turtle-lsp
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: package-lock.json
+    # The oldest Neovim the README promises (0.11), on Linux only, into its
+    # own folder (~/nvim-<version>). It goes before the main install: each
+    # install puts its folder first on PATH, so the later one is `nvim` for
+    # every step after. Raise both versions by hand; Dependabot does not.
+    # TMPDIR: the action unpacks under the temp folder and renames the result
+    # into ~. On ubuntu-26.04 /tmp is another file system and the rename
+    # fails with EXDEV (rhysd/action-setup-vim#80); runner.temp is under ~.
+    - name: Install Neovim 0.11
+      id: nvim011
+      if: runner.os == 'Linux'
+      continue-on-error: true
+      uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+      env:
+        TMPDIR: ${{ runner.temp }}
+      with:
+        neovim: true
+        version: v0.11.7
+    - name: Install Neovim 0.11 (second attempt)
+      id: nvim011-retry
+      if: runner.os == 'Linux' && steps.nvim011.outcome == 'failure'
+      uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+      env:
+        TMPDIR: ${{ runner.temp }}
+      with:
+        neovim: true
+        version: v0.11.7
+    # A download fails now and then: one retry, and the second failure fails
+    # the job (the Neovim tests fail without nvim when CI=true).
+    - name: Install Neovim (for the editor checks)
+      id: nvim
+      continue-on-error: true
+      uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+      env:
+        TMPDIR: ${{ runner.temp }}
+      with:
+        neovim: true
+        version: v0.12.6
+    - name: Install Neovim (second attempt)
+      if: steps.nvim.outcome == 'failure'
+      uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
+      env:
+        TMPDIR: ${{ runner.temp }}
+      with:
+        neovim: true
+        version: v0.12.6
+    - shell: bash
+      run: npm ci
+    # The command line's memory budget: mimalloc's peak commit, the same
+    # figure on Linux and macOS (bench/perf.mjs, scenario big-file-peak).
+    - name: Memory budget
+      if: runner.os != 'Windows'
+      shell: bash
+      run: node bench/perf.mjs --only big-file-peak
+    - name: Node tests
+      shell: bash
+      run: npm run test:node
+    - name: Neovim 0.11
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        NVIM_011: ${{ steps.nvim011.outputs.executable || steps.nvim011-retry.outputs.executable }}
+      run: |
+        PATH="$(dirname "$NVIM_011"):$PATH"
+        version=$(nvim --version | head -n 1)
+        echo "$version"
+        case "$version" in "NVIM v0.11."*) ;; *) echo "expected Neovim 0.11"; exit 1 ;; esac
+        node --test --test-timeout=30000 test/nvim.test.mjs test/nvim-plugin.test.mjs

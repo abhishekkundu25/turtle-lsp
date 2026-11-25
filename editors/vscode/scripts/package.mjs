@@ -7,6 +7,9 @@
 //   VSCE_TARGET   VS Code platform (darwin-arm64, linux-x64, win32-x64, web,
 //                 ...); defaults to this machine.
 //   CARGO_TARGET  Rust target triple to cross-compile for (CI sets it).
+// Flags:
+//   --skip-build  Reuse the already-built server/engine binary and extension
+//                 bundle (used by CI after tests already built them).
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
@@ -18,6 +21,7 @@ const here = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repo = path.resolve(here, "../..")
 const run = (cmd, args, cwd = here) => execFileSync(cmd, args, { cwd, stdio: "inherit", shell: process.platform === "win32" })
 
+const skipBuild = process.argv.includes("--skip-build")
 const target = process.env.VSCE_TARGET ?? `${process.platform}-${process.arch}`
 const triple = process.env.CARGO_TARGET
 const exe = target.startsWith("win32") ? "turtle-lsp.exe" : "turtle-lsp"
@@ -27,14 +31,19 @@ fs.rmSync(path.join(here, "server"), { recursive: true, force: true })
 if (target === "web") {
   // The engine as web/build.mjs builds it (its own profile, size budget), to
   // web/app/engine.wasm, where `npm run build` copies it from.
-  const engine = path.join(repo, "web", "engine")
-  run("cargo", ["build", "--release", "--locked"], engine)
-  const built = path.join(engine, "target", "wasm32-unknown-unknown", "release", "turtle_lsp_web.wasm")
-  checkBudget(zlib.gzipSync(fs.readFileSync(built), { level: 9 }).length)
-  fs.copyFileSync(built, path.join(repo, "web", "app", "engine.wasm"))
+  if (!skipBuild) {
+    const engine = path.join(repo, "web", "engine")
+    run("cargo", ["build", "--release", "--locked"], engine)
+    const built = path.join(engine, "target", "wasm32-unknown-unknown", "release", "turtle_lsp_web.wasm")
+    checkBudget(zlib.gzipSync(fs.readFileSync(built), { level: 9 }).length)
+    fs.copyFileSync(built, path.join(repo, "web", "app", "engine.wasm"))
+  }
 } else {
-  run("cargo", ["build", "--release", "--locked", ...(triple ? ["--target", triple] : [])], repo)
+  if (!skipBuild) {
+    run("cargo", ["build", "--release", "--locked", ...(triple ? ["--target", triple] : [])], repo)
+  }
   const built = path.join(repo, "target", ...(triple ? [triple] : []), "release", exe)
+  if (!fs.existsSync(built)) throw new Error(`no ${built} to package`)
   fs.mkdirSync(path.join(here, "server"))
   fs.copyFileSync(built, path.join(here, "server", exe))
   fs.chmodSync(path.join(here, "server", exe), 0o755)
@@ -43,7 +52,11 @@ for (const f of ["LICENSE", "CHANGELOG.md"]) fs.copyFileSync(path.join(repo, f),
 // The notices for what the server (or engine) and the bundled npm packages include.
 const notices = "THIRD_PARTY_NOTICES.md"
 
-run("npm", ["run", "build"])
+if (!skipBuild) {
+  run("npm", ["run", "build"])
+} else if (!fs.existsSync(path.join(here, "out", "extension.js"))) {
+  throw new Error(`no ${path.join(here, "out", "extension.js")} to package`)
+}
 if (target === "web") {
   if (!fs.existsSync(wasm)) throw new Error(`no ${wasm} after npm run build`)
 } else {

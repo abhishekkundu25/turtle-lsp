@@ -1,0 +1,66 @@
+name: Run VS Code desktop extension tests
+description: Download the prebuilt native binary, restore cached VS Code downloads and run desktop extension tests.
+inputs:
+  artifact:
+    description: Artifact name holding the prebuilt native binary
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.artifact }}
+        path: target/release
+    - if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x target/release/turtle-lsp
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: editors/vscode/package-lock.json
+    - id: week
+      shell: bash
+      run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+    # @vscode/test-electron checks VS Code's stable version online and reuses
+    # the cached download only when it still matches; 1.91.0 is immutable.
+    - id: vscode-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: editors/vscode/.vscode-test
+        key: vscode-electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+        restore-keys: |
+          vscode-electron-${{ runner.os }}-${{ runner.arch }}-
+    - working-directory: editors/vscode
+      shell: bash
+      run: npm ci && npm run typecheck
+    # VS Code needs a display on Linux.
+    - if: runner.os == 'Linux'
+      working-directory: editors/vscode
+      shell: bash
+      run: xvfb-run -a npm test
+    - if: runner.os != 'Linux'
+      working-directory: editors/vscode
+      shell: bash
+      run: npm test
+    # The oldest VS Code the extension claims (engines.vscode), with the
+    # extension npm test just built.
+    - name: VS Code 1.91.0
+      if: runner.os == 'Linux'
+      working-directory: editors/vscode
+      shell: bash
+      env:
+        VSCODE_VERSION: "1.91.0"
+      run: xvfb-run -a node test/run.mjs
+    # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
+    # before a release does, reusing the already-built binary and bundle.
+    - name: Package VSIX
+      if: runner.os == 'Linux'
+      working-directory: editors/vscode
+      shell: bash
+      run: node scripts/package.mjs --skip-build
+    - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vscode-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: editors/vscode/.vscode-test
+        key: vscode-electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
