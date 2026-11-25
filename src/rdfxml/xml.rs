@@ -70,6 +70,8 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+pub(crate) mod cursor;
+
 /// Elements nest at most this deep; a deeper element is skipped with its
 /// content.
 pub(crate) const MAX_DEPTH: usize = 256;
