@@ -1,24 +1,30 @@
 //! The features that write a document or offer text to type: formatting,
-//! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) are
-//! read-only, and their editor keeps its own XML language, so the editor
-//! should not offer these features there. Nor in OWL/XML files (`.owx`),
-//! which editors keep in their XML language too, nor in OWL Functional
-//! files (`.ofn`, the `ofn` language of VS Code and Neovim), which are
-//! read-only too: [`LANGUAGES`] leaves `xml` and `ofn` out. Completion is
-//! the one feature an OWL Functional file gets: its selector
+//! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
+//! their editor's own XML language, and of these only rename edits them
+//! (`features::renames`), so the editor should not offer the other three
+//! there. Nor in OWL/XML files (`.owx`), which editors keep in their XML
+//! language too, nor in OWL Functional files (`.ofn`, the `ofn` language of
+//! VS Code and Neovim), which are read-only too: [`LANGUAGES`] leaves `xml`
+//! and `ofn` out, and rename refuses a term a Functional or OWL/XML
+//! document uses (one under a `.owl` or `.rdf` name is in
+//! [`rename_selector`]'s pattern, and is refused there). Completion is the
+//! one feature an OWL Functional file gets: its selector
 //! ([`completion_selector`]) adds [`COMPLETED_LANGUAGES`]. A Functional
 //! `.owl` keeps the `xml` language, and so gets no completion from a client
 //! that opts in.
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
-//! document (no edits, no completions; rename says why). A client opts in to
-//! more with `"registerOutsideRdfXml": true` at the top level of its
-//! `initializationOptions` ([`OPT_IN`]): each of the four features that the
-//! client can register dynamically (`dynamicRegistration`) is then left out
-//! of the result and registered once the client is initialized, for
-//! [`selector`], which leaves RDF/XML, OWL/XML and OWL Functional files out. VS Code opts in, so that it
-//! lists no turtle-lsp formatter for XML files. The option is read once, at
+//! document but a rename (no formatting edits, no completions, no code
+//! actions), and nothing that writes an OWL Functional or OWL/XML document.
+//! A client opts in to more with `"registerOutsideRdfXml": true` at the top
+//! level of its `initializationOptions` ([`OPT_IN`]): each of the four
+//! features that the client can register dynamically (`dynamicRegistration`)
+//! is then left out of the result and registered once the client is
+//! initialized, for [`selector`], which leaves RDF/XML, OWL/XML and OWL
+//! Functional files out, and rename for [`rename_selector`], which takes
+//! RDF/XML files in. VS Code opts in, so that it lists no turtle-lsp
+//! formatter for XML files. The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does
 //! not change it.
@@ -52,6 +58,11 @@ pub(crate) const COMPLETED_LANGUAGES: [&str; 1] = ["ofn"];
 /// JSON-LD files keep the editor's JSON language: they are matched by name.
 pub(crate) const JSONLD_PATTERN: &str = "**/*.jsonld";
 
+/// RDF/XML files keep the editor's XML language: they are matched by name.
+/// VS Code's client keeps a registered filter by this pattern
+/// (`RDFXML_PATTERN` in `editors/vscode/src/client.ts`, which a test checks).
+pub(crate) const RDFXML_PATTERN: &str = "**/*.{owl,rdf}";
+
 /// The documents the registered features apply to: every language of
 /// [`LANGUAGES`] and every `.jsonld` file, whatever its URI scheme.
 pub(crate) fn selector() -> Vec<DocumentFilter> {
@@ -67,6 +78,14 @@ pub(crate) fn selector() -> Vec<DocumentFilter> {
 pub(crate) fn completion_selector() -> Vec<DocumentFilter> {
     let mut out = selector();
     out.extend(COMPLETED_LANGUAGES.iter().map(|l| filter(Some(l), None)));
+    out
+}
+
+/// The documents rename applies to: [`selector`]'s, and RDF/XML files,
+/// which a rename edits too (`rename.rdfXml`).
+pub(crate) fn rename_selector() -> Vec<DocumentFilter> {
+    let mut out = selector();
+    out.push(filter(None, Some(RDFXML_PATTERN)));
     out
 }
 
@@ -142,9 +161,9 @@ impl Dynamic {
     }
 
     /// The registrations to send once the client is initialized: one per
-    /// dynamic feature, each with [`selector`] (completion with
-    /// [`completion_selector`]) and the options its static capability would
-    /// have.
+    /// dynamic feature, each with [`selector`] ([`completion_selector`] for
+    /// completion, [`rename_selector`] for rename) and the options its
+    /// static capability would have.
     pub(crate) fn registrations(self) -> Vec<Registration> {
         [
             (
@@ -175,10 +194,10 @@ impl Dynamic {
         .into_iter()
         .filter(|(on, ..)| *on)
         .map(|(_, id, method, mut options)| {
-            options["documentSelector"] = if method == "textDocument/completion" {
-                json!(completion_selector())
-            } else {
-                json!(selector())
+            options["documentSelector"] = match method {
+                "textDocument/completion" => json!(completion_selector()),
+                "textDocument/rename" => json!(rename_selector()),
+                _ => json!(selector()),
             };
             Registration {
                 id: id.into(),
@@ -262,8 +281,10 @@ mod tests {
         assert!(ignored_with.is_empty());
     }
 
+    /// Formatting, completion and code actions leave RDF/XML files out;
+    /// rename takes them too, by VS Code's pattern for them.
     #[test]
-    fn the_selector_leaves_rdfxml_files_out() {
+    fn the_selector_leaves_rdfxml_files_out_but_for_rename() {
         let all = Dynamic {
             formatting: true,
             rename: true,
@@ -273,24 +294,36 @@ mod tests {
         for r in all.registrations() {
             let options = r.register_options.unwrap();
             let filters = options["documentSelector"].as_array().unwrap();
-            // Completion's adds the OWL Functional language.
+            // Completion's adds the OWL Functional language, rename's the
+            // RDF/XML pattern.
             let completed = if r.method == "textDocument/completion" {
                 COMPLETED_LANGUAGES.len()
             } else {
                 0
             };
+            let rename = r.method == "textDocument/rename";
+            let rdfxml = json!({"pattern": RDFXML_PATTERN});
+            assert_eq!(filters.contains(&rdfxml), rename, "{}", r.method);
             assert_eq!(
                 filters.len(),
-                LANGUAGES.len() + 1 + completed,
+                LANGUAGES.len() + 1 + completed + usize::from(rename),
                 "{}",
                 r.method
             );
-            for f in filters {
+            for f in filters.iter().filter(|f| **f != rdfxml) {
                 let text = f.to_string();
                 assert!(!text.contains("owl") && !text.contains("rdf") && !text.contains("xml"));
                 assert!(f.get("scheme").is_none(), "{text}");
             }
         }
+        // The pattern VS Code's client matches.
+        let client = include_str!("../../editors/vscode/src/client.ts");
+        assert!(
+            client.contains(&format!(
+                "export const RDFXML_PATTERN = \"{RDFXML_PATTERN}\""
+            )),
+            "editors/vscode/src/client.ts"
+        );
         // The options are those of the static capabilities.
         let rename = all.registrations().remove(1).register_options.unwrap();
         assert_eq!(rename["prepareProvider"], true);

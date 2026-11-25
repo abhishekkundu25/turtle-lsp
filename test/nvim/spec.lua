@@ -356,21 +356,29 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   local text = table.concat(vim.lsp.util.convert_input_to_markdown_lines(r.contents), "\n")
   assert(text:find("A thing with parts.", 1, true), "hover: " .. text)
   -- Neovim does not opt in to the registrations: formatting and rename are
-  -- static, and the server writes nothing in a .owl.
+  -- static, the server formats nothing in a .owl, and a rename edits it.
   assert(c:supports_method("textDocument/formatting", b), "no formatting capability")
   local edits = request(b, "textDocument/formatting", {
     textDocument = vim.lsp.util.make_text_document_params(b),
     options = { tabSize = 2, insertSpaces = true },
   })
   assert(edits == nil or #edits == 0, "formatting edits in a .owl: " .. vim.inspect(edits))
-  local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
+  local at = {
     textDocument = vim.lsp.util.make_text_document_params(b),
     position = pos_of(b, 'owl:Class rdf:about="http://example.org/Wid'),
-    newName = "ex:Thing",
-  }, TIMEOUT)
-  local answer = res and res[c.id]
-  local message = answer and answer.err and answer.err.message or vim.inspect(answer)
-  assert(message:find("RDF/XML document is not edited", 1, true), "rename in a .owl: " .. message)
+  }
+  assert(c:supports_method("textDocument/prepareRename", b), "no prepareRename in a .owl")
+  local prepared = request(b, "textDocument/prepareRename", at)
+  assert(prepared and prepared.start, "prepareRename gave nothing on the IRI: " .. vim.inspect(prepared))
+  local edit = request(b, "textDocument/rename", vim.tbl_extend("force", at, { newName = "Thing" }))
+  assert(edit, "no workspace edit")
+  local ok, err = pcall(vim.lsp.util.apply_workspace_edit, edit, c.offset_encoding)
+  assert(ok, "apply failed: " .. tostring(err))
+  local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+  assert(not text:find("example.org/Widget", 1, true), "Widget still present:\n" .. text)
+  local _, n = text:gsub("http://example%.org/Thing", "")
+  assert(n == 2, "expected 2 occurrences of the new IRI, got " .. n .. ":\n" .. text)
+  vim.cmd("silent! undo")
   -- An xml buffer by any other name gets no client.
   local xml = owl_dir .. "/pom.xml"
   vim.fn.writefile({ "<project/>" }, xml)

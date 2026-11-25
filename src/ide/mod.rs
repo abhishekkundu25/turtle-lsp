@@ -29,6 +29,8 @@ pub(crate) struct Session<'w> {
     resolve_edits: bool,
     snippets: bool,
     reasoning: Option<&'w Arc<crate::reasoning::Shared>>,
+    /// The client takes change annotations in workspace edits.
+    change_annotations: bool,
 }
 
 /// A document, by kind.
@@ -51,6 +53,17 @@ impl<'w> Session<'w> {
             resolve_edits,
             snippets: false,
             reasoning: None,
+            change_annotations: false,
+        }
+    }
+
+    /// The session for a client that takes change annotations
+    /// (`workspace.workspaceEdit.changeAnnotationSupport`, with
+    /// `documentChanges`): a rename marks its edits of RDF/XML documents.
+    pub(crate) fn with_change_annotations(self, change_annotations: bool) -> Session<'w> {
+        Session {
+            change_annotations,
+            ..self
         }
     }
 

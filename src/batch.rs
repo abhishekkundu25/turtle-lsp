@@ -48,8 +48,9 @@ const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
 /// Diagnostic codes whose fixes rewrite a literal's value, so are unsafe too.
 const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
-/// Why a file in a syntax nothing writes ([`features::writes`]) is not
-/// formatted: the syntax's name.
+/// Why a file in a syntax no formatter writes ([`features::writes`]) is
+/// not formatted: the syntax's name. Only a rename writes RDF/XML, and
+/// nothing writes OWL Functional syntax or OWL/XML.
 fn not_formatted(syntax: Syntax) -> &'static str {
     match syntax {
         Syntax::OwlFunctional => "OWL Functional syntax",
@@ -458,8 +459,9 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML: such a file is
-        // neither fixed nor edited by another file's fix.
+        // No fix writes RDF/XML (only an editor's rename does), OWL
+        // Functional syntax or OWL/XML (nothing does): such a file is neither
+        // fixed nor edited by another file's fix.
         let read_only: Vec<bool> = files.iter().map(|f| input.is_read_only(&f.uri)).collect();
         for (f, _) in files
             .iter()
@@ -810,7 +812,7 @@ impl<'a> Input<'a> {
         }
         let a = self.ws.analysis(uri)?;
         if !features::writes(a.parsed.syntax) {
-            // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML,
+            // No formatter writes RDF/XML, OWL Functional syntax or OWL/XML,
             // whatever it holds.
             return Some(Formatted {
                 guarantee: "same graph",

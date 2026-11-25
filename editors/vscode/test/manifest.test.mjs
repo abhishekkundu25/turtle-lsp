@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import { documentSelector, inSchemes, JSONLD_PATTERN, OPT_IN, RDF_GLOB, RDFXML_PATTERN, READ_ONLY_LANGUAGES, registrationsInSchemes, settingsFrom } from "../src/client.ts"
+import { documentSelector, inSchemes, JSONLD_PATTERN, OPT_IN, OWX_PATTERN, RDF_GLOB, RDFXML_PATTERN, READ_ONLY_LANGUAGES, registrationsInSchemes, settingsFrom } from "../src/client.ts"
 
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 const settings = pkg.contributes.configuration.properties
@@ -52,6 +52,7 @@ test("server settings are declared with the server's defaults", () => {
     "turtle.codeLens.references": ["boolean", true],
     "turtle.diagnostics.workspace": ["boolean", false],
     "turtle.parse.incremental": ["boolean", true],
+    "turtle.rename.rdfXml": ["boolean", true],
     "turtle.query.timeoutSeconds": ["number", 30],
     "turtle.query.maxRows": ["integer", 1000],
     "turtle.query.maxBufferedRows": ["integer", 10000000],
@@ -130,9 +131,10 @@ test(".owl, .rdf and .owx files are read and watched, and the client attaches to
   assert.deepEqual(pkg.contributes.configurationDefaults["files.associations"], { "*.owx": "xml" })
   // The client attaches to them by name, as to JSON-LD files, in every scheme but untitled (which has no name).
   const selector = documentSelector(["file", "untitled", "vscode-vfs"])
-  assert.equal(RDFXML_PATTERN, "**/*.{owl,rdf,owx}")
-  assert.deepEqual([...new Set(selector.filter((f) => "pattern" in f).map((f) => f.pattern))], [JSONLD_PATTERN, RDFXML_PATTERN])
-  assert.deepEqual(selector.filter((f) => f.pattern === RDFXML_PATTERN).map((f) => f.scheme), ["file", "vscode-vfs"])
+  assert.equal(RDFXML_PATTERN, "**/*.{owl,rdf}")
+  assert.equal(OWX_PATTERN, "**/*.owx")
+  assert.deepEqual([...new Set(selector.filter((f) => "pattern" in f).map((f) => f.pattern))], [JSONLD_PATTERN, RDFXML_PATTERN, OWX_PATTERN])
+  for (const pattern of [RDFXML_PATTERN, OWX_PATTERN]) assert.deepEqual(selector.filter((f) => f.pattern === pattern).map((f) => f.scheme), ["file", "vscode-vfs"])
   assert.ok(!selector.some((f) => "language" in f && f.language === "xml"))
   // The graph reads the workspace: it is offered on these files from the Explorer and the editor title.
   const menus = pkg.contributes.menus
@@ -162,7 +164,7 @@ test(".ofn files are OWL Functional syntax: a language of the extension, read an
   assert.match(rust, /"ofn" => Some\(Syntax::OwlFunctional\)/)
 })
 
-test("the server's registered selector, in the client's schemes, leaves .owl, .rdf, .owx and .ofn out", () => {
+test("the server's registered selector, in the client's schemes, leaves .owl, .rdf, .owx and .ofn out, and rename's only .owx and .ofn", () => {
   // The selector src/server/registrations.rs sends: its languages and the JSON-LD pattern, no scheme.
   const rust = fs.readFileSync(new URL("../../../src/server/registrations.rs", import.meta.url), "utf8")
   const languages = JSON.parse(rust.match(/LANGUAGES: \[&str; \d+\] =\s*(\[[^\]]*\])/)[1])
@@ -170,12 +172,20 @@ test("the server's registered selector, in the client's schemes, leaves .owl, .r
   const server = [...languages.map((language) => ({ language })), { pattern: JSONLD_PATTERN }]
   // Every language the client serves is one the server registers for, but
   // the read-only ones, which it registers nothing for.
-  const writes = (f) => f.pattern !== RDFXML_PATTERN && !READ_ONLY_LANGUAGES.includes(f.language)
+  const writes = (f) => f.pattern !== RDFXML_PATTERN && f.pattern !== OWX_PATTERN && !READ_ONLY_LANGUAGES.includes(f.language)
   for (const f of documentSelector(["file"])) if ("language" in f) assert.equal(languages.includes(f.language), writes(f), f.language)
   for (const schemes of [["file", "untitled"], ["vscode-vfs", "vscode-test-web"]]) {
     const selector = documentSelector(schemes)
     const narrowed = inSchemes(server, selector)
     assert.deepEqual(narrowed, selector.filter(writes), schemes.join(", "))
+    // Rename's selector has the RDF/XML pattern too: it keeps every filter
+    // but the OWL/XML pattern's and the read-only languages'.
+    assert.equal(rust.match(/RDFXML_PATTERN: &str = "([^"]*)"/)[1], RDFXML_PATTERN)
+    assert.deepEqual(
+      inSchemes([...server, { pattern: RDFXML_PATTERN }], selector),
+      selector.filter((f) => f.pattern !== OWX_PATTERN && !READ_ONLY_LANGUAGES.includes(f.language)),
+      schemes.join(", "),
+    )
   }
   // A registration without a selector (the watchers') stays as it is; a filter with a scheme too.
   const params = {

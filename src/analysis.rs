@@ -463,6 +463,13 @@ impl Analysis {
             .find(|r| r.span.contains(offset))
     }
 
+    /// Whether `r` is the name in an RDF/XML end tag, which repeats its
+    /// start tag's reference: navigation and rename show it, the checks of
+    /// a term's uses and the use counts leave it out.
+    pub(crate) fn is_end_tag(&self, r: &Ref) -> bool {
+        self.parsed.syntax == Syntax::RdfXml && self.text[..r.span.start as usize].ends_with("</")
+    }
+
     pub(crate) fn refs_of<'a, K: IriKey + ?Sized>(
         &'a self,
         iri: &K,

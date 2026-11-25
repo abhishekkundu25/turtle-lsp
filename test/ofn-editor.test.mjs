@@ -140,11 +140,15 @@ describe("an open OWL Functional document", () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
     assert.equal(features.length, 4, JSON.stringify(registrations))
+    // Only completion takes in the ofn language; only rename takes in .owl
+    // and .rdf names (for RDF/XML), where a Functional .owl is refused all
+    // the same.
     for (const r of features) {
       const selector = JSON.stringify(r.registerOptions.documentSelector)
-      assert.doesNotMatch(selector, /owl|xml/, r.method)
       if (r.method === "textDocument/completion") assert.match(selector, /"language":"ofn"/, r.method)
       else assert.doesNotMatch(selector, /ofn/, r.method)
+      if (r.method === "textDocument/rename") assert.match(selector, /"\*\*\/\*\.\{owl,rdf\}"/, r.method)
+      else assert.doesNotMatch(selector, /owl|xml/, r.method)
     }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.ofn"), JSON.stringify(watch))
@@ -157,6 +161,13 @@ describe("an open OWL Functional document", () => {
     assert.ok(offered.includes(":A"), JSON.stringify(completion))
     const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "ex:Thing" })
     assert.match(renamed.error ?? "", /OWL Functional syntax document is not edited/, JSON.stringify(renamed))
+    // The same in a Functional .owl, which rename's registration takes in
+    // by its name: nothing to prepare, and the rename refused.
+    const inOwl = { textDocument: { uri: w.owl }, position: positionOf(ONTO, "Class(:A", 7) }
+    const prepared = await attempt(s, "textDocument/prepareRename", inOwl)
+    assert.equal(prepared.result ?? null, null, JSON.stringify(prepared))
+    const renamedOwl = await attempt(s, "textDocument/rename", { ...inOwl, newName: "ex:Thing" })
+    assert.match(renamedOwl.error ?? "", /functional\.owl: an OWL Functional syntax document is not edited/, JSON.stringify(renamedOwl))
     // From the Turtle file that uses the class: refused, the Functional
     // file named.
     const fromData = await attempt(s, "textDocument/rename", { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:A", 3), newName: "ex:Thing" })

@@ -21,10 +21,12 @@ pub mod symbols;
 
 use crate::syntax::{Family, Syntax};
 
-/// Whether the features that write text (quick fixes, refactorings,
-/// rename) may edit a document of `syntax`. RDF/XML is read-only: nothing
-/// writes XML, whatever form its references have. OWL Functional syntax and
-/// OWL/XML are read-only too: turtle-lsp reads them and writes none of them.
+/// Whether the features that write text (formatting, quick fixes,
+/// refactorings, `check --fix`, the Turtle-family rename) may edit a
+/// document of `syntax`. RDF/XML is read-only for all of them, whatever form
+/// its references have; rename is its one writer, and not through this gate
+/// ([`renames`]). OWL Functional syntax and OWL/XML are read-only for all of
+/// them and for rename too: turtle-lsp reads them and writes none of them.
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax.family() {
         Family::Turtle | Family::JsonLd => true,
@@ -41,6 +43,21 @@ pub(crate) fn completes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::JsonLd | Syntax::OwlFunctional => true,
         Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml | Syntax::OwlXml => false,
+    }
+}
+
+/// Whether a rename may edit a document of `syntax`, or start in one: every
+/// syntax that [`writes`], and RDF/XML too, which [`Family`] groups with the
+/// read-only syntaxes. `navigation::rename_term` edits an RDF/XML document
+/// only through `rdfxml::rename::plan`, which places each edit at the spans
+/// the RDF/XML grammar reads and refuses the rename when it cannot
+/// (`rename.rdfXml` turns it off). OWL Functional syntax and OWL/XML are
+/// not renamed in: a rename that would edit one is refused.
+pub(crate) fn renames(syntax: Syntax) -> bool {
+    match syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
+        Syntax::RdfXml => true,
+        Syntax::OwlFunctional | Syntax::OwlXml => false,
     }
 }
 
@@ -233,6 +250,7 @@ mod syntax_table {
             "keyword",
             "writes",
             "completes",
+            "renames",
             "follows",
             "hinted",
             "tokens",
@@ -247,6 +265,7 @@ mod syntax_table {
                 yes(s.has_keyword_header()),
                 yes(super::writes(s)),
                 yes(super::completes(s)),
+                yes(super::renames(s)),
                 yes(super::kept::follows(s)),
                 yes(super::inlay::hinted(s)),
                 yes(!s.tokens(text(s)).is_empty()),
@@ -264,15 +283,15 @@ mod syntax_table {
             got += &line(&row);
         }
         let want = "\
-            syntax              prefixes  line      keyword   writes    completes follows   hinted    tokens    splice\n\
-            turtle              yes       no        no        yes       yes       yes       yes       yes       ok\n\
-            trig                yes       no        no        yes       yes       yes       yes       yes       ok\n\
-            ntriples            no        yes       no        yes       no        yes       yes       yes       ok\n\
-            nquads              no        yes       no        yes       no        yes       yes       yes       ok\n\
-            jsonld              no        no        no        yes       yes       no        yes       no        Syntax\n\
-            rdfxml              no        no        no        no        no        no        no        no        Syntax\n\
-            ofn                 no        no        yes       no        yes       no        no        no        Syntax\n\
-            owx                 no        no        yes       no        no        no        no        no        Syntax\n\
+            syntax              prefixes  line      keyword   writes    completes renames   follows   hinted    tokens    splice\n\
+            turtle              yes       no        no        yes       yes       yes       yes       yes       yes       ok\n\
+            trig                yes       no        no        yes       yes       yes       yes       yes       yes       ok\n\
+            ntriples            no        yes       no        yes       no        yes       yes       yes       yes       ok\n\
+            nquads              no        yes       no        yes       no        yes       yes       yes       yes       ok\n\
+            jsonld              no        no        no        yes       yes       yes       no        yes       no        Syntax\n\
+            rdfxml              no        no        no        no        no        yes       no        no        no        Syntax\n\
+            ofn                 no        no        yes       no        yes       no        no        no        no        Syntax\n\
+            owx                 no        no        yes       no        no        no        no        no        no        Syntax\n\
             runs_on             turtle    trig      ntriples  nquads    jsonld    rdfxml    ofn       owx\n\
             Syntax              yes       yes       yes       yes       yes       yes       yes       yes\n\
             UndeclaredPrefix    yes       yes       yes       yes       yes       no        no        no\n\

@@ -120,7 +120,7 @@ mod gates {
     #[test]
     fn owl_xml_is_read_and_never_written() {
         use crate::analysis::{Analysis, Encoding};
-        use crate::features::navigation::{PrefixScope, rename};
+        use crate::features::navigation::{PrefixScope, RdfXml, rename};
         use crate::features::{completion, diagnostics, format, semantic, symbols};
         use crate::knowledge::{Knowledge, Source};
         use crate::syntax::splice::{Edit, Fallback};
@@ -175,6 +175,7 @@ mod gates {
         assert_eq!(folds, [(2, 3)]);
         // Nothing is offered, formatted, coloured, spliced or renamed.
         assert!(!crate::features::writes(Syntax::OwlXml));
+        assert!(!crate::features::renames(Syntax::OwlXml));
         for line in 0..8 {
             for character in [0, 1, 10, 30, 60] {
                 let pos = Position::new(line, character);
@@ -201,7 +202,8 @@ mod gates {
             file: None,
             file_of: &mut |_| None,
         };
-        let refused = rename(&a, &k, Encoding::Utf8, Position::new(4, 39), "B", scope);
+        let at = Position::new(4, 39);
+        let refused = rename(&a, &k, Encoding::Utf8, at, "B", scope, RdfXml::Edit);
         let message = refused.unwrap_err();
         assert!(message.contains("an OWL/XML document"), "{message}");
     }

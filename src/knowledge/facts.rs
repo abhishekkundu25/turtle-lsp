@@ -446,7 +446,12 @@ impl DocFacts {
         f.objects = objects;
         // Counted by hash: a document uses a few predicates many times.
         let mut predicates: FxHashMap<Iri, u32> = FxHashMap::default();
-        for r in a.parsed.refs.iter().filter(|r| r.role == Role::Predicate) {
+        for r in a
+            .parsed
+            .refs
+            .iter()
+            .filter(|r| r.role == Role::Predicate && !a.is_end_tag(r))
+        {
             *predicates.entry(r.iri).or_default() += 1;
         }
         f.predicates = counted(predicates.into_iter().collect());

@@ -304,7 +304,14 @@ describe("an open OWL/XML document", () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
     assert.equal(features.length, 4, JSON.stringify(registrations))
-    for (const r of features) assert.doesNotMatch(JSON.stringify(r.registerOptions.documentSelector), /owx|owl|xml/, r.method)
+    for (const r of features) {
+      const selector = r.registerOptions.documentSelector
+      assert.doesNotMatch(JSON.stringify(selector), /owx/, r.method)
+      // Rename takes RDF/XML files by name (.owl, .rdf), never .owx: it
+      // refuses an OWL/XML text under those names.
+      const xml = selector.filter((f) => /owl|rdf|xml/.test(JSON.stringify(f)))
+      assert.deepEqual(xml, r.method === "textDocument/rename" ? [{ pattern: "**/*.{owl,rdf}" }] : [], r.method)
+    }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.owx"), JSON.stringify(watch))
   })

@@ -527,6 +527,7 @@ impl<'a> Reader<'a> {
             end: End {
                 span: Span::new(0, 0),
                 implied: true,
+                name: None,
             },
             scopes: Vec::new(),
             outer,
@@ -632,6 +633,7 @@ impl<'a> Reader<'a> {
                 self.end = End {
                     span: Span::new(self.last, self.last),
                     implied: true,
+                    name: None,
                 };
             }
             Event::Text { .. } | Event::Pi(..) => {}

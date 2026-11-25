@@ -26,6 +26,18 @@ pub(super) struct Stamp {
     pub(super) len: u64,
 }
 
+/// The text of a file on disk as an editor holds it: UTF-8, without a
+/// leading byte order mark, which VS Code and Neovim take off when they
+/// open it. Positions in a closed file are then the ones the client sees
+/// once it opens it, and a Turtle parser need not read the mark.
+pub(crate) fn read_text(path: &Path) -> Option<String> {
+    let mut text = std::fs::read_to_string(path).ok()?;
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Some(text)
+}
+
 pub(super) fn stamp_of(path: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
     Some(Stamp {
@@ -472,7 +484,7 @@ fn parse_files(
                 if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
                     return None;
                 }
-                let text = std::fs::read_to_string(&path).ok()?;
+                let text = read_text(&path)?;
                 let syntax = Syntax::of(None, &uri, &text);
                 // The job's prefixes are by name: a text in a syntax without
                 // prefixes gets none, as when it is open.

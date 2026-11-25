@@ -184,6 +184,10 @@ pub(crate) struct Server {
     resolve_edits: bool,
     /// The client takes snippets in completion items (`snippetSupport`).
     snippets: bool,
+    /// The client takes change annotations in workspace edits
+    /// (`workspace.workspaceEdit.changeAnnotationSupport`, with
+    /// `documentChanges`): a rename asks to confirm its RDF/XML edits.
+    change_annotations: bool,
     layers: Layers,
     refresh: Refresh,
     /// What waits for a time to come: acting on a described-set change (see
@@ -296,6 +300,10 @@ impl Server {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let flag = |pointer: &str| raw.pointer(pointer).and_then(Value::as_bool) == Some(true);
+        let change_annotations = flag("/capabilities/workspace/workspaceEdit/documentChanges")
+            && raw
+                .pointer("/capabilities/workspace/workspaceEdit/changeAnnotationSupport")
+                .is_some_and(Value::is_object);
         // JSON Pointer writes the `/` of `turtle/queryResults` as `~1`.
         let results_pointer = format!(
             "/capabilities/experimental/{}",
@@ -392,6 +400,7 @@ impl Server {
             dynamic,
             resolve_edits,
             snippets,
+            change_annotations,
             // Before `layers` moves: `settings` borrows it.
             reasoning: crate::reasoning::Shared::when_on(settings, spawn),
             layers,
@@ -1607,6 +1616,7 @@ impl Server {
         )
         .with_reasoning(self.reasoning.as_ref())
         .with_snippets(self.snippets)
+        .with_change_annotations(self.change_annotations)
     }
 
     /// The answer to `req`, its result as JSON text: None when it is

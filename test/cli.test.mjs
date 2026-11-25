@@ -760,7 +760,7 @@ test("the pre-commit hooks match every extension the tool reads, and format's he
   assert.match(help, /JSON-LD/)
 })
 
-// ---- .owl and .rdf: read, never written ----
+// ---- .owl and .rdf: read, never formatted or fixed (only an editor's rename writes them) ----
 
 const OWL = `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"

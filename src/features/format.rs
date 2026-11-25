@@ -93,7 +93,8 @@ fn format_with<'t>(
             }
             return crate::jsonld::format::format(text, opts);
         }
-        // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML.
+        // No formatter writes RDF/XML (only a rename does), OWL Functional
+        // syntax or OWL/XML (nothing does).
         Family::ReadOnly => return None,
         Family::Turtle => {}
     }

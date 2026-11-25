@@ -2,7 +2,7 @@
 //! from the watcher's events, and the open SPARQL documents beside them.
 
 use super::{
-    DocKind, MAX_FILE_BYTES, MAX_FILES, Stamp, Workspace, is_sparql_path, path_to_uri,
+    DocKind, MAX_FILE_BYTES, MAX_FILES, Stamp, Workspace, is_sparql_path, path_to_uri, read_text,
     scan_roots_matching, stamp_of,
 };
 use crate::analysis::SparqlAnalysis;
@@ -124,7 +124,7 @@ impl Workspace {
                 if stamp.is_some_and(|s| s.len > MAX_FILE_BYTES) {
                     return None;
                 }
-                let text = std::fs::read_to_string(&path).ok()?;
+                let text = read_text(&path)?;
                 let analysis = Arc::new(SparqlAnalysis::new(uri.clone(), &text, ext));
                 Some((
                     path,

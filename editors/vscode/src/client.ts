@@ -33,13 +33,19 @@ export const READ_ONLY_LANGUAGES = ["ofn"] as const
 // server attaches to them by name, and detects JSON-LD from the extension.
 export const JSONLD_PATTERN = "**/*.jsonld"
 
-// RDF/XML and OWL/XML files keep VS Code's XML language too (`.owx` through
-// the manifest's `files.associations` default, as VS Code's XML language does
-// not list it). The server reads them by their name and content and does not
-// write them: asked with OPT_IN, it registers formatting, rename, completion
-// and code actions for the other documents only, so VS Code lists no
-// turtle-lsp formatter for XML files.
-export const RDFXML_PATTERN = "**/*.{owl,rdf,owx}"
+// RDF/XML files keep VS Code's XML language too. The server reads them by
+// their content, and only a rename writes them: asked with OPT_IN, it
+// registers formatting, completion and code actions for the other documents
+// only, so VS Code lists no turtle-lsp formatter for XML files, and rename
+// for these files too (its selector has this pattern; the server's
+// RDFXML_PATTERN in src/server/registrations.rs must equal it).
+export const RDFXML_PATTERN = "**/*.{owl,rdf}"
+
+// OWL/XML files keep VS Code's XML language too (through the manifest's
+// `files.associations` default, as VS Code's XML language does not list
+// `.owx`). The server reads them by their name and content and does not
+// write them: it registers nothing that writes for them, rename included.
+export const OWX_PATTERN = "**/*.owx"
 
 /**
  * The `initializationOptions` key that asks the server for those
@@ -60,6 +66,7 @@ export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
       .flatMap((scheme) => [
         { scheme, pattern: JSONLD_PATTERN },
         { scheme, pattern: RDFXML_PATTERN },
+        { scheme, pattern: OWX_PATTERN },
       ]),
   ]
 }

@@ -36,6 +36,9 @@
     "parse": {
       "$ref": "#/definitions/parse"
     },
+    "rename": {
+      "$ref": "#/definitions/rename"
+    },
     "format": {
       "$ref": "#/definitions/format"
     },
@@ -115,6 +118,12 @@
     },
     "^(turtle\\.)+parse$": {
       "$ref": "#/definitions/parse"
+    },
+    "^(turtle\\.)*rename\\.rdfXml$": {
+      "$ref": "#/definitions/rename.rdfXml"
+    },
+    "^(turtle\\.)+rename$": {
+      "$ref": "#/definitions/rename"
     },
     "^(turtle\\.)*format\\.lineWidth$": {
       "$ref": "#/definitions/format.lineWidth"
@@ -415,6 +424,23 @@
       "default": true,
       "description": "Show the number of references above each subject a file describes. Click it to list the references.",
       "markdownDescription": "Show the number of references above each subject a file describes. Click it to list the references."
+    },
+    "rename.rdfXml": {
+      "type": "boolean",
+      "default": true,
+      "description": "Rename an IRI in the RDF/XML files (.owl, .rdf) that use it too, and let a rename start in one. Each use keeps its form. When one cannot be rewritten exactly (a use read from an entity, a character reference, vocabulary the syntax implies, a name whose new namespace has no prefix there), the whole rename is refused, with the file, line and reason. Off, a rename that would edit an RDF/XML file is refused.",
+      "markdownDescription": "Rename an IRI in the RDF/XML files (`.owl`, `.rdf`) that use it too, and let a rename start in one. Each use keeps its form. When one cannot be rewritten exactly (a use read from an entity, a character reference, vocabulary the syntax implies, a name whose new namespace has no prefix there), the whole rename is refused, with the file, line and reason. Off, a rename that would edit an RDF/XML file is refused."
+    },
+    "rename": {
+      "type": "object",
+      "description": "Rename.",
+      "markdownDescription": "Rename.",
+      "properties": {
+        "rdfXml": {
+          "$ref": "#/definitions/rename.rdfXml"
+        }
+      },
+      "additionalProperties": false
     },
     "codeLens": {
       "type": "object",

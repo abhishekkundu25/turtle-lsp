@@ -55,7 +55,7 @@ mod sparql_files;
 mod uri;
 
 use contexts::{ContextUses, DocContexts};
-pub(crate) use disk::{Parsed, Reparsed, scan_roots_matching};
+pub(crate) use disk::{Parsed, Reparsed, read_text, scan_roots_matching};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use disk::{Scan, scan_roots_capped};
 use disk::{Stamp, Touched, stamp_of};

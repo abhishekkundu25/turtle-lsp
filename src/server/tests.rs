@@ -130,8 +130,10 @@ fn embedded_dynamic_features_are_registered_after_initialized() {
     );
     for r in &regs {
         let selector = r["registerOptions"]["documentSelector"].to_string();
+        // Rename edits RDF/XML documents too, nothing else does.
+        let rename = r["method"] == "textDocument/rename";
         assert!(
-            selector.contains("turtle") && !selector.contains("owl"),
+            selector.contains("turtle") && selector.contains("owl") == rename,
             "{selector}"
         );
     }

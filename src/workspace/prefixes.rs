@@ -2,7 +2,9 @@
 //! prefixes and the nearest prefixes.ttl, read from disk or from its open
 //! document, and kept current as those change.
 
-use super::{PREFIX_FILE, Stamp, Workspace, file_uri_name, path_to_uri, stamp_of, uri_to_path};
+use super::{
+    PREFIX_FILE, Stamp, Workspace, file_uri_name, path_to_uri, read_text, stamp_of, uri_to_path,
+};
 use crate::analysis::Analysis;
 use crate::syntax::{PrefixMap, Syntax};
 use std::path::{Path, PathBuf};
@@ -90,7 +92,7 @@ impl Workspace {
             .open
             .get(&file_uri)
             .map(|d| d.text.clone())
-            .or_else(|| std::fs::read_to_string(file).ok());
+            .or_else(|| read_text(file));
         let mut map = self.settings_prefixes.clone();
         if let Some(text) = text {
             let parsed = crate::syntax::parse(&text, &PrefixMap::default(), Syntax::Turtle);
