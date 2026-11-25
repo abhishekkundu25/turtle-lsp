@@ -61,6 +61,10 @@ pub(crate) enum Slot<'d> {
     NodeElement,
     /// The name of a property element of `Node`.
     PropertyElement(Node),
+    /// The name of the innermost open element after `</`.
+    EndTag { name: &'d str, closed: bool },
+    /// Valid syntax attributes for the start tag being typed.
+    Attribute(Vec<AttrKind>),
     /// An attribute value.
     Value {
         of: Value,
@@ -72,11 +76,26 @@ pub(crate) enum Slot<'d> {
     },
 }
 
+/// An RDF/XML syntax attribute offered on a start tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AttrKind {
+    About,
+    Id,
+    NodeId,
+    Type,
+    Resource,
+    Datatype,
+    ParseType,
+    XmlLang,
+}
+
 /// Which attribute value.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Value {
     /// `rdf:about` of a node element: a subject.
     About,
+    /// `rdf:type` attribute of a node element: a class.
+    Type,
     /// `rdf:resource` of a property element of `node`: the object of
     /// `property` (`None` when the element's name is no IRI).
     Resource {
@@ -85,6 +104,11 @@ pub(crate) enum Value {
     },
     /// `rdf:datatype` of a property element.
     Datatype,
+    /// `rdf:parseType` of a property element; `allow_triple` is false when
+    /// the tag is self-closing or already carries another valid `parseType`
+    /// on an empty closed element (switching to `Triple` with no child would
+    /// report zero triples).
+    ParseType { allow_triple: bool },
 }
 
 /// A node element: the subject of the property elements in it.
@@ -118,12 +142,52 @@ const ITS: &str = "http://www.w3.org/2005/11/its";
 /// nothing does.
 pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Option<Expected<'d>> {
     let c = doc.at(offset);
+    if let At::EndName { span, closed } = c.at {
+        let root_name = &c.open.first()?.tag.name;
+        if !root_name.is(RDF, "RDF") && root_name.ns().is_none() {
+            return None;
+        }
+        let last = c.open.last()?;
+        if last.tag.name.entity || !xml::is_name(last.tag.name.raw) {
+            return None;
+        }
+        // Do not overwrite an end tag that already closes an outer open element,
+        // or close `last` early when a matching closing tag already follows.
+        let outer: Vec<&str> = c.open[..c.open.len() - 1]
+            .iter()
+            .map(|e| e.tag.name.raw)
+            .collect();
+        if span.start < span.end {
+            let existing = text.get(span.start as usize..span.end as usize)?;
+            if outer.contains(&existing) {
+                return None;
+            }
+        }
+        if super::xml::cursor::is_already_closed(text, span.end as usize, &outer, last.tag.name.raw)
+        {
+            return None;
+        }
+        return Some(Expected {
+            slot: Slot::EndTag {
+                name: last.tag.name.raw,
+                closed,
+            },
+            span,
+            prefixes: c.prefixes,
+            taken: Vec::new(),
+            allow_description: true,
+            root: None,
+        });
+    }
     let content = match content(&c.open) {
         Some(content) => content,
         None if c.open.is_empty() => match &c.at {
             // A standalone document may start with a node element instead of
             // `rdf:RDF` (RDF/XML 1.1, 7.2.1): its start tag is in node position.
             At::Value(v) if v.tag.name.ns().is_some() && !v.tag.name.is(RDF, "RDF") => {
+                Content::Nodes
+            }
+            At::AttrName(a) if a.tag.name.ns().is_some() && !a.tag.name.is(RDF, "RDF") => {
                 Content::Nodes
             }
             _ => return None,
@@ -186,11 +250,13 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             let name = &v.attr.name;
             let of = match content {
                 Content::Nodes | Content::TripleNode if name.is(RDF, "about") => Value::About,
+                Content::Nodes | Content::TripleNode if name.is(RDF, "type") => Value::Type,
                 Content::Properties(node) if name.is(RDF, "resource") => Value::Resource {
                     property: iri(&v.tag.name),
                     node,
                 },
                 Content::Properties(_) if name.is(RDF, "datatype") => Value::Datatype,
+                Content::Properties(_) if name.is(RDF, "parseType") => parse_type_offer(text, &v)?,
                 _ => return None,
             };
             let quote = *text.as_bytes().get(v.span.start.checked_sub(1)? as usize)?;
@@ -209,7 +275,14 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             }
             (Slot::Value { of, quote, entity }, span)
         }
-        At::Text(_) | At::Elsewhere => return None,
+        At::AttrName(a) => {
+            let attrs = tag_attrs(&content, &a.tag);
+            if attrs.is_empty() {
+                return None;
+            }
+            (Slot::Attribute(attrs), a.span)
+        }
+        At::EndName { .. } | At::Text(_) | At::Elsewhere => return None,
     };
     let root = c
         .open
@@ -283,6 +356,73 @@ fn property_content(e: &Element<'_>) -> Content {
         // "Literal", and any other value, which reads as it.
         Some(_) => Content::None,
     }
+}
+
+/// Whether `rdf:parseType` on `v.tag` may be offered: not when the property
+/// element already has non-white body content (changing `parseType` changes
+/// how its children read and can break them).
+fn parse_type_offer(text: &str, v: &super::xml::cursor::AttrValue<'_>) -> Option<Value> {
+    let raw_tag = text.get(v.tag.span.start as usize..v.tag.span.end as usize)?;
+    let self_closing = raw_tag.ends_with("/>");
+    let tag_closed = raw_tag.ends_with('>');
+    if !self_closing {
+        let after = text
+            .get(v.tag.span.end as usize..)?
+            .trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if !after.is_empty() && !after.starts_with("</") {
+            return None;
+        }
+    }
+    let already_valid_other = matches!(&*v.attr.value.text, "Resource" | "Collection" | "Literal");
+    let allow_triple = !self_closing && !(tag_closed && already_valid_other);
+    Some(Value::ParseType { allow_triple })
+}
+
+/// The RDF/XML syntax attributes valid on `tag` in `content` that are not
+/// already present or mutually exclusive with attributes on `tag`.
+fn tag_attrs(content: &Content, tag: &Tag<'_>) -> Vec<AttrKind> {
+    let has_rdf = |local: &str| tag.attrs.iter().any(|a| a.name.is(RDF, local));
+    let has_xml_lang = tag
+        .attrs
+        .iter()
+        .any(|a| a.name.ns() == Some(xml::XML_NS) && a.name.local() == "lang");
+    let mut out = Vec::new();
+    match content {
+        Content::Nodes | Content::TripleNode => {
+            if !has_rdf("about") && !has_rdf("ID") && !has_rdf("nodeID") {
+                out.extend([AttrKind::About, AttrKind::Id, AttrKind::NodeId]);
+            }
+            if !has_rdf("type") {
+                out.push(AttrKind::Type);
+            }
+            if !has_xml_lang {
+                out.push(AttrKind::XmlLang);
+            }
+        }
+        Content::Properties(_) => {
+            let has_object = has_rdf("resource")
+                || has_rdf("nodeID")
+                || has_rdf("datatype")
+                || has_rdf("parseType")
+                || tag.attrs.iter().any(fixes_object);
+            if !has_object {
+                out.extend([
+                    AttrKind::Resource,
+                    AttrKind::Datatype,
+                    AttrKind::ParseType,
+                    AttrKind::NodeId,
+                ]);
+            }
+            if !has_rdf("ID") {
+                out.push(AttrKind::Id);
+            }
+            if !has_xml_lang {
+                out.push(AttrKind::XmlLang);
+            }
+        }
+        Content::None => {}
+    }
+    out
 }
 
 /// Whether raw element name `typed` names `rdf:Description` under `prefixes`.

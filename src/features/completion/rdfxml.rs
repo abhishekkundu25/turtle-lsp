@@ -75,7 +75,7 @@ pub(super) fn complete(
     k: &Knowledge,
     enc: Encoding,
     offset: usize,
-    _snippets: bool,
+    snippets: bool,
 ) -> CompletionResponse {
     let text: &str = &a.text;
     let doc = Document::read(text);
@@ -91,29 +91,205 @@ pub(super) fn complete(
         .filter(|(p, _)| is_nc_name(p))
         .map(|(p, ns)| (p.to_string(), ns.to_string()))
         .collect();
+    let range = a.range(enc, e.span);
+    match &e.slot {
+        expected::Slot::EndTag { name, closed } => {
+            return CompletionResponse::List(end_tag(typed, name, *closed, range));
+        }
+        expected::Slot::Attribute(kinds) => {
+            return CompletionResponse::List(attributes(
+                a, text, enc, typed, &e, kinds, &prefixes, range, snippets,
+            ));
+        }
+        expected::Slot::Value {
+            of: Value::ParseType { allow_triple },
+            entity,
+            ..
+        } => {
+            return CompletionResponse::List(parse_types(
+                typed,
+                entity.is_some(),
+                *allow_triple,
+                range,
+            ));
+        }
+        _ => {}
+    }
     let (cands, incomplete) = match &e.slot {
         expected::Slot::NodeElement => elements(k, typed, &e, None, &prefixes),
         expected::Slot::PropertyElement(node) => elements(k, typed, &e, Some(node), &prefixes),
         expected::Slot::Value { of, quote, entity } => {
             values(k, typed, of, *quote, *entity, &prefixes)
         }
+        expected::Slot::EndTag { .. } | expected::Slot::Attribute(_) => unreachable!(),
     };
-    let items = items(
-        cands,
-        a.range(enc, e.span),
-        &prefixes,
-        DIRECTIVE,
-        |p, ns| {
-            let (at, new_text) = e.declare(text, p, ns)?;
-            let pos = a.position(enc, at);
-            Some(TextEdit::new(Range::new(pos, pos), new_text))
-        },
-    );
+    let items = items(cands, range, &prefixes, DIRECTIVE, |p, ns| {
+        let (at, new_text) = e.declare(text, p, ns)?;
+        let pos = a.position(enc, at);
+        Some(TextEdit::new(Range::new(pos, pos), new_text))
+    });
     debug_assert!(items.len() <= LIMIT);
     CompletionResponse::List(CompletionList {
         is_incomplete: incomplete,
         items,
     })
+}
+
+/// Closing-tag completion after `</`: the innermost open element's name,
+/// with `>` appended when no `>` already follows.
+fn end_tag(typed: &str, name: &str, closed: bool, range: Range) -> CompletionList {
+    let mut items = Vec::new();
+    if fuzzy(typed, name) {
+        let new_text = if closed {
+            name.to_string()
+        } else {
+            format!("{name}>")
+        };
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("close element".into()),
+            sort_text: Some("0".into()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, new_text))),
+            ..Default::default()
+        });
+    }
+    CompletionList {
+        is_incomplete: false,
+        items,
+    }
+}
+
+/// Valid RDF/XML syntax attributes for the start tag being written.
+#[allow(clippy::too_many_arguments)]
+fn attributes(
+    a: &Analysis,
+    text: &str,
+    enc: Encoding,
+    typed: &str,
+    e: &Expected<'_>,
+    kinds: &[expected::AttrKind],
+    prefixes: &PrefixMap,
+    range: Range,
+    snippets: bool,
+) -> CompletionList {
+    let rdf_prefix: Option<(String, Option<(String, String)>)> =
+        if prefixes.get("rdf").map(String::as_str) == Some(RDF) {
+            Some(("rdf".into(), None))
+        } else if let Some(p) = prefixes
+            .iter()
+            .filter(|(_, ns)| ns.as_str() == RDF)
+            .map(|(p, _)| p)
+            .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+        {
+            Some((p.clone(), None))
+        } else if e.may_declare("rdf") {
+            Some(("rdf".into(), Some(("rdf".into(), RDF.into()))))
+        } else {
+            None
+        };
+    let mut items = Vec::new();
+    for (idx, &kind) in kinds.iter().enumerate() {
+        let (label, detail, import) = match kind {
+            expected::AttrKind::XmlLang => (
+                "xml:lang".to_string(),
+                "language tag for literal values",
+                None,
+            ),
+            other => {
+                let Some((pfx, imp)) = &rdf_prefix else {
+                    continue;
+                };
+                let (local, desc) = match other {
+                    expected::AttrKind::About => ("about", "subject IRI of this node"),
+                    expected::AttrKind::Id => {
+                        ("ID", "fragment identifier relative to the base IRI")
+                    }
+                    expected::AttrKind::NodeId => ("nodeID", "blank node identifier"),
+                    expected::AttrKind::Type => ("type", "class IRI of this node"),
+                    expected::AttrKind::Resource => ("resource", "object IRI of this property"),
+                    expected::AttrKind::Datatype => ("datatype", "datatype IRI of this literal"),
+                    expected::AttrKind::ParseType => {
+                        ("parseType", "Resource, Collection, Literal or Triple")
+                    }
+                    expected::AttrKind::XmlLang => unreachable!(),
+                };
+                (format!("{pfx}:{local}"), desc, imp.clone())
+            }
+        };
+        let matches = if typed.contains(':') {
+            fuzzy(typed, &label)
+        } else {
+            fuzzy(typed, &label) || fuzzy(typed, local_of(&label))
+        };
+        if !matches {
+            continue;
+        }
+        let additional = match import {
+            Some((p, ns)) => {
+                let Some((at, new_text)) = e.declare(text, &p, &ns) else {
+                    continue;
+                };
+                let pos = a.position(enc, at);
+                Some(vec![TextEdit::new(Range::new(pos, pos), new_text)])
+            }
+            None => None,
+        };
+        let (new_text, format) = if snippets {
+            (format!("{label}=\"$0\""), Some(InsertTextFormat::SNIPPET))
+        } else {
+            (format!("{label}=\"\""), None)
+        };
+        items.push(CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some(detail.into()),
+            sort_text: Some(format!("{idx:02}")),
+            insert_text_format: format,
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, new_text))),
+            additional_text_edits: additional,
+            ..Default::default()
+        });
+    }
+    CompletionList {
+        is_incomplete: false,
+        items,
+    }
+}
+
+/// The four `rdf:parseType` values of RDF 1.2 XML Syntax.
+fn parse_types(typed: &str, in_entity: bool, allow_triple: bool, range: Range) -> CompletionList {
+    const VALUES: [(&str, &str); 4] = [
+        ("Resource", "blank node with child property elements"),
+        ("Collection", "rdf:List of child node elements"),
+        ("Literal", "XML literal content (rdf:XMLLiteral)"),
+        ("Triple", "RDF 1.2 triple term (one triple)"),
+    ];
+    let mut items = Vec::new();
+    if !in_entity {
+        for (idx, (val, desc)) in VALUES.iter().enumerate() {
+            if *val == "Triple" && !allow_triple {
+                continue;
+            }
+            if fuzzy(typed, val) {
+                items.push(CompletionItem {
+                    label: (*val).into(),
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    detail: Some((*desc).into()),
+                    sort_text: Some(format!("{idx:02}")),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        range,
+                        (*val).into(),
+                    ))),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    CompletionList {
+        is_incomplete: false,
+        items,
+    }
 }
 
 /// The names of a node element (`node` is `None`: `rdf:Description` and
@@ -281,7 +457,9 @@ fn values(
     };
     let (slot, ranked) = match of {
         Value::About => (Slot::Subject, Ranking::default()),
+        Value::Type => (Slot::Class, Ranking::default()),
         Value::Datatype => (Slot::Datatype, Ranking::default()),
+        Value::ParseType { .. } => unreachable!(),
         Value::Resource { property, node } => match property.as_deref() {
             Some(p) if CLASS_VALUED.contains(&p) => (Slot::Class, Ranking::default()),
             Some(p) if PROPERTY_VALUED.contains(&p) => (Slot::Predicate, Ranking::default()),
@@ -880,7 +1058,7 @@ mod tests {
             "  <owl:Class rdf:about=\"http://example.org/A\">\n    <rdfs:comment rdf:parseType=\"Literal\"><b rdf:resource=\"|",
             "  <owl:Class rdf:about=\"http://example.org/A\">\n    <rdfs:label>Pu|</rdfs:label>\n  </owl:Class>\n",
             "  <!-- <owl:Cl| -->\n",
-            "  <owl:Class rdf:ab|\n",
+            "  <owl:Class rdf:ab|out=\"http://example.org/A\"/>\n",
             "  <owl:Class rdf:nodeID=\"|\"/>\n",
             "  <owl:Cl|ass rdf:about=\"http://example.org/X\">\n  </owl:Class>\n",
         ] {
@@ -1224,6 +1402,11 @@ mod tests {
                 let before = at.a.parsed.errors.len();
                 for item in at.items() {
                     let after = at.accepted(&item);
+                    // Attribute-name snippets leave an unfilled value (`$0`).
+                    if item.kind == Some(CompletionItemKind::FIELD) {
+                        accepted += 1;
+                        continue;
+                    }
                     let a = Analysis::new(URI.into(), &after, Arc::default(), true);
                     assert!(
                         a.parsed.errors.len() <= before,
@@ -1419,5 +1602,131 @@ mod tests {
         let labels = at(&triple).labels();
         assert!(!has(&labels, "rdf:Description"), "{labels:?}");
         assert!(has(&labels, "ex:Valve"), "{labels:?}");
+    }
+
+    #[test]
+    fn closing_tag_completes_the_innermost_open_element() {
+        let open =
+            "  <owl:Class rdf:about=\"http://example.org/Hose\">\n    <rdfs:subClassOf>\n      ";
+        // Without `>`: appends `>`.
+        let a = at(&onto(&format!("{open}</|\n  </owl:Class>\n")));
+        assert_eq!(a.labels(), ["rdfs:subClassOf"]);
+        let after = a.accepted(&a.item("rdfs:subClassOf"));
+        assert!(after.contains("</rdfs:subClassOf>\n"), "{after}");
+        // When already closed below, does not suggest closing it again early.
+        let dup = at(&onto(&format!(
+            "{open}</|\n    </rdfs:subClassOf>\n  </owl:Class>\n"
+        )));
+        assert!(dup.labels().is_empty(), "{:?}", dup.labels());
+        // With `>` already present: replaces only the name.
+        let a = at(&onto(&format!("{open}</rdfs:sub|>\n  </owl:Class>\n")));
+        assert_eq!(a.labels(), ["rdfs:subClassOf"]);
+        let after = a.accepted(&a.item("rdfs:subClassOf"));
+        assert!(
+            after.contains("</rdfs:subClassOf>\n  </owl:Class>"),
+            "{after}"
+        );
+        let parsed = Analysis::new(URI.into(), &after, Arc::default(), true);
+        assert!(
+            parsed.parsed.errors.is_empty(),
+            "{:?}",
+            parsed.parsed.errors
+        );
+        // Does not overwrite an existing outer closing tag.
+        let outer = at(&onto(
+            "  <owl:Class rdf:about=\"http://example.org/Hose\">\n    <rdfs:subClassOf>\n  </|owl:Class>\n",
+        ));
+        assert!(outer.labels().is_empty(), "{:?}", outer.labels());
+    }
+
+    #[test]
+    fn attributes_parse_type_and_rdf_type_values() {
+        // Node element attributes: identity + rdf:type + xml:lang.
+        let node_empty = at(&onto("  <rdf:Description |/>\n"));
+        assert_eq!(
+            node_empty.labels(),
+            ["rdf:about", "rdf:ID", "rdf:nodeID", "rdf:type", "xml:lang"]
+        );
+        // Once rdf:about is present, rdf:ID and rdf:nodeID are omitted.
+        let node_about = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\" |/>\n",
+        ));
+        assert_eq!(node_about.labels(), ["rdf:type", "xml:lang"]);
+        // Property element attributes: object-fixing + rdf:ID + xml:lang.
+        let prop_empty = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds |/>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(
+            prop_empty.labels(),
+            [
+                "rdf:resource",
+                "rdf:datatype",
+                "rdf:parseType",
+                "rdf:nodeID",
+                "rdf:ID",
+                "xml:lang"
+            ]
+        );
+        // Once rdf:resource is present, mutually exclusive attributes are omitted.
+        let prop_res = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds rdf:resource=\"http://example.org/o\" |/>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(prop_res.labels(), ["rdf:ID", "xml:lang"]);
+        // Filtering by local name (`res` -> `rdf:resource`) and snippet vs plain edit.
+        let prop_filt = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds res|/>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(prop_filt.labels(), ["rdf:resource"]);
+        let CompletionResponse::List(plain_list) = super::complete(
+            &prop_filt.a,
+            &prop_filt.k,
+            Encoding::Utf16,
+            prop_filt.offset,
+            false,
+        ) else {
+            panic!("list");
+        };
+        let plain = prop_filt.accepted(&plain_list.items[0]);
+        assert!(plain.contains("<ex:feeds rdf:resource=\"\"/>"), "{plain}");
+        let CompletionResponse::List(snip_list) = super::complete(
+            &prop_filt.a,
+            &prop_filt.k,
+            Encoding::Utf16,
+            prop_filt.offset,
+            true,
+        ) else {
+            panic!("list");
+        };
+        assert_eq!(
+            snip_list.items[0].insert_text_format,
+            Some(InsertTextFormat::SNIPPET)
+        );
+        assert_eq!(
+            snip_list.items[0].text_edit,
+            Some(CompletionTextEdit::Edit(TextEdit::new(
+                prop_filt.a.range(
+                    Encoding::Utf16,
+                    crate::syntax::Span::new(prop_filt.offset as u32 - 3, prop_filt.offset as u32)
+                ),
+                "rdf:resource=\"$0\"".into(),
+            )))
+        );
+        // rdf:parseType values.
+        let pt = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds rdf:parseType=\"|\"></ex:feeds>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(pt.labels(), ["Resource", "Collection", "Literal", "Triple"]);
+        let pt_r = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds rdf:parseType=\"Res|\"></ex:feeds>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(pt_r.labels(), ["Resource"]);
+        // rdf:type attribute values on a node element offer classes (not properties/datatypes).
+        let ty = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\" rdf:type=\"http://example.org/|\"/>\n",
+        ));
+        let labels = ty.labels();
+        assert!(has(&labels, "http://example.org/Pump"), "{labels:?}");
+        assert!(has(&labels, "http://example.org/Valve"), "{labels:?}");
+        assert!(!has(&labels, "http://example.org/feeds"), "{labels:?}");
     }
 }

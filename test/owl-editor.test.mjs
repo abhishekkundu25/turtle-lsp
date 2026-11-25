@@ -105,34 +105,41 @@ describe("a client that opts in and registers features dynamically", () => {
     }
     const registrations = await until(
       async () => s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations),
-      (regs) => regs.length >= 5,
+      (regs) => regs.length >= 6,
     )
     // The watchers have a request of their own, and watch .owl and .rdf files.
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     const glob = watch.registerOptions.watchers[0].globPattern
     for (const ext of ["owl", "rdf"]) assert.ok(glob.includes(`*.${ext}`), glob)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
-    assert.deepEqual(features.map((r) => r.method).sort(), [...FEATURES].sort())
+    assert.deepEqual(features.map((r) => r.method).sort(), [...FEATURES, "textDocument/completion"].sort())
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
-      // Completion's also has OWL Functional syntax's language and the
-      // RDF/XML and OWL/XML patterns, rename's the RDF/XML pattern.
-      const completion = r.method === "textDocument/completion"
+      // Completion has two registrations: non-XML (with ofn) and XML (.owl/.rdf/.owx
+      // with XML trigger characters). Rename also includes .owl/.rdf.
+      const xmlComp = r.id === "turtle-xml-completion"
+      const comp = r.id === "turtle-completion"
       const rename = r.method === "textDocument/rename"
-      const added = completion ? ["ofn", "**/*.{owl,rdf}", "**/*.owx"] : rename ? ["**/*.{owl,rdf}"] : []
-      assert.deepEqual(
-        selector.map((f) => f.language ?? f.pattern),
-        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...added],
-        r.method,
-      )
-      if (!rename && !completion) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)
+      if (xmlComp) {
+        assert.deepEqual(selector.map((f) => f.language ?? f.pattern), ["**/*.{owl,rdf}", "**/*.owx"], r.id)
+      } else {
+        const added = comp ? ["ofn"] : rename ? ["**/*.{owl,rdf}"] : []
+        assert.deepEqual(
+          selector.map((f) => f.language ?? f.pattern),
+          ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...added],
+          r.id,
+        )
+        if (!rename) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.id)
+      }
     }
-    const options = Object.fromEntries(features.map((r) => [r.method, r.registerOptions]))
-    assert.equal(options["textDocument/rename"].prepareProvider, true)
-    assert.equal(options["textDocument/completion"].resolveProvider, true)
-    assert.deepEqual(options["textDocument/completion"].triggerCharacters, [":", "@", "?", "$"])
-    assert.equal(options["textDocument/codeAction"].resolveProvider, true)
-    assert.ok(options["textDocument/codeAction"].codeActionKinds.includes("quickfix"))
+    const byId = Object.fromEntries(features.map((r) => [r.id, r.registerOptions]))
+    assert.equal(byId["turtle-rename"].prepareProvider, true)
+    assert.equal(byId["turtle-completion"].resolveProvider, true)
+    assert.deepEqual(byId["turtle-completion"].triggerCharacters, [":", "@", "?", "$"])
+    assert.equal(byId["turtle-xml-completion"].resolveProvider, true)
+    assert.deepEqual(byId["turtle-xml-completion"].triggerCharacters, [":", "<", "/", "\"", "'", "&"])
+    assert.equal(byId["turtle-code-action"].resolveProvider, true)
+    assert.ok(byId["turtle-code-action"].codeActionKinds.includes("quickfix"))
   })
 
   test("an open .owl (language id xml): hover, definition, references, symbols and diagnostics", async () => {

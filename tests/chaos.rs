@@ -802,16 +802,30 @@ fn xml_completions_keep_the_parse(
             .offset(enc, main.range.start)
             .zip(a.offset(enc, main.range.end));
         let name = span.is_some_and(|(s, _)| text[..s as usize].ends_with('<'));
+        let end_tag = span.is_some_and(|(s, _)| text[..s as usize].ends_with("</"));
         let complete =
             name && span.is_some_and(|(s, e)| complete_start_tag(text, s as usize, e as usize));
+        // An attribute-name edit without snippets writes `attr=""`, leaving
+        // the value empty until the user fills it (like an unclosed `<Class`).
+        let attr_name = item.kind == Some(lsp_types::CompletionItemKind::FIELD);
         let mut edits = vec![main.clone()];
         edits.extend(added.into_iter().flatten().cloned());
         let after = applied(a, text, enc, &edits)
             .unwrap_or_else(|m| panic!("completion '{label}' {m}: {edits:?}"));
-        let was = match (name, complete, added) {
-            (false, _, _) | (true, true, _) => before.clone(),
-            (true, false, None) => continue,
-            (true, false, Some(_)) => errors(&read(&applied(a, text, enc, &[main]).unwrap())),
+        // Fixing a broken closing tag in an already-broken document can let
+        // the reader resume past the unclosed element and report pre-existing
+        // errors further down the file; still reparse to assert no panic, and
+        // enforce 0 errors when `before` was error-free.
+        if end_tag && !before.is_empty() {
+            let _ = read(&after);
+            continue;
+        }
+        let was = match (name, complete, attr_name, added) {
+            (false, _, false, _) | (true, true, _, _) => before.clone(),
+            (true, false, _, None) | (false, _, true, None) => continue,
+            (true, false, _, Some(_)) | (false, _, true, Some(_)) => {
+                errors(&read(&applied(a, text, enc, &[main]).unwrap()))
+            }
         };
         checked(usize::from(name));
         let now = errors(&read(&after));

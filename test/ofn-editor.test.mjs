@@ -139,16 +139,16 @@ describe("an open OWL Functional document", () => {
   test("the writing features are registered for other documents only, and answer nothing in it; completion is registered for it too", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
-    assert.equal(features.length, 4, JSON.stringify(registrations))
-    // Only completion takes in the ofn language; only rename and completion
-    // take in .owl and .rdf names (for RDF/XML), where a Functional .owl is
-    // refused a rename all the same and completed as Functional syntax.
+    assert.equal(features.length, 5, JSON.stringify(registrations))
+    // Only non-XML completion takes in the ofn language; rename and XML
+    // completion take in .owl and .rdf names (for RDF/XML), where a Functional
+    // .owl is refused a rename all the same and completed as Functional syntax.
     for (const r of features) {
       const selector = JSON.stringify(r.registerOptions.documentSelector)
-      if (r.method === "textDocument/completion") assert.match(selector, /"language":"ofn"/, r.method)
-      else assert.doesNotMatch(selector, /ofn/, r.method)
-      if (r.method === "textDocument/rename" || r.method === "textDocument/completion") assert.match(selector, /"\*\*\/\*\.\{owl,rdf\}"/, r.method)
-      else assert.doesNotMatch(selector, /owl|xml/, r.method)
+      if (r.id === "turtle-completion") assert.match(selector, /"language":"ofn"/, r.id)
+      else assert.doesNotMatch(selector, /ofn/, r.id)
+      if (r.method === "textDocument/rename" || r.id === "turtle-xml-completion") assert.match(selector, /"\*\*\/\*\.\{owl,rdf\}"/, r.id)
+      else assert.doesNotMatch(selector, /owl|xml/, r.id)
     }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.ofn"), JSON.stringify(watch))

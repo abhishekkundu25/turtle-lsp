@@ -125,19 +125,20 @@ fn embedded_dynamic_features_are_registered_after_initialized() {
             "textDocument/formatting",
             "textDocument/rename",
             "textDocument/completion",
+            "textDocument/completion",
             "textDocument/codeAction"
         ]
     );
     for r in &regs {
         let selector = r["registerOptions"]["documentSelector"].to_string();
-        // Rename edits RDF/XML documents too, and completion is asked in
-        // them and in OWL/XML ones; nothing else is.
+        // Rename edits RDF/XML documents too, and XML completion is registered
+        // separately for `.owl`, `.rdf` and `.owx` with XML trigger characters.
         let rename = r["method"] == "textDocument/rename";
-        let completion = r["method"] == "textDocument/completion";
+        let xml_completion = r["id"] == "turtle-xml-completion";
         assert!(
-            selector.contains("turtle")
-                && selector.contains("owl") == (rename || completion)
-                && selector.contains("owx") == completion,
+            selector.contains("turtle") == !xml_completion
+                && selector.contains("owl") == (rename || xml_completion)
+                && selector.contains("owx") == xml_completion,
             "{selector}"
         );
     }
