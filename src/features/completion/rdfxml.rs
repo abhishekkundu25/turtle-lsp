@@ -161,7 +161,7 @@ fn elements(
         };
         let label = |l: &str| format!("{pfx}:{l}");
         let fits = |iri: &str, vocab: Option<TermKind>| in_ns(&ns, iri, vocab);
-        if node.is_none() && ns == RDF && fuzzy(local, "Description") {
+        if node.is_none() && e.allow_description && ns == RDF && fuzzy(local, "Description") {
             extras.push(Candidate {
                 iri: Some(format!("{RDF}Description")),
                 import: import.clone(),
@@ -177,6 +177,7 @@ fn elements(
     } else {
         incomplete = true;
         if node.is_none()
+            && e.allow_description
             && fuzzy(typed, "Description")
             && let Some((label, import)) = qname(&format!("{RDF}Description"), prefixes, default)
         {
@@ -239,11 +240,13 @@ fn elements(
     // IRIs (skipping prefixes bound to a malformed namespace URI), only the
     // declarations the root can take, and no name an end tag that follows
     // would take.
+    let rdf_description = format!("{RDF}Description");
     for list in [&mut cands, &mut extras] {
         list.retain(|c| {
-            c.iri
-                .as_deref()
-                .is_none_or(|i| oxiri::Iri::parse(i).is_ok())
+            (e.allow_description || c.iri.as_deref() != Some(rdf_description.as_str()))
+                && c.iri
+                    .as_deref()
+                    .is_none_or(|i| oxiri::Iri::parse(i).is_ok())
                 && c.import.as_ref().is_none_or(|(p, _)| e.may_declare(p))
                 && !e.taken.contains(&c.label.as_str())
         });
@@ -1409,5 +1412,12 @@ mod tests {
             </rdf:RDF>\n";
         let labels = at(bad_pfx).labels();
         assert!(!labels.iter().any(|l| l.starts_with('&')), "{labels:?}");
+        // Self-closing typed node in `parseType="Triple"` does not offer `rdf:Description`.
+        let triple = onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:feeds rdf:parseType=\"Triple\">\n      <|ex:Pump rdf:about=\"http://example.org/p1\"/>\n    </ex:feeds>\n  </rdf:Description>\n",
+        );
+        let labels = at(&triple).labels();
+        assert!(!has(&labels, "rdf:Description"), "{labels:?}");
+        assert!(has(&labels, "ex:Valve"), "{labels:?}");
     }
 }

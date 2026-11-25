@@ -172,17 +172,21 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
 }
 
 /// `span`, where an IRI is typed up to `offset`: whole when `closed` (a
-/// value between its quotes, or an element's trimmed text), else cut at the
-/// first white space after `offset`. `None` when there is white space before
-/// `offset` (a value not closed, the offset on the next line), or when an
-/// unclosed value starts with white space before more text (cutting there
-/// would leave that text after the inserted IRI).
+/// single-line value between its quotes, or an element's single-line trimmed
+/// text), else cut at the first white space after `offset`. `None` when
+/// there is white space before `offset` (a value not closed, the offset on
+/// the next line), when a closed value spans lines (LSP completion edits are
+/// single-line), or when an unclosed value starts with white space before
+/// more text (cutting there would leave that text after the inserted IRI).
 fn typed(text: &str, span: Span, offset: usize, closed: bool) -> Option<Span> {
     let (start, end) = (span.start as usize, span.end as usize);
     if text[start..offset].contains(WHITE) {
         return None;
     }
     if closed {
+        if text[start..end].contains(['\n', '\r']) {
+            return None;
+        }
         return Some(span);
     }
     let rest = &text[offset..end];
@@ -1058,11 +1062,20 @@ mod tests {
         ] {
             assert_eq!(at_text(text), None, "{text}");
         }
-        // Closed values are replaced whole between their quotes (even with
-        // white space inside); unclosed values cut at the first white space
-        // after the offset.
-        let (typed, ..) = iri("  <SubClassOf><Class IRI=\"http://example.org/o#A|\nB\"/>");
-        assert_eq!(typed, "http://example.org/o#A\nB");
+        // Closed single-line values are replaced whole between their quotes
+        // (even with spaces inside); closed values spanning lines offer
+        // nothing (LSP completion edits are single-line); unclosed values cut
+        // at the first white space after the offset.
+        assert_eq!(
+            at_("  <SubClassOf><Class IRI=\"http://example.org/o#A|\nB\"/>"),
+            None
+        );
+        assert_eq!(
+            at_(
+                "  <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\":n\"/><IRI>http://example.org/o#A|\nB</IRI></AnnotationAssertion>"
+            ),
+            None
+        );
         let (typed, ..) = iri("  <SubClassOf><Class IRI=\"http://example.org/o#A|\nB");
         assert_eq!(typed, "http://example.org/o#A");
         let (typed, ..) =

@@ -44,6 +44,10 @@ pub(crate) struct Expected<'d> {
     /// would meet before the one that closes it, and that one ([`end_tags`]):
     /// a new element of one of these names would take that end tag.
     pub(crate) taken: Vec<&'d str>,
+    /// Whether `rdf:Description` may be offered in node-element position:
+    /// false when replacing a self-closing typed node inside
+    /// `rdf:parseType="Triple"` (removing its `rdf:type` triple leaves zero).
+    pub(crate) allow_description: bool,
     /// The root element's start tag, where a declaration goes: `None` when
     /// it is broken (not closed by `>`, its last value not closed) or read
     /// from an entity, where none can.
@@ -130,6 +134,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
     // that closes it.
     let mut taken = Vec::new();
     let mut self_root = None;
+    let mut allow_description = true;
     let (slot, span) = match c.at {
         At::Name(span) => {
             let typed = text.get(span.start as usize..span.end as usize)?;
@@ -141,10 +146,16 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
                 return None;
             }
             // Inside `rdf:parseType="Triple"`, changing an existing
-            // `rdf:Description` to a typed class adds an `rdf:type` triple and
-            // can break the single-triple constraint.
-            if matches!(content, Content::TripleNode) && is_rdf_description(typed, &c.prefixes) {
-                return None;
+            // `rdf:Description` to a typed class adds an `rdf:type` triple,
+            // and changing a self-closing typed node to `rdf:Description`
+            // removes its `rdf:type` triple.
+            if matches!(content, Content::TripleNode) {
+                if is_rdf_description(typed, &c.prefixes) {
+                    return None;
+                }
+                if !typed.is_empty() && scan_tag(text, span.end as usize).1 {
+                    allow_description = false;
+                }
             }
             (
                 match content {
@@ -221,6 +232,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
         span,
         prefixes: c.prefixes,
         taken,
+        allow_description,
         root,
     })
 }
@@ -337,14 +349,6 @@ fn iri(name: &xml::Name<'_>) -> Option<String> {
     name.ns().map(|ns| format!("{ns}{}", name.local()))
 }
 
-/// The names of the end tags after the start tag whose name ends at byte
-/// `from` that no element opened after it takes, up to the first that
-/// names one of `open` (the elements open there, outermost first, that one
-/// last): the one that closes it, as the scanner closes elements. None when
-/// the start tag ends with `/>`. The start tag may end with `>` (which an
-/// editor may have written with the `<`), or be cut by a `<` (which also
-/// ends a value) or the end of the text. Comments, CDATA sections and
-/// processing instructions are passed over.
 /// Scan past the attributes of a start tag from byte `from` (after its name)
 /// as [`super::xml`] does: returns `(next_pos, empty)` where `empty` is true
 /// only when the tag ends with `/>` in attribute position (not inside a
@@ -357,6 +361,12 @@ fn scan_tag(text: &str, from: usize) -> (usize, bool) {
             *i += 1;
         }
     };
+    let ends_name = |c: u8| {
+        matches!(
+            c,
+            b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/' | b'<' | b'=' | b'"' | b'\'' | b'?'
+        )
+    };
     loop {
         skip_space(&mut i);
         match b.get(i) {
@@ -365,8 +375,9 @@ fn scan_tag(text: &str, from: usize) -> (usize, bool) {
             Some(b'/') if b.get(i + 1) == Some(&b'>') => return (i + 2, true),
             _ => {}
         }
-        let name_len = text[i..]
-            .find(|c| !xml::is_name_char(c))
+        let name_len = b[i..]
+            .iter()
+            .position(|&c| ends_name(c))
             .unwrap_or(b.len() - i);
         if name_len == 0 {
             i += text[i..].chars().next().map_or(1, char::len_utf8);
@@ -397,6 +408,14 @@ fn scan_tag(text: &str, from: usize) -> (usize, bool) {
     }
 }
 
+/// The names of the end tags after the start tag whose name ends at byte
+/// `from` that no element opened after it takes, up to the first that
+/// names one of `open` (the elements open there, outermost first, that one
+/// last): the one that closes it, as the scanner closes elements. None when
+/// the start tag ends with `/>`. The start tag may end with `>` (which an
+/// editor may have written with the `<`), or be cut by a `<` (which also
+/// ends a value) or the end of the text. Comments, CDATA sections and
+/// processing instructions are passed over.
 fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
     let (mut i, empty) = scan_tag(text, from);
     if empty {
@@ -929,6 +948,13 @@ mod tests {
             )),
             None
         );
+        // Non-name-char attribute name (`!`) with quoted `>` still reads as self-closing.
+        assert_eq!(
+            slot(&format!(
+                "{HEAD}  <|ex:Person><ex:Person !=\"x>\"/></ex:Person>\n</rdf:RDF>\n"
+            )),
+            None
+        );
     }
 
     #[test]
@@ -947,5 +973,12 @@ mod tests {
             element(&format!("{open}<rdf:Des|")).as_deref(),
             Some("NodeElement")
         );
+        // Replacing a self-closing typed node in `parseType="Triple"` forbids `rdf:Description`.
+        let marked = format!("{open}<|ex:Person rdf:about=\"{EX}a\"/></ex:says>");
+        let offset = marked.find('|').unwrap();
+        let text = marked.replacen('|', "", 1);
+        let doc = Document::read(&text);
+        let e = at(&text, &doc, offset).unwrap();
+        assert!(!e.allow_description);
     }
 }
