@@ -364,19 +364,24 @@ pub(crate) fn is_already_closed<'t>(
         &s[..len]
     };
     let mut inner: Vec<&str> = Vec::new();
+    let mut skip = 0usize;
     while let Some(lt) = text[i..].find('<') {
         let at = i + lt;
         let rest = &text[at..];
         if let Some(end) = rest.strip_prefix("</") {
             let end = name(end);
-            match inner.iter().rposition(|n| *n == end) {
-                Some(k) => inner.truncate(k),
-                None => {
-                    if end == target {
-                        return true;
-                    }
-                    if open.contains(&end) {
-                        return false;
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                match inner.iter().rposition(|n| *n == end) {
+                    Some(k) => inner.truncate(k),
+                    None => {
+                        if end == target {
+                            return true;
+                        }
+                        if open.contains(&end) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -392,7 +397,11 @@ pub(crate) fn is_already_closed<'t>(
             let n = name(&rest[1..]);
             let (next, empty) = scan_start_tag(text, at + 1 + n.len());
             if !empty {
-                inner.push(n);
+                if inner.len() < super::MAX_DEPTH {
+                    inner.push(n);
+                } else {
+                    skip += 1;
+                }
             }
             i = next;
         } else {

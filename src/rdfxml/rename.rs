@@ -176,20 +176,54 @@ fn names(text: &str, old: &str) -> bool {
         return true;
     }
     let expanded = text.contains('&').then(|| unescaped(text));
-    let spells = |t: &str| {
-        t.contains(old)
-            || alone(t, &old[cut..])
-            || old[cut..]
-                .char_indices()
-                .skip(1)
-                .map(|(i, _)| cut + i)
-                .any(|i| {
-                    (t.contains(&format!("\"{}\"", &old[..i]))
-                        || t.contains(&format!("'{}'", &old[..i])))
-                        && alone(t, &old[i..])
-                })
-    };
+    let spells =
+        |t: &str| t.contains(old) || alone(t, &old[cut..]) || quoted_prefix_and_alone(t, old, cut);
     spells(text) || expanded.as_deref().is_some_and(spells)
+}
+
+/// Whether `t` contains a quoted prefix `"{old[..i]}"` or `'{old[..i]}'`
+/// for some character boundary `cut < i < old.len()` with `old[i..]` standing
+/// alone in `t`. Scans `t` once without allocating a string per split point.
+fn quoted_prefix_and_alone(t: &str, old: &str, cut: usize) -> bool {
+    let head = &old[..cut];
+    let tail = &old[cut..];
+    let tb = t.as_bytes();
+    let tail_b = tail.as_bytes();
+    let check_from = |q: u8, after_head: usize| -> bool {
+        let rest_tb = &tb[after_head..];
+        let max = rest_tb.len().min(tail_b.len());
+        let mut k = 0;
+        while k < max && rest_tb[k] == tail_b[k] {
+            if k > 0 && tail_b[k] == q && old.is_char_boundary(cut + k) && alone(t, &old[cut + k..])
+            {
+                return true;
+            }
+            k += 1;
+        }
+        k > 0
+            && k < tail_b.len()
+            && rest_tb.get(k) == Some(&q)
+            && old.is_char_boundary(cut + k)
+            && alone(t, &old[cut + k..])
+    };
+    if head.is_empty() {
+        return t
+            .match_indices(['"', '\''])
+            .any(|(qpos, _)| check_from(tb[qpos], qpos + 1));
+    }
+    let mut from = 0;
+    while let Some(pos) = t[from..].find(head) {
+        let start = from + pos;
+        let step = t[start..].chars().next().map_or(1, char::len_utf8);
+        from = start + step;
+        let Some(&q) = start.checked_sub(1).and_then(|p| tb.get(p)) else {
+            continue;
+        };
+        if matches!(q, b'"' | b'\'') && check_from(q, start + cut) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether `word` occurs in `t` with no name character on either side.
@@ -1847,5 +1881,24 @@ mod tests {
             plan(&text, &p, Iri::intern("urn:ex:s"), "urn:ex:s"),
             Ok(Vec::new())
         );
+    }
+
+    #[test]
+    fn names_finds_quoted_namespace_splits_and_stays_linear_on_long_iris() {
+        // Namespace split inside the local name (single and double quotes, and no delimiter).
+        assert!(names(
+            "<rdf:RDF xmlns:e=\"http://example.org/pre\"><e:Fix/></rdf:RDF>",
+            "http://example.org/preFix"
+        ));
+        assert!(names(
+            "<rdf:RDF xmlns:e='http://example.org/pre'><e:Fix/></rdf:RDF>",
+            "http://example.org/preFix"
+        ));
+        assert!(names("\"ab\" cd", "abcd"));
+        assert!(!names("\"ab\" cde", "abcd"));
+        // Long mutated IRI that does not match finishes immediately.
+        let long = format!("http://example.org/{}", "a".repeat(20_000));
+        let text = "<rdf:RDF xmlns:ex=\"http://example.org/\"><ex:Other/></rdf:RDF>";
+        assert!(!names(text, &long));
     }
 }
