@@ -31,7 +31,7 @@ runs:
           test/corpus/obo-bfo.rdf
           test/corpus/obo-ro.rdf
           test/corpus/obo-pato.rdf
-        key: corpus-files-v4-${{ hashFiles('target/corpus-sources.tsv') }}
+        key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}
     - name: Fetch missing corpus files
       shell: bash
       run: |
@@ -55,4 +55,4 @@ runs:
           test/corpus/obo-bfo.rdf
           test/corpus/obo-ro.rdf
           test/corpus/obo-pato.rdf
-        key: corpus-files-v4-${{ hashFiles('target/corpus-sources.tsv') }}
+        key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}
