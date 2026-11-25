@@ -73,7 +73,14 @@ runs:
       shell: bash
       run: node bench/perf.mjs --only big-file-peak
     - name: Node tests
+      if: runner.os != 'Windows'
       shell: bash
+      run: npm run test:node
+    # On Windows, run under pwsh (GitHub Actions' default) so System32 tar.exe
+    # stays ahead of Git Bash's /usr/bin/tar, which treats `C:` as a remote host.
+    - name: Node tests
+      if: runner.os == 'Windows'
+      shell: pwsh
       run: npm run test:node
     - name: Neovim 0.11
       if: runner.os == 'Linux'
