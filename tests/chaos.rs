@@ -119,7 +119,8 @@ type Running = Option<(usize, Instant, Arc<str>, &'static str)>;
 /// A shard's watchdog: a thread that wakes every second and, when the
 /// iteration in the slot has run past the budget, reports it and exits the
 /// process (a hang would otherwise end in a timeout that names no input).
-/// Dropped, it prints the shard's five slowest iterations.
+/// Dropped, it prints the shard's five slowest iterations, and how many XML
+/// completion items the shard applied ([`XML_CHECKED`]).
 struct Watchdog {
     slot: Arc<Mutex<Running>>,
     slowest: Vec<(Duration, usize)>,
@@ -132,6 +133,7 @@ impl Watchdog {
             "CHAOS_ITERATION_BUDGET_MS",
             ITERATION_BUDGET.as_millis() as u64,
         ));
+        XML_CHECKED.take();
         let slot: Arc<Mutex<Running>> = Arc::default();
         let weak = Arc::downgrade(&slot);
         std::thread::spawn(move || {
@@ -189,7 +191,14 @@ impl Drop for Watchdog {
             .map(|(took, i)| format!("{i} ({took:.2?})"))
             .collect();
         // Past libtest's capture, so a passing run's log has them too.
-        let line = format!("{} slowest iterations: {}\n", self.kind, slowest.join(", "));
+        let mut line = format!("{} slowest iterations: {}\n", self.kind, slowest.join(", "));
+        let [values, names, declarations] = XML_CHECKED.take();
+        if values + names + declarations > 0 {
+            line += &format!(
+                "{} completions applied: {values} values, {names} element names, {declarations} declarations\n",
+                self.kind
+            );
+        }
         let _ = std::io::stderr().lock().write_all(line.as_bytes());
     }
 }
@@ -717,65 +726,175 @@ fn functional_imports_declare(text: &str, a: &Analysis, items: &[CompletionItem]
     }
 }
 
-/// The `additional_text_edits` of completion `items` in an RDF/XML document
-/// `text` (a namespace declared on the way), each set once: one insertion of
-/// one attribute, `xmlns:name="namespace"`, after which the document has no
-/// more errors than before. (Not the same errors: where the document used
-/// the prefix undeclared, its elements now read as RDF/XML, and the errors
-/// are capped.)
-fn rdfxml_imports_declare(text: &str, a: &Analysis, items: &[CompletionItem], enc: Encoding) {
+thread_local! {
+    /// The XML completion items [`xml_completions_keep_the_parse`] applied
+    /// on this thread (a shard): values, element names, and declarations.
+    /// The shard's watchdog prints them, so a run shows the check ran.
+    static XML_CHECKED: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([0; 3]) };
+}
+
+/// Counts an item of class `k` in [`XML_CHECKED`].
+fn checked(k: usize) {
+    XML_CHECKED.with(|c| {
+        let mut n = c.get();
+        n[k] += 1;
+        c.set(n);
+    });
+}
+
+/// Completion `items` in an RDF/XML or OWL/XML document `text` (document
+/// `a`), accepted: an item's text edit and its `additional_text_edits` do
+/// not overlap, and applied together give a document with no more errors
+/// (severity error) than before. Not the same errors: where the document
+/// used a prefix undeclared, its elements now read otherwise, and the errors
+/// are capped. A declaration added on the way is checked alone too
+/// ([`xml_declares`]).
+///
+/// An element name accepted without snippets (the public `complete` takes
+/// none) leaves its start tag open while the user types on (`<` becomes
+/// `<Class`, one error more): such an item's declaration is checked against
+/// the document with the name written instead. A parse per item would be up to 200 per completion:
+/// the items checked are the first to add each declaration, and of the
+/// others the first, the middle and the last.
+fn xml_completions_keep_the_parse(
+    syntax: Syntax,
+    text: &str,
+    a: &Analysis,
+    items: &[CompletionItem],
+    enc: Encoding,
+) {
+    let read = |t: &str| {
+        let uri = doc_uri(syntax).into();
+        Analysis::with_syntax(uri, t, a.external.clone(), false, syntax).parsed
+    };
+    let errors = |p: &Parsed| -> Vec<String> {
+        let errors = p.errors.iter().filter(|e| e.severity == Severity::Error);
+        errors.map(|e| e.message().to_string()).collect()
+    };
+    let before = errors(&a.parsed);
     let mut seen: Vec<&Vec<TextEdit>> = Vec::new();
-    for item in items {
-        let Some(edits) = &item.additional_text_edits else {
-            continue;
-        };
-        if seen.contains(&edits) {
-            continue;
-        }
-        seen.push(edits);
+    let last = items.len().saturating_sub(1);
+    for (i, item) in items.iter().enumerate() {
         let label = &item.label;
-        let [e] = &edits[..] else {
-            panic!("completion '{label}' adds {edits:?}");
-        };
-        let Some(at) = a
-            .offset(enc, e.range.start)
-            .filter(|_| e.range.start == e.range.end)
-        else {
-            panic!("completion '{label}' adds no insertion: {e:?}");
-        };
-        let attr = e.new_text.trim_start_matches([' ', '\t', '\r', '\n']);
-        let declared = attr
-            .strip_prefix("xmlns:")
-            .and_then(|r| r.strip_suffix('"'))
-            .and_then(|r| r.split_once("=\""));
-        if declared.is_none() || attr.contains(['\r', '\n']) {
-            panic!("completion '{label}' adds {:?}", e.new_text);
+        let added = item.additional_text_edits.as_ref();
+        let first = added.is_some_and(|edits| !seen.contains(&edits));
+        if !first && ![0, last / 2, last].contains(&i) {
+            continue;
         }
-        let at = at as usize;
-        let after = format!("{}{}{}", &text[..at], e.new_text, &text[at..]);
-        let re = Analysis::with_syntax(
-            doc_uri(Syntax::RdfXml).into(),
-            &after,
-            Arc::default(),
-            false,
-            Syntax::RdfXml,
-        );
-        if re.parsed.errors.len() > a.parsed.errors.len() {
+        if let Some(edits) = added.filter(|_| first) {
+            seen.push(edits);
+            xml_declares(syntax, text, a, enc, label, edits);
+        }
+        let main = match &item.text_edit {
+            Some(lsp_types::CompletionTextEdit::Edit(e)) => e.clone(),
+            Some(lsp_types::CompletionTextEdit::InsertAndReplace(e)) => {
+                TextEdit::new(e.replace, e.new_text.clone())
+            }
+            None => panic!("completion '{label}' has no text edit"),
+        };
+        // An element name follows the `<` of its start tag; a value, a quote
+        // or the `>` of an `IRI` or `AbbreviatedIRI` element.
+        let name = a
+            .offset(enc, main.range.start)
+            .is_some_and(|s| text[..s as usize].ends_with('<'));
+        let mut edits = vec![main.clone()];
+        edits.extend(added.into_iter().flatten().cloned());
+        let after = applied(a, text, enc, &edits)
+            .unwrap_or_else(|m| panic!("completion '{label}' {m}: {edits:?}"));
+        checked(usize::from(name));
+        let was = match (name, added) {
+            (false, _) => before.clone(),
+            (true, None) => continue,
+            (true, Some(_)) => errors(&read(&applied(a, text, enc, &[main]).unwrap())),
+        };
+        let now = errors(&read(&after));
+        if now.len() > was.len() {
+            // The difference: the lists are long.
+            let mut gone = was.clone();
+            let mut new = Vec::new();
+            for m in &now {
+                match gone.iter().position(|g| g == m) {
+                    Some(i) => drop(gone.swap_remove(i)),
+                    None => new.push(m),
+                }
+            }
+            let (from, to) = (was.len(), now.len());
             panic!(
-                "completion '{label}' adds {:?} at byte {at}: errors {:?} become {:?}",
-                e.new_text,
-                a.parsed
-                    .errors
-                    .iter()
-                    .map(|e| e.message())
-                    .collect::<Vec<_>>(),
-                re.parsed
-                    .errors
-                    .iter()
-                    .map(|e| e.message())
-                    .collect::<Vec<_>>()
+                "completion '{label}' with {edits:?}: {from} errors become {to}; new {new:?}, gone {gone:?}"
             );
         }
+    }
+}
+
+/// The `additional_text_edits` of completion `label` in an RDF/XML or
+/// OWL/XML document `text` (document `a`): one insertion of one
+/// declaration, on one line (in RDF/XML an attribute,
+/// `xmlns:name="namespace"`; in OWL/XML an element, `<Prefix name="name"
+/// IRI="namespace"/>`, qualified as the root is), after which the document
+/// has no more errors and warnings than before.
+fn xml_declares(
+    syntax: Syntax,
+    text: &str,
+    a: &Analysis,
+    enc: Encoding,
+    label: &str,
+    edits: &[TextEdit],
+) {
+    checked(2);
+    let [e] = edits else {
+        panic!("completion '{label}' adds {edits:?}");
+    };
+    let Some(at) = a
+        .offset(enc, e.range.start)
+        .filter(|_| e.range.start == e.range.end)
+    else {
+        panic!("completion '{label}' adds no insertion: {e:?}");
+    };
+    let added = e.new_text.trim_start_matches([' ', '\t', '\r', '\n']);
+    let declared = if syntax == Syntax::RdfXml {
+        added
+            .strip_prefix("xmlns:")
+            .and_then(|r| r.strip_suffix('"'))
+            .and_then(|r| r.split_once("=\""))
+    } else {
+        // In the prefix form of the root's name: `<Prefix` or `<owl:Prefix`.
+        added
+            .strip_prefix('<')
+            .and_then(|r| r.split_once("Prefix name=\""))
+            .filter(|(owl, _)| {
+                owl.is_empty()
+                    || owl
+                        .strip_suffix(':')
+                        .is_some_and(|p| !p.contains([' ', ':', '<']))
+            })
+            .and_then(|(_, r)| r.strip_suffix("\"/>"))
+            .and_then(|r| r.split_once("\" IRI=\""))
+    };
+    if declared.is_none() || added.contains(['\r', '\n']) {
+        panic!("completion '{label}' adds {:?}", e.new_text);
+    }
+    let at = at as usize;
+    let after = format!("{}{}{}", &text[..at], e.new_text, &text[at..]);
+    let re = Analysis::with_syntax(
+        doc_uri(syntax).into(),
+        &after,
+        a.external.clone(),
+        false,
+        syntax,
+    );
+    if re.parsed.errors.len() > a.parsed.errors.len() {
+        let messages = |p: &Parsed| {
+            p.errors
+                .iter()
+                .map(|e| e.message().to_string())
+                .collect::<Vec<_>>()
+        };
+        panic!(
+            "completion '{label}' adds {:?} at byte {at}: errors {:?} become {:?}",
+            e.new_text,
+            messages(&a.parsed),
+            messages(&re.parsed)
+        );
     }
 }
 
@@ -1918,8 +2037,8 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let items = completion_items(Some(completion::complete(&a, docs, enc, pos)));
             if syntax == Syntax::OwlFunctional {
                 functional_imports_declare(text, &a, &items, enc);
-            } else if syntax == Syntax::RdfXml {
-                rdfxml_imports_declare(text, &a, &items, enc);
+            } else if matches!(syntax, Syntax::RdfXml | Syntax::OwlXml) {
+                xml_completions_keep_the_parse(syntax, text, &a, &items, enc);
             } else {
                 imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), pos);
             }

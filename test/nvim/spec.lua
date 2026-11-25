@@ -521,6 +521,80 @@ check("a .owx buffer gets filetype xml, the server's errors, hover and definitio
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 
+check("completing in a .owx buffer offers the slot's classes and adds a Prefix element when applied", function()
+  local file = owl_dir .. "/complete.owx"
+  vim.fn.writefile({
+    '<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">',
+    '  <Prefix name="" IRI="http://example.org/o#"/>',
+    '  <Declaration><Class abbreviatedIRI=":Pump"/></Declaration>',
+    '  <Declaration><ObjectProperty abbreviatedIRI=":feeds"/></Declaration>',
+    '  <SubClassOf><Class abbreviatedIRI=":Pump"/><Class abbreviatedIRI="skos:Conc"/></SubClassOf>',
+    "</Ontology>",
+  }, file)
+  local b, c = open(file)
+  wait_diagnostics(b)
+  local function items(needle)
+    local r = request(b, "textDocument/completion", {
+      textDocument = vim.lsp.util.make_text_document_params(b),
+      position = pos_of(b, needle),
+    })
+    return r.items or r
+  end
+  -- A class value: the class, not the property.
+  local labels = {}
+  for _, it in ipairs(items('<SubClassOf><Class abbreviatedIRI=":')) do
+    labels[it.label] = true
+  end
+  assert(labels[":Pump"] and not labels[":feeds"], vim.inspect(vim.tbl_keys(labels)))
+  local item
+  for _, it in ipairs(items('abbreviatedIRI="skos:Conc')) do
+    if it.label == "skos:Concept" then
+      item = it
+    end
+  end
+  assert(item, "skos:Concept not offered")
+  vim.lsp.util.apply_text_edits({ item.textEdit }, b, c.offset_encoding)
+  vim.lsp.util.apply_text_edits(item.additionalTextEdits or {}, b, c.offset_encoding)
+  local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+  assert(text:find('<Prefix name="" IRI="http://example.org/o#"/>\n  <Prefix name="skos" IRI="http://www.w3.org/2004/02/skos/core#"/>\n', 1, true), "no Prefix element:\n" .. text)
+  assert(text:find('<Class abbreviatedIRI="skos:Concept"/></SubClassOf>', 1, true), "term not completed:\n" .. text)
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
+check("completing in a .owl RDF/XML buffer offers the classes an rdf:type takes", function()
+  local file = owl_dir .. "/complete.owl"
+  vim.fn.writefile({
+    '<?xml version="1.0"?>',
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"',
+    '         xmlns:owl="http://www.w3.org/2002/07/owl#">',
+    '  <owl:Class rdf:about="http://example.org/Pump"/>',
+    '  <owl:ObjectProperty rdf:about="http://example.org/pumps"/>',
+    '  <rdf:Description rdf:about="http://example.org/p1">',
+    '    <rdf:type rdf:resource="http://example.org/Pu"/>',
+    "  </rdf:Description>",
+    "</rdf:RDF>",
+  }, file)
+  local b, c = open(file)
+  assert(vim.bo[b].filetype == "xml", "filetype " .. vim.bo[b].filetype)
+  wait_diagnostics(b)
+  local r = request(b, "textDocument/completion", {
+    textDocument = vim.lsp.util.make_text_document_params(b),
+    position = pos_of(b, 'rdf:resource="http://example.org/Pu'),
+  })
+  local item
+  for _, it in ipairs(r.items or r) do
+    assert(it.label ~= "http://example.org/pumps", "a property offered for rdf:type")
+    if it.label == "http://example.org/Pump" then
+      item = it
+    end
+  end
+  assert(item, "http://example.org/Pump not offered: " .. vim.inspect(r))
+  vim.lsp.util.apply_text_edits({ item.textEdit }, b, c.offset_encoding)
+  local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+  assert(text:find('<rdf:type rdf:resource="http://example.org/Pump"/>', 1, true), "term not completed:\n" .. text)
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
 check("a .ofn, a .owx and a Functional .owl or .rdf read no modelines: ' ex:' in their last lines raises no E518", function()
   local functional = {
     "Prefix(ex:=<http://example.org/>)",
