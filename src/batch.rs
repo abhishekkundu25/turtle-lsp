@@ -49,8 +49,8 @@ const RENAME_CODES: [&str; 2] = ["unknown-term", lint::CODE];
 const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
 /// Why a file in a syntax no formatter writes ([`features::writes`]) is
-/// not formatted: the syntax's name. Only a rename writes RDF/XML, and
-/// nothing writes OWL Functional syntax or OWL/XML.
+/// not formatted: the syntax's name. Only a rename and completion write
+/// RDF/XML, and only completion OWL Functional syntax or OWL/XML.
 fn not_formatted(syntax: Syntax) -> &'static str {
     match syntax {
         Syntax::OwlFunctional => "OWL Functional syntax",
@@ -870,7 +870,7 @@ impl<'a> Input<'a> {
         }
     }
 
-    /// Whether the file at `uri` is in a syntax nothing writes
+    /// Whether the file at `uri` is in a syntax no formatter or fix writes
     /// ([`features::writes`]): RDF/XML (an `.owl` or `.rdf` file whose text
     /// is not Turtle, JSON-LD, OWL Functional syntax or OWL/XML), OWL
     /// Functional syntax or OWL/XML.

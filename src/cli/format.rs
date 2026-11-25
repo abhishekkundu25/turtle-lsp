@@ -3,8 +3,8 @@
 //! `{"version": 1, "files": [{"path", "status", "reason"?}], "summary":
 //! {"changed", "notFormatted", "filesChecked"}}`, a file's `status` being
 //! `formatted`, `would-format` or `not-formatted` (with its `reason`).
-//! Unchanged files are counted, not listed. Nothing writes RDF/XML, OWL
-//! Functional syntax or OWL/XML: such a file found in a folder is passed
+//! Unchanged files are counted, not listed. No formatter writes RDF/XML,
+//! OWL Functional syntax or OWL/XML: such a file found in a folder is passed
 //! over without a word, neither listed nor counted, and leaves the exit
 //! status as it is; one named on the command line is not formatted, and
 //! says so ("not formatted: RDF/XML", "not formatted: OWL Functional

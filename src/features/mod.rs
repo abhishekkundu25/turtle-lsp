@@ -24,9 +24,10 @@ use crate::syntax::{Family, Syntax};
 /// Whether the features that write text (formatting, quick fixes,
 /// refactorings, `check --fix`, the Turtle-family rename) may edit a
 /// document of `syntax`. RDF/XML is read-only for all of them, whatever form
-/// its references have; rename is its one writer, and not through this gate
+/// its references have; rename writes it, not through this gate
 /// ([`renames`]). OWL Functional syntax and OWL/XML are read-only for all of
-/// them and for rename too: turtle-lsp reads them and writes none of them.
+/// them and for rename too. Completion writes all three, not through this
+/// gate either ([`completes`]).
 pub(crate) fn writes(syntax: Syntax) -> bool {
     match syntax.family() {
         Family::Turtle | Family::JsonLd => true,
@@ -34,13 +35,15 @@ pub(crate) fn writes(syntax: Syntax) -> bool {
     }
 }
 
-/// Whether completion offers anything in a document of `syntax`. Everything
-/// it offers is a keyword or a prefixed name: N-Triples and N-Quads allow
-/// neither. OWL Functional syntax gets its keywords and terms, and
-/// completion is the one feature that edits it: an accepted term may add its
-/// `Prefix( … )` declaration. RDF/XML and OWL/XML get none yet: each has its
-/// arm here and its module in `completion` (`completion::rdfxml`,
-/// `completion::owx`), which answers nothing.
+/// Whether completion offers anything in a document of `syntax`. In the
+/// Turtle family and JSON-LD, everything it offers is a keyword or a
+/// prefixed name: N-Triples and N-Quads allow neither. OWL Functional
+/// syntax gets its keywords and terms, OWL/XML its element names and terms
+/// (`completion::owx`), RDF/XML its element names and IRIs
+/// (`completion::rdfxml`). In these three completion is the one feature
+/// that edits (with rename in RDF/XML): an accepted term may add its
+/// declaration, a `Prefix( … )`, a `<Prefix>` element or an `xmlns:p` on
+/// the root element.
 pub(crate) fn completes(syntax: Syntax) -> bool {
     match syntax {
         Syntax::Turtle | Syntax::TriG | Syntax::JsonLd | Syntax::OwlFunctional => true,

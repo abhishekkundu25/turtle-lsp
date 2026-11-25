@@ -408,7 +408,7 @@ impl<'a> Fixer<'a> {
                     }],
                     Family::Turtle => self.text_edits(vec![(span, replace)]),
                     // The span is the triple's, not a string written there;
-                    // nothing writes OWL Functional syntax or OWL/XML.
+                    // no quick fix writes OWL Functional syntax or OWL/XML.
                     Family::ReadOnly => return Vec::new(),
                 };
                 vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]

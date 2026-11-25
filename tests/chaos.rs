@@ -1101,7 +1101,7 @@ fn fix_all_keeps_the_tokens(
 }
 
 /// `batch::fix_all` on `text` as the `.rdf` file `name`, for one input in
-/// four: nothing writes RDF/XML, so a text whose content is RDF/XML (as
+/// four: `fix_all` writes no RDF/XML, so a text whose content is RDF/XML (as
 /// `Syntax::of` decides for the name) comes back byte for byte. A mutation
 /// that made the text Turtle or JSON-LD is fixed as such, unchecked here.
 fn fix_all_leaves_rdf_xml(rng: &mut Rng, name: &str, text: &str) {

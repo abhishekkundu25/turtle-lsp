@@ -1,7 +1,7 @@
 // An RDF/XML file (.owl, .rdf) open in an editor: the client attaches to it
 // with XML's language id. It reads like any RDF document (hover, definition,
-// references, symbols, diagnostics), and only rename writes it: a rename of
-// an IRI it uses edits it too, and one can start in it (`rename.rdfXml` off:
+// references, symbols, diagnostics), and only rename and completion write
+// it: a rename of an IRI it uses edits it too, and one can start in it (`rename.rdfXml` off:
 // neither). A client that opts in (`registerOutsideRdfXml` in
 // initializationOptions, as VS Code does) and registers formatting, rename,
 // completion and code actions itself gets formatting and code actions for

@@ -9,7 +9,11 @@
 //!   ([`super::embedded`]).
 //! - In OWL Functional syntax: the keywords and the terms of the kinds the
 //!   grammar takes at the cursor (`ofn`).
-//! - In OWL/XML and RDF/XML: nothing yet (`owx`, `rdfxml`).
+//! - In OWL/XML: the element names the schema takes at the cursor and the
+//!   terms of the element's kind in an IRI value (`owx`).
+//! - In RDF/XML: the node or property element names that fit at the cursor,
+//!   and the IRIs of `rdf:about`, `rdf:resource` and `rdf:datatype`
+//!   (`rdfxml`).
 //!
 //! Candidates are ranked by position: after `a` classes come first, in predicate
 //! position properties come first. Before that, [`ranking`] puts what the
@@ -99,7 +103,8 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
 
 /// [`complete`], for a client that takes snippets (`snippetSupport`) when
 /// `snippets` is set: an OWL Functional keyword is then written with its
-/// operands as placeholders.
+/// operands as placeholders, and an OWL/XML element whole or with its end
+/// tag.
 pub(crate) fn complete_in(
     a: &Analysis,
     k: &Knowledge,

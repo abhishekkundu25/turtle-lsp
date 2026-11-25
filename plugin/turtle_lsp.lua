@@ -26,8 +26,8 @@ vim.api.nvim_create_autocmd("BufReadPre", {
 -- the client starts on these files by name, when
 -- vim.lsp.enable("turtle_lsp") is on, with its configuration and root (the
 -- client of the project's Turtle files is reused). The server reads them by
--- their name and content, and only a rename edits them, RDF/XML files only.
--- vim.lsp.enable's own
+-- their name and content; only completion edits them, and a rename
+-- RDF/XML files. vim.lsp.enable's own
 -- FileType handler detaches the client from them (its `filetypes` lacks
 -- xml) when a file type is set again or another server is enabled after
 -- startup: the client comes back unless it is stopping, has exited or is

@@ -240,11 +240,11 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // The server's features also serve JSON-LD files (Monaco's json language;
   // only `.jsonld` files are ever opened in it), RDF/XML and OWL/XML files
   // (Monaco's xml language; only `.owl`, `.rdf` and `.owx` files) and OWL
-  // Functional files (`ofn`). Only rename writes RDF/XML, and nothing writes
-  // OWL/XML or OWL Functional syntax: such a model gets the features that
-  // read (and an xml model rename, which the server refuses in an OWL/XML
-  // one), without formatting, code actions, semantic tokens (Monaco's
-  // colours stay) and inlay hints, with completion (COMPLETED).
+  // Functional files (`ofn`). Only completion and rename write RDF/XML, and
+  // only completion OWL/XML or OWL Functional syntax: such a model gets the
+  // features that read, completion (COMPLETED) and (an xml model) rename,
+  // which the server refuses in an OWL/XML one, without formatting, code
+  // actions, semantic tokens (Monaco's colours stay) and inlay hints.
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)
     const renames = lang !== "ofn"

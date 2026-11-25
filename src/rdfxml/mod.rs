@@ -7,11 +7,15 @@
 //! The stages, one module each:
 //! - [`xml`]: a fault-tolerant XML scanner that keeps the span of every
 //!   name, attribute value, text and entity reference, with its own limits
-//!   (nesting, DOCTYPE entities, entity expansion, errors);
+//!   (nesting, DOCTYPE entities, entity expansion, errors), and the cursor
+//!   over it that reads what is open at an offset (`xml::cursor`), which
+//!   completion in both XML syntaxes reads;
 //! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`],
 //!   with the exact span of every term, read on past each error;
 //! - [`rename`]: the edits that rename an IRI in a document, placed at the
-//!   spans the grammar reads, or why they cannot be made.
+//!   spans the grammar reads, or why they cannot be made;
+//! - [`expected`]: what may come at an offset, for completion
+//!   (`features::completion::rdfxml`), and where a new `xmlns:p` goes.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
 //! not RDF gives no triples and one `unsupported-syntax` error that names
@@ -316,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn rdfxml_has_no_semantic_tokens_and_no_completion() {
+    fn rdfxml_has_no_semantic_tokens_and_no_completion_on_its_first_line() {
         let a = rdfxml();
         let k = Knowledge::default();
         assert!(semantic::full(&a, &k, Encoding::Utf8).data.is_empty());

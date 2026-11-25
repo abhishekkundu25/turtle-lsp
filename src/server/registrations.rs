@@ -1,7 +1,8 @@
 //! The features that write a document or offer text to type: formatting,
 //! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
 //! their editor's own XML language, and of the features that write only
-//! rename edits them (`features::renames`), so the editor should not offer
+//! rename (`features::renames`) and completion (`features::completes`)
+//! edit them, so the editor should not offer
 //! formatting or code actions there. Nor in OWL/XML files (`.owx`), which
 //! editors keep in their XML language too, nor in OWL Functional files
 //! (`.ofn`, the `ofn` language of VS Code and Neovim), which are read-only
@@ -15,9 +16,10 @@
 //! completion.
 //!
 //! By default the `initialize` result announces each one statically, for
-//! every document, and the server answers nothing that writes an RDF/XML
-//! document but a rename (no formatting edits, no completions, no code
-//! actions), and nothing that writes an OWL Functional or OWL/XML document.
+//! every document. Of the features that write, the server answers only a
+//! rename in an RDF/XML document and completion in an RDF/XML, OWL
+//! Functional or OWL/XML document: no formatting edits and no code action
+//! that edits one.
 //! A client opts in to more with `"registerOutsideRdfXml": true` at the top
 //! level of its `initializationOptions` ([`OPT_IN`]): each of the four
 //! features that the client can register dynamically (`dynamicRegistration`)

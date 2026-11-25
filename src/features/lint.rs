@@ -222,8 +222,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
             }
         },
     );
-    // No fix edits RDF/XML (only a rename does): the suggestion stays in
-    // the message, with no fix to apply.
+    // No fix edits RDF/XML (only a rename and completion do): the
+    // suggestion stays in the message, with no fix to apply.
     if !super::writes(a.parsed.syntax) {
         for d in &mut found {
             d.data = None;

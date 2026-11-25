@@ -5,7 +5,7 @@
 ### Added
 
 - **OWL Functional syntax (`.ofn`, and a `.owl` whose text is Functional)
-  is read**, read-only: nothing writes it. Its axioms become RDF triples by the
+  is read**, read-only but for completion. Its axioms become RDF triples by the
   W3C mapping (OWL 2 Mapping to RDF Graphs, section 2: annotated axioms
   with their `owl:Axiom` nodes, n-ary axioms, lists; SWRL rules as OWL API
   writes them), so its terms count in other files (hover with their
@@ -48,7 +48,7 @@
   (an editor with static capabilities, as Neovim, gets the "Fetch and
   cache" quick fix on an unresolved web import).
 - **Completion in OWL Functional syntax**: Ctrl+Space in a `.ofn` file (or a
-  Functional `.owl` in an editor with static capabilities) offers what the
+  Functional `.owl`) offers what the
   grammar takes at the cursor, read from the tokens before it, so it works
   while the axiom is half typed: `Prefix` and `Ontology` before the
   ontology, the axiom keywords inside it, and inside a construct the
@@ -66,9 +66,32 @@
   registers completion for the `ofn` language, and the browser editor
   offers it there too. Nothing is offered in a full IRI (`<http://…`), a
   string or a comment.
+- **Completion in OWL/XML and RDF/XML** (`.owx`, `.owl`, `.rdf`), in VS
+  Code, Neovim and the browser editor. What may come at the cursor is read
+  from the elements open there, so it works in a file half typed. In
+  OWL/XML: after `<`, the elements the schema takes (inside `Ontology` in
+  its order, `Prefix` only before the imports, annotations and axioms;
+  inside a construct, those its next operand may be); in `IRI` and
+  `datatypeIRI` values and `IRI` elements, the terms of the element's kind
+  as full IRIs; in `abbreviatedIRI` values and `AbbreviatedIRI` elements,
+  `prefix:local` names. With snippets, an entity's element is written whole
+  (`<Class IRI="…"/>`) and any other element with its end tag. In RDF/XML:
+  after `<`, `rdf:Description` and the classes where a node element goes,
+  the properties (ranked by the node's types) where a property element
+  goes, as qualified names over the prefixes in scope; in `rdf:about`,
+  `rdf:resource` and `rdf:datatype`, the subjects, the IRIs of the kind
+  the property takes (ranked by its range) and the datatypes, as full IRIs or as `&name;local`
+  after a DOCTYPE entity. A term of a well-known vocabulary the document
+  does not declare adds its `<Prefix>` element (OWL/XML) or its `xmlns:p`
+  on the root element (RDF/XML). Nothing is offered in comments, the
+  prolog, a literal's text or `rdf:parseType="Literal"` content. A `.owl`
+  that holds Turtle or OWL Functional syntax gets that syntax's completion
+  in VS Code too. In VS Code, Ctrl+Space opens the list inside an
+  attribute value: VS Code's XML language does not suggest inside strings
+  while typing.
 
 - **OWL/XML (`.owx`, and a `.owl` or `.rdf` whose text is OWL/XML) is
-  read**, read-only, as OWL Functional syntax is. turtle-lsp's own reader
+  read**, read-only but for completion (above), as OWL Functional syntax is. turtle-lsp's own reader
   checks the text against the OWL 2 XML Serialization (its schema and
   prose) and builds the tree the Functional parser builds, so the axioms
   become the triples of the same W3C mapping and every feature that reads
@@ -116,12 +139,12 @@
   takes about 5 ms. `format` passes over OWL/XML in a folder and says
   "not formatted: OWL/XML" for a named file; a rename of a term an OWL/XML
   file uses is refused. VS Code (desktop and web), Neovim and the browser
-  editor serve `.owx` files read-only in their XML language; the VS Code
+  editor serve `.owx` files in their XML language; the VS Code
   extension maps `*.owx` to XML by default (`files.associations`, which a
   user's own entry overrides).
 
 - **RDF/XML files (`.owl`, `.rdf`) are workspace files**; only a rename
-  edits them. Their
+  and completion edit them. Their
   content decides the syntax, so Protégé's default `.owl` is read as RDF/XML
   and a `.owl` holding Turtle as Turtle. An empty one, or one of white space
   only, is RDF/XML: no Turtle completion or formatting is offered in it until
@@ -197,10 +220,10 @@
 - **An import that is not UTF-8 is not read** (any syntax, fetched, cached or
   local); its `unresolved-import` says where the first bad byte is. It was
   read with the bad bytes replaced.
-- **Nothing but rename writes RDF/XML, and nothing writes OWL Functional
-  syntax or OWL/XML**: formatting, quick fixes and `check --fix` leave them
-  alone, and completion offers nothing in RDF/XML and OWL/XML (in OWL
-  Functional syntax, see above); `format .` passes over them, and a named
+- **Nothing but rename and completion writes RDF/XML, and nothing but
+  completion writes OWL Functional syntax or OWL/XML**: formatting, quick
+  fixes and `check --fix` leave them alone (completion: see above);
+  `format .` passes over them, and a named
   `format onto.owl` says "not formatted: RDF/XML" (or "not formatted: OWL
   Functional syntax", "not formatted: OWL/XML"). A rename of a term that an
   OWL Functional or OWL/XML workspace file uses is refused and names the
@@ -208,8 +231,8 @@
   and fixed as that syntax by the command line and by editors other than
   VS Code.
 - **VS Code registers formatting, rename, completion and code actions
-  dynamically**: formatting, completion and code actions for every file but
-  `.owl`, `.rdf`, `.owx` and `.ofn` (completion for `.ofn` too), so it
+  dynamically**: formatting and code actions for every file but `.owl`,
+  `.rdf`, `.owx` and `.ofn`, completion for every file, so it
   lists no turtle-lsp formatter for XML or OWL Functional syntax, and
   rename for `.owl` and `.rdf` files too (not `.owx` or `.ofn`). Other
   editors get the same static capabilities as before. The RDF Editor and
