@@ -66,7 +66,7 @@ describe("completion in an OWL Functional document", () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     for (const r of registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")) {
       const languages = r.registerOptions.documentSelector.map((f) => f.language).filter(Boolean)
-      assert.equal(languages.includes("ofn"), r.method === "textDocument/completion", r.method)
+      assert.equal(languages.includes("ofn"), r.id === "turtle-completion", r.id)
     }
   })
 

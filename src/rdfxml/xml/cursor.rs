@@ -64,15 +64,29 @@ pub(crate) enum At<'a> {
     /// In an element name after `<`: the name's span, to its end; empty
     /// after a `<` that no name follows yet.
     Name(Span),
+    /// In an end tag's name after `</`: the name's span to its end (empty
+    /// right after `</`), and whether `>` already follows the name.
+    EndName { span: Span, closed: bool },
+    /// In a new or incomplete attribute name of a start tag being written.
+    AttrName(Box<AttrName<'a>>),
     /// In an attribute value of the start tag being written.
     Value(Box<AttrValue<'a>>),
     /// In the text content of the innermost open element: the text node
     /// (to the next `<`), empty between two tags.
     Text(Span),
     /// In the prolog, a comment, a processing instruction, a CDATA section,
-    /// an end tag, a tag's attribute names, an entity reference, outside
+    /// an existing attribute's name (with `=`), an entity reference, outside
     /// the root element, or at no offset of the text.
     Elsewhere,
+}
+
+/// An attribute name being written: [`At::AttrName`].
+#[derive(Debug)]
+pub(crate) struct AttrName<'a> {
+    /// The start tag as parsed so far.
+    pub(crate) tag: Tag<'a>,
+    /// The attribute name's span to replace (empty after white space).
+    pub(crate) span: Span,
 }
 
 /// An attribute value being written: [`At::Value`].
@@ -166,53 +180,275 @@ impl<'t> Document<'t> {
         let mut events = held.into_iter();
         // The start tag the offset is in, whose declarations apply there.
         let mut typed = None;
-        cursor.at = match events.next() {
-            Some(Event::Start(mut tag)) if !entered => {
-                tick();
-                if let Some(i) = tag.attrs.iter().position(|a| a.value.span.contains(o)) {
-                    let attr = tag.attrs.remove(i);
-                    let closed = attr.span.end > attr.value.span.end;
-                    let span = Span::new(
-                        attr.value.span.start,
-                        if closed { attr.value.span.end } else { o },
-                    );
-                    At::Value(Box::new(AttrValue { tag, attr, span }))
-                } else if tag.name.span.contains(o) {
-                    let span = tag.name.span;
-                    typed = Some(tag);
-                    At::Name(span)
-                } else if after {
-                    for e in std::iter::once(Event::Start(tag)).chain(events) {
-                        apply(&mut cursor.open, e);
-                    }
-                    content(&cursor.open, text, offset)
-                } else {
-                    At::Elsewhere
+        cursor.at = if !entered && raw.starts_with(b"</") && !cursor.open.is_empty() {
+            let name_start = start + 2;
+            let name_end = name_start
+                + raw[2..]
+                    .iter()
+                    .position(|&c| super::ends_name(c))
+                    .unwrap_or(raw.len() - 2);
+            if offset >= name_start && offset <= name_end {
+                let closed = text.as_bytes()[name_end..end]
+                    .iter()
+                    .find(|&&c| !super::is_space(c))
+                    == Some(&b'>');
+                At::EndName {
+                    span: Span::new(name_start as u32, name_end as u32),
+                    closed,
                 }
-            }
-            // A text run; right after a `<` that starts no tag, an element
-            // name not typed yet.
-            Some(Event::Text { span, .. }) if !entered && span.start as usize == start => {
-                if raw[0] == b'<' && offset == start + 1 {
-                    At::Name(Span::new(o, o))
-                } else {
-                    At::Text(span)
-                }
-            }
-            first if after => {
-                for e in first.into_iter().chain(events) {
+            } else if after {
+                for e in events {
                     apply(&mut cursor.open, e);
                 }
                 content(&cursor.open, text, offset)
+            } else {
+                At::Elsewhere
             }
-            _ => At::Elsewhere,
+        } else {
+            match events.next() {
+                Some(Event::Start(mut tag)) if !entered => {
+                    tick();
+                    if let Some(i) = tag.attrs.iter().position(|a| a.value.span.contains(o)) {
+                        let attr = tag.attrs.remove(i);
+                        let closed = attr.span.end > attr.value.span.end;
+                        let span = Span::new(
+                            attr.value.span.start,
+                            if closed { attr.value.span.end } else { o },
+                        );
+                        At::Value(Box::new(AttrValue { tag, attr, span }))
+                    } else if tag.name.span.contains(o) {
+                        let span = tag.name.span;
+                        typed = Some(tag);
+                        At::Name(span)
+                    } else if after {
+                        for e in std::iter::once(Event::Start(tag)).chain(events) {
+                            apply(&mut cursor.open, e);
+                        }
+                        content(&cursor.open, text, offset)
+                    } else {
+                        attr_name_at(text, tag, end, offset)
+                    }
+                }
+                // A text run; right after a `<` that starts no tag, an element
+                // name not typed yet.
+                Some(Event::Text { span, .. }) if !entered && span.start as usize == start => {
+                    if raw[0] == b'<' && offset == start + 1 {
+                        At::Name(Span::new(o, o))
+                    } else {
+                        At::Text(span)
+                    }
+                }
+                first if after => {
+                    for e in first.into_iter().chain(events) {
+                        apply(&mut cursor.open, e);
+                    }
+                    content(&cursor.open, text, offset)
+                }
+                _ => At::Elsewhere,
+            }
         };
         let typed = match &cursor.at {
             At::Value(v) => Some(&v.tag),
+            At::AttrName(a) => Some(&a.tag),
             _ => typed.as_ref(),
         };
         cursor.prefixes = prefixes(&s, cursor.open.iter().map(|e| &e.tag).chain(typed));
         cursor
+    }
+}
+
+/// Whether `offset` inside a start tag `tag` (whose raw text ends at `end`)
+/// sits at a new or incomplete attribute name (spaced from what precedes it
+/// and not already followed by `=`).
+fn attr_name_at<'a>(text: &'a str, tag: Tag<'a>, end: usize, offset: usize) -> At<'a> {
+    let b = text.as_bytes();
+    let mut i = tag.name.span.end as usize;
+    let o = offset as u32;
+    loop {
+        let ws_start = i;
+        while i < end && super::is_space(b[i]) {
+            i += 1;
+        }
+        let spaced = i > ws_start;
+        let at_end = i >= end
+            || b[i] == b'>'
+            || b[i] == b'<'
+            || (b[i] == b'/' && b.get(i + 1) == Some(&b'>'));
+        if offset >= ws_start && offset <= i {
+            if !spaced {
+                return At::Elsewhere;
+            }
+            if offset < i || at_end {
+                return At::AttrName(Box::new(AttrName {
+                    tag,
+                    span: Span::new(o, o),
+                }));
+            }
+        }
+        if at_end {
+            return At::Elsewhere;
+        }
+        let name_start = i;
+        while i < end && !super::ends_name(b[i]) {
+            i += 1;
+        }
+        let name_end = i;
+        if name_end == name_start {
+            i += text[i..end].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        let mut after_name = i;
+        while after_name < end && super::is_space(b[after_name]) {
+            after_name += 1;
+        }
+        let has_eq = after_name < end && b[after_name] == b'=';
+        if offset >= name_start && offset <= name_end {
+            if spaced && !has_eq {
+                return At::AttrName(Box::new(AttrName {
+                    tag,
+                    span: Span::new(name_start as u32, name_end as u32),
+                }));
+            }
+            return At::Elsewhere;
+        }
+        i = after_name;
+        if !has_eq {
+            continue;
+        }
+        i += 1;
+        while i < end && super::is_space(b[i]) {
+            i += 1;
+        }
+        if i < end && matches!(b[i], b'"' | b'\'') {
+            let q = b[i];
+            i += 1;
+            while i < end && b[i] != q && b[i] != b'<' {
+                i += 1;
+            }
+            if i < end && b[i] == q {
+                i += 1;
+            }
+        } else {
+            while i < end && !super::is_space(b[i]) && b[i] != b'>' && b[i] != b'<' {
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Whether `target` (the innermost element of `open`, outermost first) is
+/// already closed by an unmatched `</target>` after the current end tag
+/// whose name ends at `after_name` (before any outer element of `open`
+/// closes). Used to avoid closing an open element early and orphaning its
+/// existing end tag.
+pub(crate) fn is_already_closed<'t>(
+    text: &'t str,
+    after_name: usize,
+    open: &[&str],
+    target: &str,
+) -> bool {
+    let b = text.as_bytes();
+    let mut i = after_name;
+    while i < b.len() && super::is_space(b[i]) {
+        i += 1;
+    }
+    if b.get(i) == Some(&b'>') {
+        i += 1;
+    }
+    let name = |s: &'t str| {
+        let len = s
+            .as_bytes()
+            .iter()
+            .position(|&c| super::ends_name(c))
+            .unwrap_or(s.len());
+        &s[..len]
+    };
+    let mut inner: Vec<&str> = Vec::new();
+    while let Some(lt) = text[i..].find('<') {
+        let at = i + lt;
+        let rest = &text[at..];
+        if let Some(end) = rest.strip_prefix("</") {
+            let end = name(end);
+            match inner.iter().rposition(|n| *n == end) {
+                Some(k) => inner.truncate(k),
+                None => {
+                    if end == target {
+                        return true;
+                    }
+                    if open.contains(&end) {
+                        return false;
+                    }
+                }
+            }
+            i = at + 2;
+        } else if let Some((open_d, close_d)) =
+            [("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>")]
+                .into_iter()
+                .find(|(o, _)| rest.starts_with(o))
+        {
+            let body = &rest[open_d.len()..];
+            i = at + open_d.len() + body.find(close_d).map_or(body.len(), |e| e + close_d.len());
+        } else if rest[1..].starts_with(super::is_name_start_char) {
+            let n = name(&rest[1..]);
+            let (next, empty) = scan_start_tag(text, at + 1 + n.len());
+            if !empty {
+                inner.push(n);
+            }
+            i = next;
+        } else {
+            i = at + 1;
+        }
+    }
+    false
+}
+
+/// Scan past the attributes of a start tag from `from` (after its name),
+/// matching `xml.rs`: returns `(next_pos, empty)`.
+fn scan_start_tag(text: &str, from: usize) -> (usize, bool) {
+    let b = text.as_bytes();
+    let mut i = from;
+    loop {
+        while i < b.len() && super::is_space(b[i]) {
+            i += 1;
+        }
+        match b.get(i) {
+            None | Some(b'<') => return (i, false),
+            Some(b'>') => return (i + 1, false),
+            Some(b'/') if b.get(i + 1) == Some(&b'>') => return (i + 2, true),
+            _ => {}
+        }
+        let name_len = b[i..]
+            .iter()
+            .position(|&c| super::ends_name(c))
+            .unwrap_or(b.len() - i);
+        if name_len == 0 {
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        i += name_len;
+        while i < b.len() && super::is_space(b[i]) {
+            i += 1;
+        }
+        if b.get(i) != Some(&b'=') {
+            continue;
+        }
+        i += 1;
+        while i < b.len() && super::is_space(b[i]) {
+            i += 1;
+        }
+        let Some(&q) = b.get(i).filter(|c| matches!(c, b'"' | b'\'')) else {
+            while i < b.len() && !super::is_space(b[i]) && b[i] != b'>' && b[i] != b'<' {
+                i += 1;
+            }
+            continue;
+        };
+        i += 1;
+        while i < b.len() && b[i] != q && b[i] != b'<' {
+            i += 1;
+        }
+        if b.get(i) == Some(&q) {
+            i += 1;
+        }
     }
 }
 
@@ -528,17 +764,78 @@ mod tests {
     }
 
     #[test]
-    fn attribute_names_and_end_tags_are_elsewhere() {
+    fn attribute_names_and_end_tags() {
+        // Positions inside a start tag that cannot start a new attribute.
         for marked in [
             format!("{RDF_HEAD}  <owl:Class rdf:ab|out=\"x\"/>\n</rdf:RDF>"),
-            format!("{RDF_HEAD}  <owl:Class rdf:about=\"x\" |/>\n</rdf:RDF>"),
+            format!("{RDF_HEAD}  <owl:Class |rdf:about=\"x\"/>\n</rdf:RDF>"),
             format!("{RDF_HEAD}  <owl:Class rdf:about=\"x\"|/>\n</rdf:RDF>"),
-            format!("{RDF_HEAD}  <owl:Class |"),
             format!("{RDF_HEAD}  <owl:Class rdf:about=|"),
-            format!("{RDF_HEAD}  <owl:Class>\n  </owl:Cl|ass>\n</rdf:RDF>"),
-            format!("{RDF_HEAD}  <owl:Class>\n  </owl:Class|"),
+            format!("{RDF_HEAD}  <owl:Class /|>"),
+            "</|".to_string(),
         ] {
             elsewhere(&marked);
+        }
+        // New or incomplete attribute names inside a start tag.
+        for (marked, want) in [
+            (
+                format!("{RDF_HEAD}  <owl:Class rdf:about=\"x\" |/>\n</rdf:RDF>"),
+                "",
+            ),
+            (format!("{RDF_HEAD}  <owl:Class |"), ""),
+            (
+                format!("{RDF_HEAD}  <owl:Class | rdf:about=\"x\"/>\n</rdf:RDF>"),
+                "",
+            ),
+            (
+                format!("{RDF_HEAD}  <owl:Class rdf:ab|/>\n</rdf:RDF>"),
+                "rdf:ab",
+            ),
+            (format!("{RDF_HEAD}  <owl:Class rdf:ab|"), "rdf:ab"),
+            (
+                format!("{RDF_HEAD}  <owl:Class rdf:about=\"x\" xml:la|/>\n</rdf:RDF>"),
+                "xml:la",
+            ),
+        ] {
+            check(&marked, |text, _, c| {
+                let At::AttrName(a) = c.at else {
+                    panic!("{marked:?}: {:?}", c.at);
+                };
+                assert_eq!(slice(text, a.span), want, "{marked}");
+                assert!(a.tag.name.is(OWL, "Class"));
+            });
+        }
+        // End-tag names after `</`.
+        for (marked, want, want_closed) in [
+            (
+                format!("{RDF_HEAD}  <owl:Class>\n  </|\n</rdf:RDF>"),
+                "",
+                false,
+            ),
+            (
+                format!("{RDF_HEAD}  <owl:Class>\n  </|>\n</rdf:RDF>"),
+                "",
+                true,
+            ),
+            (
+                format!("{RDF_HEAD}  <owl:Class>\n  </owl:Cl|ass>\n</rdf:RDF>"),
+                "owl:Class",
+                true,
+            ),
+            (
+                format!("{RDF_HEAD}  <owl:Class>\n  </owl:Class|"),
+                "owl:Class",
+                false,
+            ),
+        ] {
+            check(&marked, |text, _, c| {
+                let At::EndName { span, closed } = c.at else {
+                    panic!("{marked:?}: {:?}", c.at);
+                };
+                assert_eq!(slice(text, span), want, "{marked}");
+                assert_eq!(closed, want_closed, "{marked}");
+                assert_eq!(open(&c), ["rdf:RDF", "owl:Class"]);
+            });
         }
         // After an end tag: the parent's content, the element closed in it.
         check(
@@ -729,9 +1026,14 @@ mod tests {
                 }
                 let o = offset as u32;
                 match &c.at {
-                    At::Name(span) | At::Text(span) => {
+                    At::Name(span) | At::EndName { span, .. } | At::Text(span) => {
                         ok(*span);
                         assert!(span.contains(o), "{offset}: {:?}", c.at);
+                    }
+                    At::AttrName(a) => {
+                        tag_ok(&a.tag);
+                        ok(a.span);
+                        assert!(a.span.contains(o), "{offset}: {:?}", c.at);
                     }
                     At::Value(v) => {
                         tag_ok(&v.tag);
@@ -742,8 +1044,8 @@ mod tests {
                     At::Elsewhere => {}
                 }
                 seen[match c.at {
-                    At::Name(_) => 0,
-                    At::Value(_) => 1,
+                    At::Name(_) | At::EndName { .. } => 0,
+                    At::Value(_) | At::AttrName(_) => 1,
                     At::Text(_) => 2,
                     At::Elsewhere => 3,
                 }] += 1;

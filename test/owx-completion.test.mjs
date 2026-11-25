@@ -104,4 +104,14 @@ describe("completion in an OWL/XML document", () => {
     const { res } = await complete("<!-- <SubClassOf><Cl| -->")
     assert.deepEqual(labels(res), [])
   })
+
+  test("closing tag and attribute names", async () => {
+    const end = await complete('<SubClassOf><Class abbreviatedIRI=":Pump"/></|')
+    assert.deepEqual(labels(end.res), ["SubClassOf"])
+    assert.equal(end.res.items[0].textEdit.newText, "SubClassOf>")
+    const attrs = await complete("<Declaration><Class |/></Declaration>")
+    assert.deepEqual(labels(attrs.res), ["IRI", "abbreviatedIRI"])
+    assert.equal(attrs.res.items[0].insertTextFormat, 2)
+    assert.equal(attrs.res.items[0].textEdit.newText, 'IRI="$0"')
+  })
 })

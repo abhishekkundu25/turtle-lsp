@@ -306,18 +306,18 @@ describe("an open OWL/XML document", () => {
   test("the dynamic registrations of a client that opts in leave .owx documents out of everything that writes, but completion; the watcher sees them", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
-    assert.equal(features.length, 4, JSON.stringify(registrations))
+    assert.equal(features.length, 5, JSON.stringify(registrations))
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
       // Rename takes RDF/XML files by name (.owl, .rdf), never .owx: it
-      // refuses an OWL/XML text under those names. Completion takes both,
-      // and answers by the syntax it reads.
+      // refuses an OWL/XML text under those names. XML completion takes both,
+      // with XML-specific trigger characters, and answers by the syntax it reads.
       const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
       const want = {
-        "textDocument/rename": [{ pattern: "**/*.{owl,rdf}" }],
-        "textDocument/completion": [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }],
+        "turtle-rename": [{ pattern: "**/*.{owl,rdf}" }],
+        "turtle-xml-completion": [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }],
       }
-      assert.deepEqual(xml, want[r.method] ?? [], r.method)
+      assert.deepEqual(xml, want[r.id] ?? [], r.id)
     }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.owx"), JSON.stringify(watch))

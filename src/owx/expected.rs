@@ -60,6 +60,17 @@ const WHITE: &[char] = &[' ', '\t', '\n', '\r'];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Expected {
     Elements(Names),
+    /// The name of the innermost open element after `</`.
+    EndTag {
+        span: Span,
+        name: String,
+        closed: bool,
+    },
+    /// Valid attributes for the start tag being written.
+    Attributes {
+        span: Span,
+        attrs: Vec<&'static str>,
+    },
     /// An IRI.
     Iri {
         /// What its edit replaces: a closed value between its quotes (an
@@ -99,6 +110,20 @@ pub(crate) enum Form {
 pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
     let doc = Document::read(text);
     let c = doc.at(offset);
+    if c.open.is_empty() {
+        if let At::AttrName(a) = &c.at
+            && a.tag.name.is(OWL, "Ontology")
+        {
+            let attrs = ontology_attrs(&a.tag);
+            if !attrs.is_empty() {
+                return Some(Expected::Attributes {
+                    span: a.span,
+                    attrs,
+                });
+            }
+        }
+        return None;
+    }
     let (root, inner) = c.open.split_first()?;
     if !root.tag.name.is(OWL, "Ontology") {
         return None;
@@ -130,6 +155,40 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
                 prefix: owl_prefix(&text[name.start as usize..name.end as usize], &c.prefixes),
                 elements,
             }))
+        }
+        At::EndName { span, closed } => {
+            let last = c.open.last()?;
+            if last.tag.name.entity || !xml::is_name(last.tag.name.raw) {
+                return None;
+            }
+            let outer: Vec<&str> = c.open[..c.open.len() - 1]
+                .iter()
+                .map(|e| e.tag.name.raw)
+                .collect();
+            if span.start < span.end {
+                let existing = text.get(span.start as usize..span.end as usize)?;
+                if outer.contains(&existing) {
+                    return None;
+                }
+            }
+            if cursor::is_already_closed(text, span.end as usize, &outer, last.tag.name.raw) {
+                return None;
+            }
+            Some(Expected::EndTag {
+                span: *span,
+                name: last.tag.name.raw.to_string(),
+                closed: *closed,
+            })
+        }
+        At::AttrName(a) => {
+            let attrs = tag_attrs(&a.tag)?;
+            if attrs.is_empty() {
+                return None;
+            }
+            Some(Expected::Attributes {
+                span: a.span,
+                attrs,
+            })
         }
         At::Value(v) => {
             let (iris, abbreviated) = value(&v.tag.name, &v.attr.name)?;
@@ -203,6 +262,50 @@ fn owl(name: &Name<'_>) -> Option<Element> {
         return None;
     }
     element(name.local())
+}
+
+fn has_attr(tag: &xml::Tag<'_>, name: &str) -> bool {
+    match name.strip_prefix("xml:") {
+        Some(local) => tag
+            .attrs
+            .iter()
+            .any(|a| a.name.ns() == Some(xml::XML_NS) && a.name.local() == local),
+        None => tag
+            .attrs
+            .iter()
+            .any(|a| a.name.prefix().is_none() && a.name.raw == name),
+    }
+}
+
+fn ontology_attrs(tag: &xml::Tag<'_>) -> Vec<&'static str> {
+    ["ontologyIRI", "versionIRI", "xml:base", "xml:lang"]
+        .into_iter()
+        .filter(|n| !has_attr(tag, n))
+        .collect()
+}
+
+fn tag_attrs(tag: &xml::Tag<'_>) -> Option<Vec<&'static str>> {
+    let el = owl(&tag.name)?;
+    let list: &[&str] = match el {
+        Element::Keyword(k)
+            if Entity::of(k).is_some() || matches!(k, Keyword::Variable | Keyword::BuiltInAtom) =>
+        {
+            if has_attr(tag, "IRI") || has_attr(tag, "abbreviatedIRI") {
+                &[]
+            } else {
+                &["IRI", "abbreviatedIRI"]
+            }
+        }
+        Element::Keyword(Keyword::Prefix) => &["name", "IRI"],
+        Element::Keyword(k) if from_tag(k) == Some(Operand::Integer) => {
+            &["cardinality", "xml:lang"]
+        }
+        Element::Leaf(Leaf::Literal) => &["datatypeIRI", "xml:lang"],
+        Element::Leaf(Leaf::FacetRestriction) => &["facet", "xml:lang"],
+        Element::Leaf(Leaf::AnonymousIndividual) => &["nodeID"],
+        Element::Keyword(_) | Element::Leaf(_) => &["xml:lang"],
+    };
+    Some(list.iter().copied().filter(|n| !has_attr(tag, n)).collect())
 }
 
 /// The IRIs a value of attribute `attr` of element `tag` may be, and
@@ -1049,7 +1152,6 @@ mod tests {
             "  <Prefix name=\"a\" IRI=\"http://example.org/a#|\"/>",
             "  <Import>http://example.org/|</Import>",
             "  <SubClassOf>\n    |\n  </SubClassOf>",
-            "  <SubClassOf><Class abbreviatedIRI=\":A\"/></SubCl|",
             "  <SubClassOf><Class ab|breviatedIRI=\":A\"/>",
             "  <SubClassOf><Class xml:base=\"|\"/>",
         ] {

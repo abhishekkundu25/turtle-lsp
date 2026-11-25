@@ -55,6 +55,12 @@ pub(super) fn complete(
 ) -> CompletionResponse {
     let list = match expected::at(&a.text, offset) {
         Some(Expected::Elements(names)) => named(a, k, enc, offset, &names, snippets),
+        Some(Expected::EndTag { span, name, closed }) => {
+            Some(end_tag(a, enc, offset, span, &name, closed))
+        }
+        Some(Expected::Attributes { span, attrs }) => {
+            Some(attributes(a, enc, offset, span, &attrs, snippets))
+        }
         Some(Expected::Iri { span, iris, form }) => iri(a, k, enc, offset, span, &iris, form),
         None => None,
     };
@@ -124,6 +130,97 @@ fn named(
         is_incomplete: true,
         items,
     })
+}
+
+/// Closing-tag completion after `</`: the innermost open element's name,
+/// with `>` appended when no `>` already follows.
+fn end_tag(
+    a: &Analysis,
+    enc: Encoding,
+    offset: usize,
+    span: Span,
+    name: &str,
+    closed: bool,
+) -> CompletionList {
+    let typed = &a.text[span.start as usize..offset];
+    let range = a.range(enc, span);
+    let mut items = Vec::new();
+    if fuzzy(typed, name) {
+        let new_text = if closed {
+            name.to_string()
+        } else {
+            format!("{name}>")
+        };
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("close element".into()),
+            sort_text: Some("0".into()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, new_text))),
+            ..Default::default()
+        });
+    }
+    CompletionList {
+        is_incomplete: false,
+        items,
+    }
+}
+
+/// Valid OWL/XML attributes for the start tag being written.
+fn attributes(
+    a: &Analysis,
+    enc: Encoding,
+    offset: usize,
+    span: Span,
+    attrs: &[&str],
+    snippets: bool,
+) -> CompletionList {
+    let typed = &a.text[span.start as usize..offset];
+    let range = a.range(enc, span);
+    let mut items = Vec::new();
+    for (idx, &name) in attrs.iter().enumerate() {
+        let local = name.split_once(':').map_or(name, |(_, l)| l);
+        let matches = if typed.contains(':') {
+            fuzzy(typed, name)
+        } else {
+            fuzzy(typed, name) || fuzzy(typed, local)
+        };
+        if !matches {
+            continue;
+        }
+        let detail = match name {
+            "IRI" => "full or relative IRI",
+            "abbreviatedIRI" => "abbreviated IRI, prefix:local",
+            "datatypeIRI" => "datatype IRI of this literal",
+            "xml:lang" => "language tag for literals",
+            "xml:base" => "base IRI for relative references",
+            "name" => "prefix name (empty for default prefix)",
+            "facet" => "constraining facet IRI",
+            "cardinality" => "non-negative integer cardinality",
+            "nodeID" => "blank node identifier",
+            "ontologyIRI" => "ontology IRI",
+            "versionIRI" => "ontology version IRI",
+            _ => "attribute",
+        };
+        let (new_text, format) = if snippets {
+            (format!("{name}=\"$0\""), Some(InsertTextFormat::SNIPPET))
+        } else {
+            (format!("{name}=\"\""), None)
+        };
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some(detail.into()),
+            sort_text: Some(format!("{idx:02}")),
+            insert_text_format: format,
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, new_text))),
+            ..Default::default()
+        });
+    }
+    CompletionList {
+        is_incomplete: false,
+        items,
+    }
 }
 
 fn is_entity(el: Element) -> bool {
@@ -1127,5 +1224,63 @@ mod tests {
         );
         let labels = at(&abbr, &others).labels();
         has(&labels, &["ex:Apple"], &["ex:A+B"], "abbreviatedIRI");
+    }
+
+    #[test]
+    fn closing_tag_and_attribute_completion() {
+        // Closing tag without `>` appends `>`.
+        let a = at_doc(&onto(
+            "<SubClassOf><Class abbreviatedIRI=\":Pump\"/><Class abbreviatedIRI=\":Valve\"/></|",
+        ));
+        assert_eq!(a.labels(), ["SubClassOf"]);
+        let after = a.accepted(&a.item("SubClassOf"));
+        assert!(after.contains("</SubClassOf>"), "{after}");
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+        // Closing tag with `>` replaces only the name.
+        let a = at_doc(&onto(
+            "<SubClassOf><Class abbreviatedIRI=\":Pump\"/><Class abbreviatedIRI=\":Valve\"/></SubCl|>",
+        ));
+        assert_eq!(a.labels(), ["SubClassOf"]);
+        let after = a.accepted(&a.item("SubClassOf"));
+        assert!(after.contains("</SubClassOf>"), "{after}");
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+        // Entity tag attributes: IRI and abbreviatedIRI, mutually exclusive.
+        let a = at_doc(&onto("<Declaration><Class |/></Declaration>"));
+        assert_eq!(a.labels(), ["IRI", "abbreviatedIRI"]);
+        let a_done = at_doc(&onto(
+            "<Declaration><Class IRI=\"http://example.org/o#A\" |/></Declaration>",
+        ));
+        assert!(a_done.labels().is_empty(), "{:?}", a_done.labels());
+        // Snippet vs plain edit on attribute names.
+        let a = at_doc(&onto("<Declaration><Class ab|/></Declaration>"));
+        assert_eq!(a.labels(), ["abbreviatedIRI"]);
+        let snip = a.list(true);
+        assert_eq!(
+            snip.items[0].insert_text_format,
+            Some(InsertTextFormat::SNIPPET)
+        );
+        assert!(
+            matches!(&snip.items[0].text_edit, Some(CompletionTextEdit::Edit(e)) if e.new_text == "abbreviatedIRI=\"$0\""),
+            "{:?}",
+            snip.items[0].text_edit
+        );
+        // Literal, Prefix, FacetRestriction, AnonymousIndividual, Ontology attributes.
+        assert_eq!(
+            at_doc(&onto("<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><IRI>http://example.org/o#A</IRI><Literal |>x</Literal></AnnotationAssertion>")).labels(),
+            ["datatypeIRI", "xml:lang"]
+        );
+        assert_eq!(at_doc(&onto("<Prefix name=\"ex\" |/>")).labels(), ["IRI"]);
+        assert_eq!(
+            at_doc(&onto("<DatatypeDefinition><Datatype abbreviatedIRI=\":D\"/><DatatypeRestriction><Datatype abbreviatedIRI=\"xsd:integer\"/><FacetRestriction |><Literal>1</Literal></FacetRestriction></DatatypeRestriction></DatatypeDefinition>")).labels(),
+            ["facet", "xml:lang"]
+        );
+        assert_eq!(
+            at_doc(&onto("<ClassAssertion><Class abbreviatedIRI=\":Pump\"/><AnonymousIndividual |/></ClassAssertion>")).labels(),
+            ["nodeID"]
+        );
+        let root_attr = at_doc(
+            "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\" |>\n</Ontology>\n",
+        );
+        assert_eq!(root_attr.labels(), ["versionIRI", "xml:base", "xml:lang"]);
     }
 }

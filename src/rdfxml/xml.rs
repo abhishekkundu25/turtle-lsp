@@ -360,12 +360,12 @@ fn pseudo_attr<'b>(body: &'b str, name: &str) -> Option<&'b str> {
     rest[1..].split(q).next()
 }
 
-fn is_space(c: u8) -> bool {
+pub(super) fn is_space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 /// Bytes that end a name.
-fn ends_name(c: u8) -> bool {
+pub(super) fn ends_name(c: u8) -> bool {
     is_space(c) || matches!(c, b'>' | b'/' | b'<' | b'=' | b'"' | b'\'' | b'?')
 }
 

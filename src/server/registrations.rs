@@ -82,13 +82,21 @@ pub(crate) fn selector() -> Vec<DocumentFilter> {
         .collect()
 }
 
-/// The documents completion is registered for: [`selector`]'s, those of
-/// [`COMPLETED_LANGUAGES`], and RDF/XML and OWL/XML files by name.
+/// The non-XML documents completion is registered for: [`selector`]'s and
+/// [`COMPLETED_LANGUAGES`]. XML documents ([`xml_completion_selector`]) get a
+/// separate completion registration with XML-specific trigger characters.
 pub(crate) fn completion_selector() -> Vec<DocumentFilter> {
     let mut out = selector();
     out.extend(COMPLETED_LANGUAGES.iter().map(|l| filter(Some(l), None)));
-    out.extend([RDFXML_PATTERN, OWX_PATTERN].map(|p| filter(None, Some(p))));
     out
+}
+
+/// The XML documents (`.owl`, `.rdf`, `.owx`) completion is registered for,
+/// with XML-specific trigger characters ([`xml_completion`]).
+pub(crate) fn xml_completion_selector() -> Vec<DocumentFilter> {
+    [RDFXML_PATTERN, OWX_PATTERN]
+        .map(|p| filter(None, Some(p)))
+        .into()
 }
 
 /// The documents rename applies to: [`selector`]'s, and RDF/XML files,
@@ -110,6 +118,24 @@ fn filter(language: Option<&str>, pattern: Option<&str>) -> DocumentFilter {
 pub(crate) fn completion() -> CompletionOptions {
     CompletionOptions {
         trigger_characters: Some(vec![":".into(), "@".into(), "?".into(), "$".into()]),
+        resolve_provider: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Completion options for XML documents (`.owl`, `.rdf`, `.owx`): adds XML
+/// syntax triggers (`<`, `/`, `"`, `'`, `&`) without affecting Turtle, SPARQL
+/// or JSON-LD.
+pub(crate) fn xml_completion() -> CompletionOptions {
+    CompletionOptions {
+        trigger_characters: Some(vec![
+            ":".into(),
+            "<".into(),
+            "/".into(),
+            "\"".into(),
+            "'".into(),
+            "&".into(),
+        ]),
         resolve_provider: Some(true),
         ..Default::default()
     }
@@ -171,9 +197,8 @@ impl Dynamic {
     }
 
     /// The registrations to send once the client is initialized: one per
-    /// dynamic feature, each with [`selector`] ([`completion_selector`] for
-    /// completion, [`rename_selector`] for rename) and the options its
-    /// static capability would have.
+    /// dynamic feature (two for completion: non-XML with [`completion`] and
+    /// XML with [`xml_completion`]), each with its selector and options.
     pub(crate) fn registrations(self) -> Vec<Registration> {
         [
             (
@@ -181,34 +206,41 @@ impl Dynamic {
                 "turtle-formatting",
                 "textDocument/formatting",
                 json!({}),
+                selector(),
             ),
             (
                 self.rename,
                 "turtle-rename",
                 "textDocument/rename",
                 json!(rename()),
+                rename_selector(),
             ),
             (
                 self.completion,
                 "turtle-completion",
                 "textDocument/completion",
                 json!(completion()),
+                completion_selector(),
+            ),
+            (
+                self.completion,
+                "turtle-xml-completion",
+                "textDocument/completion",
+                json!(xml_completion()),
+                xml_completion_selector(),
             ),
             (
                 self.code_action,
                 "turtle-code-action",
                 "textDocument/codeAction",
                 json!(code_action()),
+                selector(),
             ),
         ]
         .into_iter()
         .filter(|(on, ..)| *on)
-        .map(|(_, id, method, mut options)| {
-            options["documentSelector"] = match method {
-                "textDocument/completion" => json!(completion_selector()),
-                "textDocument/rename" => json!(rename_selector()),
-                _ => json!(selector()),
-            };
+        .map(|(_, id, method, mut options, document_selector)| {
+            options["documentSelector"] = json!(document_selector);
             Registration {
                 id: id.into(),
                 method: method.into(),
@@ -244,7 +276,11 @@ mod tests {
         let methods: Vec<_> = d.registrations().into_iter().map(|r| r.method).collect();
         assert_eq!(
             methods,
-            ["textDocument/formatting", "textDocument/completion"]
+            [
+                "textDocument/formatting",
+                "textDocument/completion",
+                "textDocument/completion",
+            ]
         );
         assert!(Dynamic::default().registrations().is_empty());
     }
@@ -302,28 +338,33 @@ mod tests {
             completion: true,
             code_action: true,
         };
-        for r in all.registrations() {
-            let options = r.register_options.unwrap();
+        let regs = all.registrations();
+        assert_eq!(regs.len(), 5);
+        let rdfxml = json!({"pattern": RDFXML_PATTERN});
+        let owx = json!({"pattern": OWX_PATTERN});
+        for r in &regs {
+            let options = r.register_options.as_ref().unwrap();
             let filters = options["documentSelector"].as_array().unwrap();
-            // Completion's adds the OWL Functional language and both XML
-            // patterns, rename's the RDF/XML pattern.
-            let completion = r.method == "textDocument/completion";
+            let xml_completion = r.id == "turtle-xml-completion";
+            let completion = r.id == "turtle-completion";
             let rename = r.method == "textDocument/rename";
-            let rdfxml = json!({"pattern": RDFXML_PATTERN});
-            let owx = json!({"pattern": OWX_PATTERN});
             assert_eq!(
                 filters.contains(&rdfxml),
-                rename || completion,
+                rename || xml_completion,
                 "{}",
-                r.method
+                r.id
             );
-            assert_eq!(filters.contains(&owx), completion, "{}", r.method);
-            let added = if completion {
-                COMPLETED_LANGUAGES.len() + 2
+            assert_eq!(filters.contains(&owx), xml_completion, "{}", r.id);
+            if xml_completion {
+                assert_eq!(filters.len(), 2, "{}", r.id);
             } else {
-                usize::from(rename)
-            };
-            assert_eq!(filters.len(), LANGUAGES.len() + 1 + added, "{}", r.method);
+                let added = if completion {
+                    COMPLETED_LANGUAGES.len()
+                } else {
+                    usize::from(rename)
+                };
+                assert_eq!(filters.len(), LANGUAGES.len() + 1 + added, "{}", r.id);
+            }
             for f in filters.iter().filter(|f| **f != rdfxml && **f != owx) {
                 let text = f.to_string();
                 assert!(!text.contains("owl") && !text.contains("rdf") && !text.contains("xml"));
@@ -341,13 +382,20 @@ mod tests {
                 "editors/vscode/src/client.ts: {name}"
             );
         }
-        // The options are those of the static capabilities.
-        let rename = all.registrations().remove(1).register_options.unwrap();
+        // The options are those of the static capabilities, plus XML-only
+        // triggers on the XML completion registration.
+        let rename = regs[1].register_options.as_ref().unwrap();
         assert_eq!(rename["prepareProvider"], true);
-        let completion = all.registrations().remove(2).register_options.unwrap();
+        let completion = regs[2].register_options.as_ref().unwrap();
         assert_eq!(completion["resolveProvider"], true);
         assert_eq!(completion["triggerCharacters"], json!([":", "@", "?", "$"]));
-        let actions = all.registrations().remove(3).register_options.unwrap();
+        let xml_comp = regs[3].register_options.as_ref().unwrap();
+        assert_eq!(xml_comp["resolveProvider"], true);
+        assert_eq!(
+            xml_comp["triggerCharacters"],
+            json!([":", "<", "/", "\"", "'", "&"])
+        );
+        let actions = regs[4].register_options.as_ref().unwrap();
         assert_eq!(actions["resolveProvider"], true);
     }
 

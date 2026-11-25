@@ -120,4 +120,18 @@ describe("completion in an RDF/XML document", () => {
     const res = await s.request("textDocument/completion", { textDocument: { uri: turtle }, position: positionOf(text, "a owl:Cl") })
     assert.ok(labels(res).includes("owl:Class"), labels(res).join(", "))
   })
+
+  test("closing tag, attribute names, rdf:parseType and rdf:type values", async () => {
+    const end = await complete('  <owl:Class rdf:about="http://example.org/Hose">\n    </|')
+    assert.deepEqual(labels(end.res), ["owl:Class"])
+    assert.equal(end.res.items[0].textEdit.newText, "owl:Class>")
+    const attrs = await complete('  <rdf:Description rdf:about="http://example.org/Hose">\n    <ex:feeds |/>')
+    for (const want of ["rdf:resource", "rdf:datatype", "rdf:parseType", "rdf:ID", "xml:lang"]) {
+      assert.ok(labels(attrs.res).includes(want), `${want} in ${labels(attrs.res).join(", ")}`)
+    }
+    const pt = await complete('  <rdf:Description rdf:about="http://example.org/Hose">\n    <ex:feeds rdf:parseType="|"></ex:feeds>\n  </rdf:Description>')
+    assert.deepEqual(labels(pt.res), ["Resource", "Collection", "Literal", "Triple"])
+    const ty = await complete('  <rdf:Description rdf:about="http://example.org/Hose" rdf:type="http://example.org/P|"/>')
+    assert.deepEqual(labels(ty.res), ["http://example.org/Pump"])
+  })
 })
