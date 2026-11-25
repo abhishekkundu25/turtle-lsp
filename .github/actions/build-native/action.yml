@@ -20,4 +20,4 @@ runs:
         name: ${{ inputs.artifact }}
         path: ${{ runner.os == 'Windows' && 'target/release/turtle-lsp.exe' || 'target/release/turtle-lsp' }}
         if-no-files-found: error
-        retention-days: 1
+        retention-days: 7

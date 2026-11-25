@@ -5,7 +5,7 @@ name: Pages
 # site is static files (the engine as WebAssembly, Monaco, the pages).
 #
 # A push to main deploys only after the CI workflow (which builds and tests
-# the browser engine, job "web") passed on that commit; a failed CI run
+# the browser engine, jobs "web-*") passed on that commit; a failed CI run
 # publishes nothing. A run started by hand republishes main without waiting.
 # CI runs on main are never cancelled, so they can finish out of order: only a
 # build of the current tip of main is published, never an older commit over a

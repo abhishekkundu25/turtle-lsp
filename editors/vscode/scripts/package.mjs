@@ -54,11 +54,15 @@ const notices = "THIRD_PARTY_NOTICES.md"
 
 if (!skipBuild) {
   run("npm", ["run", "build"])
-} else if (!fs.existsSync(path.join(here, "out", "extension.js"))) {
-  throw new Error(`no ${path.join(here, "out", "extension.js")} to package`)
+} else {
+  for (const rel of ["out/extension.js", "out/web/extension.js", "out/web/worker.js"]) {
+    const f = path.join(here, rel)
+    if (!fs.existsSync(f)) throw new Error(`no ${f} to package`)
+  }
 }
 if (target === "web") {
   if (!fs.existsSync(wasm)) throw new Error(`no ${wasm} after npm run build`)
+  if (skipBuild) checkBudget(zlib.gzipSync(fs.readFileSync(wasm), { level: 9 }).length)
 } else {
   // The engine runs only in the browser, which gets the web .vsix; 10 MB a
   // platform .vsix does not need. Its browser entry (out/web/*.js) stays: small,
