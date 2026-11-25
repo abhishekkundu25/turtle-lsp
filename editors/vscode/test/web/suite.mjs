@@ -130,7 +130,7 @@ check("a .owl file keeps VS Code's XML language and gets the server's hover, but
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 
-check("a .ofn file is OWL Functional syntax: its errors are listed before and after it is opened, its terms hover, lead to their declaration and are outlined, and the extension offers no formatter, rename, completion or code actions there", async () => {
+check("a .ofn file is OWL Functional syntax: its errors are listed before and after it is opened, its terms hover, lead to their declaration and are outlined, and the extension offers completion there and no formatter, rename or code actions", async () => {
   // The browser reads the workspace's files: listed before it is opened.
   ok(!vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith("/onto.ofn")), "onto.ofn was opened")
   const errors = (d) => d.some((x) => codeOf(x) === "ofn-syntax")
@@ -148,10 +148,12 @@ check("a .ofn file is OWL Functional syntax: its errors are listed before and af
   ok(defs.length === 1 && defs[0].endsWith("/onto.ofn"), `definition: ${JSON.stringify(defs)}`)
   const symbols = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)
   ok(JSON.stringify(symbols.map((x) => x.name)) === JSON.stringify(["prefixes", "http://example.org/o", ":A"]), `symbols: ${JSON.stringify(symbols.map((x) => x.name))}`)
-  for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction"]) {
+  for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/codeAction"]) {
     const feature = api.client().getFeature(method)
     ok(feature.getProvider(doc) === undefined, `${method}: a provider for onto.ofn`)
   }
+  // Completion is the one feature it gets.
+  ok(api.client().getFeature("textDocument/completion").getProvider(doc) !== undefined, "no completion provider for onto.ofn")
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 

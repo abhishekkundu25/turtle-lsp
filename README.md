@@ -52,7 +52,7 @@ the full W3C test suites and real public ontologies; see
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
 - **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace, read-only: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, outline, folding and diagnostics at the exact attribute or name. Nothing writes RDF/XML: no formatting, rename, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
-- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: the OBO edit files ROBOT and Protégé write are read as RDF/XML files are: their axioms become RDF triples by the W3C mapping, so their terms count in other files, and hover, definition, references, the outline, `query`, SHACL and reasoning see them. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`. Nothing writes Functional syntax. See [OWL Functional syntax](#owl-functional-syntax-ofn).
+- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: the OBO edit files ROBOT and Protégé write are read as RDF/XML files are: their axioms become RDF triples by the W3C mapping, so their terms count in other files, and hover, definition, references, the outline, `query`, SHACL and reasoning see them. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`. Completion offers the keywords and terms the grammar takes at the cursor; nothing else writes Functional syntax. See [OWL Functional syntax](#owl-functional-syntax-ofn).
 - **OWL/XML (`.owx`, or a `.owl` that holds it)**: read as Functional syntax is, by the same W3C mapping, so the same features see it. Errors are at their exact spans (`xml-syntax`, `owx-syntax`), and an axiom with an error is left out. Nothing writes OWL/XML. See [OWL/XML](#owlxml-owx).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`); the Functional-Syntax inputs of the approved W3C OWL 2 test cases: 78/78 parse with no error (`src/ofn/tests.rs`), and the 57 of them with an RDF/XML text of the same ontology give its graph, but for 6 where the two texts differ (`tests/ofn_oracle.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
@@ -555,7 +555,7 @@ in attribute values.
 OWL 2 Functional-Style Syntax is what ROBOT and Protégé write for many OBO
 edit files (`cl-edit.owl`, `hp-edit.owl`, `ro-edit.owl`). turtle-lsp reads a
 `.ofn` file, and a `.owl` whose text starts with `Prefix(` or `Ontology(`,
-as Functional syntax, read-only, as it reads RDF/XML.
+as Functional syntax, read-only, as it reads RDF/XML, but for completion.
 
 - **Read as RDF**: each axiom becomes the RDF triples the W3C [mapping to
   RDF graphs](https://www.w3.org/TR/owl2-mapping-to-rdf/) gives it (an
@@ -609,8 +609,20 @@ as Functional syntax, read-only, as it reads RDF/XML.
   otherwise (`tests/ofn_oracle.rs`): the parse and mapping of
   `hp-edit.owl` (31 MB, 435,917 triples) take about 60 ms, and
   `turtle-lsp check` on it about 0.1 s and 300 MB.
-- **Nothing writes it**: no formatting, rename, completion, quick fixes
-  that edit the file or `check --fix`. An editor with static capabilities
+- **Completion**: Ctrl+Space offers what the grammar takes at the cursor,
+  read from the tokens before it, so it works while an axiom is half
+  typed: the axiom keywords inside `Ontology( … )`, and inside a construct
+  the expressions its next operand may be with the entities of the slot's
+  kind (classes where a class expression goes, object properties, data
+  properties, datatypes, individuals, annotation properties). After
+  `prefix:`, that namespace's terms, from the bundled vocabularies and the
+  workspace; at a bare position, also the declared prefixes (and the
+  well-known ones once a letter is typed). A term whose prefix the file does not declare adds its
+  `Prefix(p:=<…>)` line after the others. With snippets, a keyword comes
+  with its operands as placeholders. Nothing is offered in a full IRI
+  (`<http://…`), a string or a comment.
+- **Nothing else writes it**: no formatting, rename, quick fixes that edit
+  the file or `check --fix`. An editor with static capabilities
   (Neovim) gets the quick fix "Fetch `<IRI>` and cache it" on an
   unresolved web import, which edits nothing; VS Code asks for no code
   actions in it. `format .` passes over it, and a named `format onto.ofn`

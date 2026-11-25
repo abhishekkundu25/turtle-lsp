@@ -22,6 +22,10 @@ export function languageOf(path) {
 // The languages whose documents the server reads and never writes.
 export const READ_ONLY = ["xml", "ofn"]
 
+// The read-only languages the server completes all the same: in OWL
+// Functional syntax, an accepted term may add its `Prefix( … )` line.
+export const COMPLETED = ["ofn"]
+
 // Monaco's JSON support keeps only what the server does not do: colours,
 // brackets and selection. Its own checks, hovers and completion would
 // repeat (or contradict) the server's on JSON-LD.
@@ -237,8 +241,9 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // (Monaco's xml language; only `.owl`, `.rdf` and `.owx` files) and OWL
   // Functional files (`ofn`). Nothing writes RDF/XML, OWL/XML or OWL
   // Functional syntax: such a model gets the features that read, without
-  // completion, rename, formatting, code actions, semantic tokens (Monaco's
-  // colours stay) and inlay hints.
+  // rename, formatting, code actions, semantic tokens (Monaco's colours
+  // stay) and inlay hints, and without completion but in OWL Functional
+  // syntax (COMPLETED).
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)
     monaco.languages.registerHoverProvider(lang, {
@@ -249,7 +254,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    if (writable) monaco.languages.registerCompletionItemProvider(lang, {
+    if (writable || COMPLETED.includes(lang)) monaco.languages.registerCompletionItemProvider(lang, {
       triggerCharacters: triggers,
       async provideCompletionItems(model, position, context, token) {
         const r = await client.request("textDocument/completion", {

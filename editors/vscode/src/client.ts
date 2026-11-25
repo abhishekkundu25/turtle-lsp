@@ -24,8 +24,8 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as c
  * The languages the extension contributes that the server reads and never
  * writes: `ofn`, OWL Functional syntax (`.ofn`), which gets what an RDF/XML
  * file gets (diagnostics, hover, definition, references, highlights,
- * symbols, folding). The server registers nothing that writes for them
- * (src/server/registrations.rs).
+ * symbols, folding) and completion. The server registers completion for
+ * them and nothing else that writes (src/server/registrations.rs).
  */
 export const READ_ONLY_LANGUAGES = ["ofn"] as const
 

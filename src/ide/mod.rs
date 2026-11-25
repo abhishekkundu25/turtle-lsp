@@ -20,13 +20,14 @@ mod navigation;
 
 /// The workspace, as one client sees it: the position encoding it
 /// negotiated, its settings, whether it resolves code actions' edits
-/// lazily (`codeAction/resolve`), and the reasoning state when reasoning is
-/// on.
+/// lazily (`codeAction/resolve`), whether it takes snippets in completion
+/// items, and the reasoning state when reasoning is on.
 pub(crate) struct Session<'w> {
     ws: &'w mut Workspace,
     enc: Encoding,
     settings: &'w Settings,
     resolve_edits: bool,
+    snippets: bool,
     reasoning: Option<&'w Arc<crate::reasoning::Shared>>,
 }
 
@@ -48,8 +49,15 @@ impl<'w> Session<'w> {
             enc,
             settings,
             resolve_edits,
+            snippets: false,
             reasoning: None,
         }
+    }
+
+    /// The session for a client that takes snippets in completion items
+    /// (`snippetSupport`) when `snippets` is set.
+    pub(crate) fn with_snippets(self, snippets: bool) -> Session<'w> {
+        Session { snippets, ..self }
     }
 
     /// The session with the reasoning state (`None` with reasoning off).

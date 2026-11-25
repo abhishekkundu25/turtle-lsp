@@ -382,7 +382,7 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   vim.api.nvim_buf_delete(other, { force = true })
 end)
 
-check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; nothing is written in it", function()
+check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; formatting and rename write nothing in it", function()
   local file = owl_dir .. "/onto.ofn"
   local text = {
     "Prefix(:=<http://example.org/o#>)",
@@ -424,6 +424,46 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   })
   def = def and (def.range and { def } or def) or {}
   assert(#def == 1 and def[1].range.start.line == 2 and def[1].range.start.character == 18, "definition in a .ofn: " .. vim.inspect(def))
+  vim.api.nvim_buf_delete(b, { force = true })
+end)
+
+check("completing in a .ofn buffer offers the slot's classes and adds a Prefix line when applied", function()
+  local file = owl_dir .. "/complete.ofn"
+  vim.fn.writefile({
+    "Prefix(:=<http://example.org/o#>)",
+    "Ontology(<http://example.org/o>",
+    "Declaration(Class(:Pump))",
+    "Declaration(ObjectProperty(:feeds))",
+    "SubClassOf(:Pump skos:Conc)",
+    ")",
+  }, file)
+  local b, c = open(file)
+  wait_diagnostics(b)
+  local function items(line, character)
+    local r = request(b, "textDocument/completion", {
+      textDocument = vim.lsp.util.make_text_document_params(b),
+      position = { line = line, character = character },
+    })
+    return r.items or r
+  end
+  -- A class slot: the class, not the property.
+  local labels = {}
+  for _, it in ipairs(items(4, #"SubClassOf(:Pump ")) do
+    labels[it.label] = true
+  end
+  assert(labels[":Pump"] and labels["ObjectSomeValuesFrom"] and not labels[":feeds"], vim.inspect(vim.tbl_keys(labels)))
+  local item
+  for _, it in ipairs(items(4, #"SubClassOf(:Pump skos:Conc")) do
+    if it.label == "skos:Concept" then
+      item = it
+    end
+  end
+  assert(item, "skos:Concept not offered")
+  vim.lsp.util.apply_text_edits({ item.textEdit }, b, c.offset_encoding)
+  vim.lsp.util.apply_text_edits(item.additionalTextEdits or {}, b, c.offset_encoding)
+  local text = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+  assert(text:find("Prefix(:=<http://example.org/o#>)\nPrefix(skos:=<http://www.w3.org/2004/02/skos/core#>)\nOntology(", 1, true), "no Prefix line:\n" .. text)
+  assert(text:find("SubClassOf(:Pump skos:Concept)", 1, true), "term not completed:\n" .. text)
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 

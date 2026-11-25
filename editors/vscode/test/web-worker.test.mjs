@@ -89,7 +89,7 @@ test("a client that can register features but does not opt in gets them in the i
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
 })
 
-test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf and .owx out", { skip }, async () => {
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf and .owx out (and .ofn, but for completion)", { skip }, async () => {
   const real = await createEngine(bytes)
   let crashNext = false
   const engine = {
@@ -117,7 +117,13 @@ test("the features the server writes with are registered after the initialize an
   assert.ok(c.posted.indexOf(registrations()[0]) > c.posted.indexOf(r), "registered before the initialize answer")
   const regs = registrations()[0].params.registrations
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
-  for (const x of regs) assert.doesNotMatch(JSON.stringify(x.registerOptions.documentSelector), /owl|owx|rdf|xml|ofn/)
+  for (const x of regs) {
+    const selector = JSON.stringify(x.registerOptions.documentSelector)
+    assert.doesNotMatch(selector, /owl|owx|rdf|xml/)
+    // Completion is the one feature OWL Functional syntax gets.
+    if (x.method === "textDocument/completion") assert.match(selector, /"language":"ofn"/)
+    else assert.doesNotMatch(selector, /ofn/)
+  }
   // A crash restarts the server, which registers again: the client accepted
   // them, so nothing is sent.
   c.send({ id: registrations()[0].id, result: null })

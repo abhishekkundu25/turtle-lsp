@@ -44,9 +44,28 @@
   Syntax" with highlighting, Neovim the file type `ofn` (with no
   modelines in `.ofn`, `.owl` and `.rdf` files, where `ex:` reads as one), and the
   browser editor its own colouring; each gets these features and offers no
-  formatting, rename, completion or code actions that edit the file there
+  formatting, rename or code actions that edit the file there
   (an editor with static capabilities, as Neovim, gets the "Fetch and
   cache" quick fix on an unresolved web import).
+- **Completion in OWL Functional syntax**: Ctrl+Space in a `.ofn` file (or a
+  Functional `.owl` in an editor with static capabilities) offers what the
+  grammar takes at the cursor, read from the tokens before it, so it works
+  while the axiom is half typed: `Prefix` and `Ontology` before the
+  ontology, the axiom keywords inside it, and inside a construct the
+  expressions its next operand may be (`ObjectSomeValuesFrom` in a class
+  expression's slot) with the entities of the slot's kind: classes,
+  datatypes, object, data or annotation properties, individuals. After
+  `prefix:` it offers that namespace's terms, from the bundled vocabularies
+  (with their labels) and the workspace, of the slot's kind; at a bare
+  position also the declared prefixes, and the well-known ones once a letter
+  is typed; the keywords and prefixes keep their places when a slot has
+  more than 200 terms. A term or prefix the
+  file does not declare adds its `Prefix(p:=<…>)` line after the other
+  declarations (before `Ontology(` when there are none). A client with
+  snippets gets each keyword with its operands as placeholders. VS Code
+  registers completion for the `ofn` language, and the browser editor
+  offers it there too. Nothing is offered in a full IRI (`<http://…`), a
+  string or a comment.
 
 - **OWL/XML (`.owx`, and a `.owl` or `.rdf` whose text is OWL/XML) is
   read**, read-only, as OWL Functional syntax is. turtle-lsp's own reader
@@ -157,7 +176,9 @@
   local); its `unresolved-import` says where the first bad byte is. It was
   read with the bad bytes replaced.
 - **Nothing writes RDF/XML, OWL Functional syntax or OWL/XML**: formatting,
-  rename, completion, quick fixes and `check --fix` leave them alone;
+  rename, quick fixes and `check --fix` leave them alone, and completion
+  offers nothing in RDF/XML and OWL/XML (in OWL Functional syntax, see
+  above);
   `format .` passes over them, and a named `format onto.owl` says "not
   formatted: RDF/XML" (or "not formatted: OWL Functional syntax", "not
   formatted: OWL/XML"). A rename of a term
@@ -165,8 +186,9 @@
   or `.rdf` that holds Turtle or JSON-LD is read, formatted and fixed as that
   syntax by the command line and by editors other than VS Code.
 - **VS Code registers formatting, rename, completion and code actions
-  dynamically** for every file but `.owl`, `.rdf`, `.owx` and `.ofn`, so it
-  lists no turtle-lsp formatter for XML or OWL Functional syntax. Other editors get the same static
+  dynamically** for every file but `.owl`, `.rdf`, `.owx` and `.ofn`
+  (completion for `.ofn` too), so it lists no turtle-lsp formatter for XML
+  or OWL Functional syntax. Other editors get the same static
   capabilities as before.
 - oxrdfxml is now only a test dependency.
 - **An edit costs less in a workspace whose JSON-LD files name `file:`

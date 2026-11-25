@@ -82,7 +82,7 @@ Inside the larger modules, these files hold one part each:
 | `src/knowledge/{facts,counts,update,read}.rs` | The knowledge index in parts: what one source contributes (`DocFacts`) and its builder; the per-item counts and the sorted walks that diff them; the sources and their update, which records the change set (`Changes`); the read side, what the index says about an IRI |
 | `src/imports/ntriples.rs` | A fetched RDF/XML, OWL Functional or OWL/XML import as N-Triples text, for the import cache |
 | `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF (`.ofn` among them, OWL Functional syntax, and `.owx`, OWL/XML), RDF whose syntax its content gives (`.owl`, `.rdf`), SPARQL, catalogs or JSON, and in which letter case |
-| `src/ofn/{lexer,grammar,signature,tree,rdf}.rs` | OWL Functional syntax: the tokens and their spans; the productions, the checks the specification states, and recovery at the next axiom; the signature table (each construct's argument slots, the kind of entity an IRI slot names, which keywords are axioms), which the grammar and the OWL/XML reader both read; the flat tree in preorder, each node's span and the index past its subtree, and the items not read whole; the mapping to RDF (the operator T of OWL 2 Mapping to RDF Graphs, section 2), with references, statements and definitions, which asks a `Source` (one per syntax) for each term's value, form and span |
+| `src/ofn/{lexer,grammar,signature,tree,rdf,expected}.rs` | OWL Functional syntax: the tokens and their spans; the productions, the checks the specification states, and recovery at the next axiom; the signature table (each construct's argument slots, the kind of entity an IRI slot names, which keywords are axioms, the kinds the reserved vocabulary and an `rdf:type` give an IRI), which the grammar and the OWL/XML reader both read; the flat tree in preorder, each node's span and the index past its subtree, and the items not read whole; the mapping to RDF (the operator T of OWL 2 Mapping to RDF Graphs, section 2), with references, statements and definitions, which asks a `Source` (one per syntax) for each term's value, form and span; what completion reads at the cursor (the keywords and the kinds of IRI the grammar takes there, from the tokens before it) and where a new `Prefix( … )` declaration goes |
 | `src/owx/{reader,source}.rs` | OWL/XML: the reader, one walk over the scanner's events that fills each construct's signature from its child elements, resolves `xml:base` and checks the schema, into the `ofn` tree and the terms it does not hold; the source that answers the mapping from the text and those terms |
 | `src/rdfxml/xml.rs` | The XML scanner: spans, namespaces, entities and their limits, and the count of every fault (`Scanner::faults`: each error, reported or past the cap, each reference left unexpanded, each element skipped for its depth), which the OWL/XML reader reads to know whether an axiom was read whole |
 | `tests.rs` and `review_tests.rs` beside a module | The module's unit tests in a file of their own (`#[cfg(test)] mod tests;`): `src/{knowledge,server,workspace}/tests.rs`, `src/{server,workspace}/review_tests.rs`, `src/syntax/parser/{tests,review_tests}.rs`, `src/jsonld/{context,json}/tests.rs`, `src/rdfxml/grammar/tests.rs`, `src/shacl/validate/tests.rs` |
@@ -97,7 +97,7 @@ Inside the larger modules, these files hold one part each:
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
 | `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
-| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl`, `.rdf`, `.owx` (all three in the editor's XML language) and the read-only `ofn` language (`.ofn`) out |
+| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl`, `.rdf`, `.owx` (all three in the editor's XML language) and the read-only `ofn` language (`.ofn`) out; completion's selector has `ofn` |
 
 ## One parse per document version
 
@@ -139,8 +139,13 @@ use (the use checks skip it as they skip a subject); so the
 knowledge index, SHACL, reasoning, the query graph and the reading features
 need no Functional-specific code. The analysis does not keep the tree.
 It gets the checks and gates of RDF/XML: read-only (`features::writes`),
-no completion, splice, semantic tokens or inlay hints, and the lints that
-need no edit (`Check::runs_on`). An import of a Functional file is read by
+no splice, semantic tokens or inlay hints, and the lints that need no edit
+(`Check::runs_on`), but for completion (`features::completes`), the one
+edit it gets: `ofn::expected` reads what the grammar takes at the cursor
+from the tokens before it (from the end of the last item mapped whole),
+and `features::completion::ofn` offers the keywords and the terms of the
+slot's kind, a term of an undeclared prefix adding its `Prefix( … )`
+line. An import of a Functional file is read by
 the same frontend (`imports::load::Format::Functional`), and a fetched one
 is converted to N-Triples for the cache. OWL/XML (`Syntax::OwlXml`: a
 `.owx` name, or a `.owl` or `.rdf` text whose root is OWL/XML's `Ontology`;
@@ -279,7 +284,7 @@ that target classes and builds no graph per edit.
 |---|---|---|
 | Diagnostics and lints | `features::diagnostics`, `features::lint`, `features::literals`, `features::shacl_lint` | `sparql::features::diagnostics` |
 | Quick fixes and refactorings | `features::quickfix`, `features::refactor` | `sparql::features::actions` |
-| Completion | `features::completion` (ranking in `completion/ranking.rs`, JSON-LD in `completion/jsonld.rs`) | `sparql::features::completion` |
+| Completion | `features::completion` (ranking in `completion/ranking.rs`, JSON-LD in `completion/jsonld.rs`, OWL Functional syntax in `completion/ofn.rs` over `ofn::expected`) | `sparql::features::completion` |
 | Hover, inlay hints | `features::hover`, `features::inlay` | `sparql::features::display` |
 | Navigation, rename | `features::navigation` (JSON-LD in `navigation/jsonld.rs`) | `sparql::features::navigation`, `sparql::features::rename` |
 | Formatting | `features::format` over `layout`, `jsonld::format` | `sparql::format` over `layout` |

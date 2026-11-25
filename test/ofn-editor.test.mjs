@@ -4,10 +4,11 @@
 // Its axioms are read as RDF (the W3C mapping), so it reads as an RDF/XML
 // file does: hover, definition, references, highlights, symbols and
 // folding, here and from the Turtle files that use its terms; no semantic
-// tokens or inlay hints. Nothing writes it: a client that opts in to the
-// dynamic registrations gets none of the writing features for it, a client
-// that does not gets empty answers, and a rename of a term it uses is
-// refused. Its header and its `Import`s are found as Turtle ones are: its
+// tokens or inlay hints. Nothing writes it but completion
+// (test/ofn-completion.test.mjs): a client that opts in to the dynamic
+// registrations gets completion for it and none of the writing features, a
+// client that does not gets empty answers from them, and a rename of a term
+// it uses is refused. Its header and its `Import`s are found as Turtle ones are: its
 // imports load, and its ontology is one a Turtle file imports.
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
@@ -135,18 +136,25 @@ describe("an open OWL Functional document", () => {
     assert.deepEqual(hints ?? [], [])
   })
 
-  test("the writing features are registered for other documents only, and answer nothing in it", async () => {
+  test("the writing features are registered for other documents only, and answer nothing in it; completion is registered for it too", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
     assert.equal(features.length, 4, JSON.stringify(registrations))
-    for (const r of features) assert.doesNotMatch(JSON.stringify(r.registerOptions.documentSelector), /ofn|owl|xml/, r.method)
+    for (const r of features) {
+      const selector = JSON.stringify(r.registerOptions.documentSelector)
+      assert.doesNotMatch(selector, /owl|xml/, r.method)
+      if (r.method === "textDocument/completion") assert.match(selector, /"language":"ofn"/, r.method)
+      else assert.doesNotMatch(selector, /ofn/, r.method)
+    }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.ofn"), JSON.stringify(watch))
     const at = { textDocument: { uri: w.ofn }, position: positionOf(ONTO, "Class(:A", 7) }
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.ofn }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
+    // Completion offers the class the slot takes.
     const completion = await attempt(s, "textDocument/completion", at)
-    assert.deepEqual(completion.result?.items ?? completion.result ?? [], [], JSON.stringify(completion))
+    const offered = (completion.result?.items ?? completion.result ?? []).map((i) => i.label)
+    assert.ok(offered.includes(":A"), JSON.stringify(completion))
     const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "ex:Thing" })
     assert.match(renamed.error ?? "", /OWL Functional syntax document is not edited/, JSON.stringify(renamed))
     // From the Turtle file that uses the class: refused, the Functional

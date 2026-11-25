@@ -4,7 +4,11 @@
 //! should not offer these features there. Nor in OWL/XML files (`.owx`),
 //! which editors keep in their XML language too, nor in OWL Functional
 //! files (`.ofn`, the `ofn` language of VS Code and Neovim), which are
-//! read-only too: [`LANGUAGES`] leaves `xml` and `ofn` out.
+//! read-only too: [`LANGUAGES`] leaves `xml` and `ofn` out. Completion is
+//! the one feature an OWL Functional file gets: its selector
+//! ([`completion_selector`]) adds [`COMPLETED_LANGUAGES`]. A Functional
+//! `.owl` keeps the `xml` language, and so gets no completion from a client
+//! that opts in.
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
@@ -40,22 +44,38 @@ pub(crate) const OPT_IN: &str = "registerOutsideRdfXml";
 pub(crate) const LANGUAGES: [&str; 6] =
     ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld"];
 
+/// The language ids of the documents the server reads, never writes, and
+/// completes: `ofn`, OWL Functional syntax, where an accepted term may add
+/// its `Prefix( … )` declaration (`features::completes`).
+pub(crate) const COMPLETED_LANGUAGES: [&str; 1] = ["ofn"];
+
 /// JSON-LD files keep the editor's JSON language: they are matched by name.
 pub(crate) const JSONLD_PATTERN: &str = "**/*.jsonld";
 
 /// The documents the registered features apply to: every language of
 /// [`LANGUAGES`] and every `.jsonld` file, whatever its URI scheme.
 pub(crate) fn selector() -> Vec<DocumentFilter> {
-    let filter = |language: Option<&str>, pattern: Option<&str>| DocumentFilter {
-        language: language.map(str::to_string),
-        scheme: None,
-        pattern: pattern.map(str::to_string),
-    };
     LANGUAGES
         .iter()
         .map(|l| filter(Some(l), None))
         .chain([filter(None, Some(JSONLD_PATTERN))])
         .collect()
+}
+
+/// The documents completion is registered for: [`selector`]'s and those of
+/// [`COMPLETED_LANGUAGES`].
+pub(crate) fn completion_selector() -> Vec<DocumentFilter> {
+    let mut out = selector();
+    out.extend(COMPLETED_LANGUAGES.iter().map(|l| filter(Some(l), None)));
+    out
+}
+
+fn filter(language: Option<&str>, pattern: Option<&str>) -> DocumentFilter {
+    DocumentFilter {
+        language: language.map(str::to_string),
+        scheme: None,
+        pattern: pattern.map(str::to_string),
+    }
 }
 
 pub(crate) fn completion() -> CompletionOptions {
@@ -122,8 +142,9 @@ impl Dynamic {
     }
 
     /// The registrations to send once the client is initialized: one per
-    /// dynamic feature, each with [`selector`] and the options its static
-    /// capability would have.
+    /// dynamic feature, each with [`selector`] (completion with
+    /// [`completion_selector`]) and the options its static capability would
+    /// have.
     pub(crate) fn registrations(self) -> Vec<Registration> {
         [
             (
@@ -154,7 +175,11 @@ impl Dynamic {
         .into_iter()
         .filter(|(on, ..)| *on)
         .map(|(_, id, method, mut options)| {
-            options["documentSelector"] = json!(selector());
+            options["documentSelector"] = if method == "textDocument/completion" {
+                json!(completion_selector())
+            } else {
+                json!(selector())
+            };
             Registration {
                 id: id.into(),
                 method: method.into(),
@@ -248,7 +273,18 @@ mod tests {
         for r in all.registrations() {
             let options = r.register_options.unwrap();
             let filters = options["documentSelector"].as_array().unwrap();
-            assert_eq!(filters.len(), LANGUAGES.len() + 1, "{}", r.method);
+            // Completion's adds the OWL Functional language.
+            let completed = if r.method == "textDocument/completion" {
+                COMPLETED_LANGUAGES.len()
+            } else {
+                0
+            };
+            assert_eq!(
+                filters.len(),
+                LANGUAGES.len() + 1 + completed,
+                "{}",
+                r.method
+            );
             for f in filters {
                 let text = f.to_string();
                 assert!(!text.contains("owl") && !text.contains("rdf") && !text.contains("xml"));
@@ -267,7 +303,8 @@ mod tests {
 
     /// The language ids of the documents the server reads and never
     /// writes: `ofn`, OWL Functional syntax, a language of VS Code's
-    /// extension and a Neovim file type. [`selector`] leaves them out.
+    /// extension and a Neovim file type. [`selector`] leaves them out;
+    /// [`completion_selector`] has those that complete.
     const READ_ONLY_LANGUAGES: [&str; 1] = ["ofn"];
 
     #[test]
@@ -279,10 +316,18 @@ mod tests {
             .unwrap();
         let mut filetypes: Vec<_> = line.split('"').skip(1).step_by(2).collect();
         let mut languages = [&LANGUAGES[..], &READ_ONLY_LANGUAGES[..]].concat();
-        // The read-only ones are in no registration.
+        // The read-only ones are in no registration but completion's, and
+        // there only when they complete.
         let registered = serde_json::to_string(&selector()).unwrap();
+        let completed = serde_json::to_string(&completion_selector()).unwrap();
         for id in READ_ONLY_LANGUAGES {
             assert!(!registered.contains(&format!("\"{id}\"")), "{registered}");
+            let syntax = crate::syntax::Syntax::from_language_id(id).unwrap();
+            assert_eq!(
+                completed.contains(&format!("\"{id}\"")),
+                crate::features::completes(syntax),
+                "{completed}"
+            );
             assert_eq!(
                 crate::syntax::Syntax::from_language_id(id),
                 Some(crate::syntax::Syntax::OwlFunctional)

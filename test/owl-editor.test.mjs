@@ -103,9 +103,11 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.deepEqual(features.map((r) => r.method).sort(), [...FEATURES].sort())
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
+      // Completion's also has OWL Functional syntax's language.
+      const ofn = r.method === "textDocument/completion" ? ["ofn"] : []
       assert.deepEqual(
         selector.map((f) => f.language ?? f.pattern),
-        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld"],
+        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...ofn],
         r.method,
       )
       assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)

@@ -7,6 +7,8 @@
 //!   resources described in the workspace.
 //! - In the query literal of a SHACL shape: SPARQL completion
 //!   ([`super::embedded`]).
+//! - In OWL Functional syntax: the keywords and the terms of the kinds the
+//!   grammar takes at the cursor (`ofn`).
 //!
 //! Candidates are ranked by position: after `a` classes come first, in predicate
 //! position properties come first. Before that, [`ranking`] puts what the
@@ -19,6 +21,7 @@
 //! and the subject from the query's structure instead.
 
 mod jsonld;
+mod ofn;
 pub(crate) mod ranking;
 
 // `ranking` and the other modules of this directory write IRIs through here.
@@ -88,9 +91,20 @@ impl Candidate {
 pub(crate) type Directive = &'static str;
 
 pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> CompletionResponse {
-    // Everything offered here is a prefixed name or a keyword, none of which
-    // N-Triples or N-Quads allows.
-    if a.parsed.syntax.is_line_based() {
+    complete_in(a, k, enc, pos, false)
+}
+
+/// [`complete`], for a client that takes snippets (`snippetSupport`) when
+/// `snippets` is set: an OWL Functional keyword is then written with its
+/// operands as placeholders.
+pub(crate) fn complete_in(
+    a: &Analysis,
+    k: &Knowledge,
+    enc: Encoding,
+    pos: Position,
+    snippets: bool,
+) -> CompletionResponse {
+    if !super::completes(a.parsed.syntax) {
         return CompletionResponse::Array(vec![]);
     }
     let Some(offset) = a.offset(enc, pos) else {
@@ -99,10 +113,9 @@ pub fn complete(a: &Analysis, k: &Knowledge, enc: Encoding, pos: Position) -> Co
     let offset = offset as usize;
     match a.parsed.syntax.family() {
         Family::JsonLd => return jsonld::complete(a, k, enc, offset),
-        // Nothing writes RDF/XML, OWL Functional syntax or OWL/XML.
-        Family::ReadOnly => {
-            return CompletionResponse::Array(vec![]);
-        }
+        // Of the read-only syntaxes, only OWL Functional syntax completes
+        // (`completes`).
+        Family::ReadOnly => return ofn::complete(a, k, enc, offset, snippets),
         Family::Turtle => {}
     }
     if let Some(r) = super::embedded::completion(a, k, enc, offset as u32) {
@@ -224,6 +237,16 @@ pub(crate) struct Best<'a> {
     pub(crate) promoted: &'a dyn Fn(Iri) -> bool,
 }
 
+/// Whether a term may be offered: its IRI, and its kind in the bundled
+/// vocabulary when it is one of its terms. A filter runs before a long list
+/// is cut ([`Best`]), so that the terms it keeps fill the list.
+pub(crate) type Fits<'a> = &'a dyn Fn(&str, Option<TermKind>) -> bool;
+
+/// Every term fits.
+fn any(_: &str, _: Option<TermKind>) -> bool {
+    true
+}
+
 /// [`prefixed_terms`], building candidates only for the `best` ones when
 /// given (the others cannot be among the first [`LIMIT`] after sorting).
 pub(crate) fn prefixed_terms_best(
@@ -233,6 +256,19 @@ pub(crate) fn prefixed_terms_best(
     slot: Slot,
     prefixes: &PrefixMap,
     best: Option<Best>,
+) -> Option<Vec<Candidate>> {
+    prefixed_terms_where(k, pfx, local, slot, prefixes, best, &any)
+}
+
+/// [`prefixed_terms_best`], of the terms that `fits` keeps.
+pub(crate) fn prefixed_terms_where(
+    k: &Knowledge,
+    pfx: &str,
+    local: &str,
+    slot: Slot,
+    prefixes: &PrefixMap,
+    best: Option<Best>,
+    fits: Fits,
 ) -> Option<Vec<Candidate>> {
     let (ns, import) = match prefixes.get(pfx) {
         Some(ns) => (ns.clone(), None),
@@ -252,6 +288,7 @@ pub(crate) fn prefixed_terms_best(
         &|l| format!("{pfx}:{l}"),
         import,
         best,
+        fits,
     ))
 }
 
@@ -266,10 +303,13 @@ pub(crate) fn namespace_terms(
     label: &dyn Fn(&str) -> String,
     import: Option<(String, String)>,
 ) -> Vec<Candidate> {
-    namespace_terms_best(k, ns, local, slot, label, import, None)
+    namespace_terms_best(k, ns, local, slot, label, import, None, &any)
 }
 
-fn namespace_terms_best(
+/// [`namespace_terms`], building candidates only for the `best` ones when
+/// given, of the terms that `fits` keeps.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn namespace_terms_best(
     k: &Knowledge,
     ns: &str,
     local: &str,
@@ -277,6 +317,7 @@ fn namespace_terms_best(
     label: &dyn Fn(&str) -> String,
     import: Option<(String, String)>,
     best: Option<Best>,
+    fits: Fits,
 ) -> Vec<Candidate> {
     let mut cands = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -286,6 +327,9 @@ fn namespace_terms_best(
                 continue;
             }
             seen.insert(t.local.clone());
+            if !fits(&format!("{ns}{}", t.local), Some(t.kind)) {
+                continue;
+            }
             cands.push(Candidate {
                 tier: ranking::NONE,
                 label: label(&t.local),
@@ -308,6 +352,9 @@ fn namespace_terms_best(
             continue;
         };
         if l.is_empty() || seen.contains(l) || !is_pn_local(l) || !fuzzy(local, l) {
+            continue;
+        }
+        if !fits(&iri, None) {
             continue;
         }
         rows.push((iri, guess_kind(k, &iri)));
@@ -508,6 +555,17 @@ pub(crate) fn local_name_candidates(
     slot: Slot,
     prefixes: &PrefixMap,
 ) {
+    local_name_candidates_where(cands, typed, slot, prefixes, &any)
+}
+
+/// [`local_name_candidates`], of the terms that `fits` keeps.
+pub(crate) fn local_name_candidates_where(
+    cands: &mut Vec<Candidate>,
+    typed: &str,
+    slot: Slot,
+    prefixes: &PrefixMap,
+    fits: Fits,
+) {
     if typed.chars().count() < 2 {
         return;
     }
@@ -528,11 +586,10 @@ pub(crate) fn local_name_candidates(
         if !seen_ns.insert(v.namespace) || (import.is_some() && prefixes.contains_key(&pfx)) {
             continue;
         }
-        for t in v
-            .terms()
-            .iter()
-            .filter(|t| t.local.to_lowercase().starts_with(&lower))
-        {
+        for t in v.terms().iter().filter(|t| {
+            t.local.to_lowercase().starts_with(&lower)
+                && fits(&format!("{}{}", v.namespace, t.local), Some(t.kind))
+        }) {
             cands.push(Candidate {
                 tier: ranking::NONE,
                 label: format!("{pfx}:{}", t.local),

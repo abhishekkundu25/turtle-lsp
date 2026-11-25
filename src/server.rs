@@ -182,6 +182,8 @@ pub(crate) struct Server {
     dynamic: registrations::Dynamic,
     /// The client resolves a code action's edit lazily (`codeAction/resolve`).
     resolve_edits: bool,
+    /// The client takes snippets in completion items (`snippetSupport`).
+    snippets: bool,
     layers: Layers,
     refresh: Refresh,
     /// What waits for a time to come: acting on a described-set change (see
@@ -327,6 +329,14 @@ impl Server {
             .and_then(|t| t.code_action.as_ref())
             .and_then(|c| c.resolve_support.as_ref())
             .is_some_and(|r| r.properties.iter().any(|p| p == "edit"));
+        let snippets = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|t| t.completion.as_ref())
+            .and_then(|c| c.completion_item.as_ref())
+            .and_then(|i| i.snippet_support)
+            .unwrap_or(false);
 
         #[allow(deprecated)]
         let root_uris: Vec<String> = match params.workspace_folders.as_deref() {
@@ -381,6 +391,7 @@ impl Server {
             watch_dynamic,
             dynamic,
             resolve_edits,
+            snippets,
             // Before `layers` moves: `settings` borrows it.
             reasoning: crate::reasoning::Shared::when_on(settings, spawn),
             layers,
@@ -1595,6 +1606,7 @@ impl Server {
             self.resolve_edits,
         )
         .with_reasoning(self.reasoning.as_ref())
+        .with_snippets(self.snippets)
     }
 
     /// The answer to `req`, its result as JSON text: None when it is

@@ -642,6 +642,81 @@ fn imports_keep_the_tokens(
     }
 }
 
+/// The `additional_text_edits` of completion `items` in an OWL Functional
+/// document `text` (a prefix declared on the way), each set once: one
+/// insertion of one line, `Prefix(name:=<namespace>)`, after which the
+/// document declares that prefix and every one it declared, with no error it
+/// did not have (one fewer, `Undeclared prefix`, where it used the name).
+fn functional_imports_declare(text: &str, a: &Analysis, items: &[CompletionItem], enc: Encoding) {
+    let mut seen: Vec<&Vec<TextEdit>> = Vec::new();
+    for item in items {
+        let Some(edits) = &item.additional_text_edits else {
+            continue;
+        };
+        if seen.contains(&edits) {
+            continue;
+        }
+        seen.push(edits);
+        let label = &item.label;
+        let [e] = &edits[..] else {
+            panic!("completion '{label}' adds {edits:?}");
+        };
+        let Some(at) = a
+            .offset(enc, e.range.start)
+            .filter(|_| e.range.start == e.range.end)
+        else {
+            panic!("completion '{label}' adds no insertion: {e:?}");
+        };
+        let line = e.new_text.trim_matches(['\r', '\n']);
+        let declared = line
+            .strip_prefix("Prefix(")
+            .and_then(|r| r.strip_suffix(">)"))
+            .and_then(|r| r.split_once(":=<"));
+        let Some((name, ns)) = declared.filter(|_| !line.contains(['\r', '\n'])) else {
+            panic!("completion '{label}' adds {:?}", e.new_text);
+        };
+        let at = at as usize;
+        let after = format!("{}{}{}", &text[..at], e.new_text, &text[at..]);
+        let re = Analysis::with_syntax(
+            doc_uri(Syntax::OwlFunctional).into(),
+            &after,
+            Arc::default(),
+            false,
+            Syntax::OwlFunctional,
+        );
+        let why = |m: &str| {
+            format!(
+                "completion '{label}' adds {:?} at byte {at}: {m}",
+                e.new_text
+            )
+        };
+        let declares = |name: &str, ns: &str| {
+            re.parsed
+                .prefixes
+                .iter()
+                .any(|q| q.name == name && q.iri.as_str() == ns)
+        };
+        assert!(declares(name, ns), "{}", why("the prefix is not declared"));
+        for p in &a.parsed.prefixes {
+            let kept = declares(&p.name, p.iri.as_str());
+            assert!(
+                kept,
+                "{}",
+                why(&format!("'{}:' is declared no more", p.name))
+            );
+        }
+        let mut before: Vec<&str> = a.parsed.errors.iter().map(|e| e.message()).collect();
+        for err in &re.parsed.errors {
+            match before.iter().position(|m| *m == err.message()) {
+                Some(i) => {
+                    before.swap_remove(i);
+                }
+                None => panic!("{}", why(&format!("a new error: {:?}", err.message()))),
+            }
+        }
+    }
+}
+
 fn completion_items(r: Option<CompletionResponse>) -> Vec<CompletionItem> {
     match r {
         Some(CompletionResponse::Array(v)) => v,
@@ -1669,7 +1744,11 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
             let off = pick_offset(rng, text);
             let pos: Position = a.position(enc, off);
             let items = completion_items(Some(completion::complete(&a, docs, enc, pos)));
-            imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), pos);
+            if syntax == Syntax::OwlFunctional {
+                functional_imports_declare(text, &a, &items, enc);
+            } else {
+                imports_keep_the_tokens(&lexed, &items, |p| a.offset(enc, p), pos);
+            }
             let _ = hover::hover(&a, docs, enc, pos);
             let _ = navigation::definition(&a, docs, enc, pos, None);
             let _ = navigation::type_definition(&a, docs, enc, pos);

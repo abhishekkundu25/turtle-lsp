@@ -31,9 +31,9 @@
 //! a property, the checks of IRIs and literals) are not in it. For tests,
 //! `check` says whether a tree's constructs fill their signatures.
 
-use super::tree::Keyword;
 #[cfg(test)]
-use super::tree::{Document, NodeKind};
+use super::tree::Document;
+use super::tree::{Keyword, NodeKind};
 
 /// What an argument slot takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +157,105 @@ impl Entity {
             Entity::AnnotationProperty => "an annotation property",
             Entity::NamedIndividual => "a named individual",
         }
+    }
+}
+
+const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+const OWL: &str = "http://www.w3.org/2002/07/owl#";
+
+impl Entity {
+    /// Every kind.
+    pub(crate) const ALL: [Entity; 6] = [
+        Entity::Class,
+        Entity::Datatype,
+        Entity::ObjectProperty,
+        Entity::DataProperty,
+        Entity::AnnotationProperty,
+        Entity::NamedIndividual,
+    ];
+
+    /// The kinds of entity an IRI of the reserved vocabulary (section 2.4:
+    /// the `rdf:`, `rdfs:`, `xsd:` and `owl:` namespaces) may name, or
+    /// `None` for an IRI outside it. Section 2.4 allows these only: the
+    /// classes `owl:Thing` and `owl:Nothing`, the top and bottom
+    /// properties, the built-in annotation properties (section 5.5),
+    /// `rdfs:Literal`, the datatypes of the datatype map (section 4) and
+    /// `rdf:langString`; every other name there is no entity (an empty
+    /// list). `xsd_datatype` says whether an `xsd:` name is a datatype: any
+    /// the caller knows as one, as OWL API reads `xsd:date`.
+    pub(crate) fn reserved(iri: &str, xsd_datatype: bool) -> Option<&'static [Entity]> {
+        use Entity as E;
+        if let Some(local) = iri.strip_prefix(XSD) {
+            let datatype = xsd_datatype && !local.is_empty();
+            return Some(if datatype { &[E::Datatype] } else { &[] });
+        }
+        let kinds: &[Entity] = if let Some(local) = iri.strip_prefix(OWL) {
+            match local {
+                "Thing" | "Nothing" => &[E::Class],
+                "topObjectProperty" | "bottomObjectProperty" => &[E::ObjectProperty],
+                "topDataProperty" | "bottomDataProperty" => &[E::DataProperty],
+                "real" | "rational" => &[E::Datatype],
+                "deprecated"
+                | "versionInfo"
+                | "priorVersion"
+                | "backwardCompatibleWith"
+                | "incompatibleWith" => &[E::AnnotationProperty],
+                _ => &[],
+            }
+        } else if let Some(local) = iri.strip_prefix(RDFS) {
+            match local {
+                "Literal" => &[E::Datatype],
+                "label" | "comment" | "seeAlso" | "isDefinedBy" => &[E::AnnotationProperty],
+                _ => &[],
+            }
+        } else {
+            match iri.strip_prefix(RDF)? {
+                "PlainLiteral" | "XMLLiteral" | "langString" => &[E::Datatype],
+                _ => &[],
+            }
+        };
+        Some(kinds)
+    }
+
+    /// The kinds of entity a resource of type `class` is, by the W3C
+    /// mapping (Table 6 and 7: `Declaration( Class( C ) )` is
+    /// `C rdf:type owl:Class`, and so on); `None` for a class outside the
+    /// OWL, RDFS and RDF vocabularies, whose instances are individuals.
+    pub(crate) fn typed_by(class: &str) -> Option<&'static [Entity]> {
+        use Entity as E;
+        const PROPERTIES: &[Entity] = &[E::ObjectProperty, E::DataProperty, E::AnnotationProperty];
+        let kinds: &[Entity] = if let Some(local) = class.strip_prefix(OWL) {
+            match local {
+                "Class" => &[E::Class],
+                "ObjectProperty"
+                | "InverseFunctionalProperty"
+                | "TransitiveProperty"
+                | "SymmetricProperty"
+                | "AsymmetricProperty"
+                | "ReflexiveProperty"
+                | "IrreflexiveProperty" => &[E::ObjectProperty],
+                "DatatypeProperty" => &[E::DataProperty],
+                "FunctionalProperty" => &[E::ObjectProperty, E::DataProperty],
+                "AnnotationProperty" => &[E::AnnotationProperty],
+                // An instance of `owl:Thing` is an individual.
+                "NamedIndividual" | "Thing" => &[E::NamedIndividual],
+                _ => &[],
+            }
+        } else if let Some(local) = class.strip_prefix(RDFS) {
+            match local {
+                "Class" => &[E::Class],
+                "Datatype" => &[E::Datatype],
+                _ => &[],
+            }
+        } else {
+            match class.strip_prefix(RDF)? {
+                "Property" => PROPERTIES,
+                _ => &[],
+            }
+        };
+        Some(kinds)
     }
 }
 
@@ -629,7 +728,12 @@ fn take<'n>(doc: &Document, cat: Cat, nodes: &'n [usize]) -> Option<&'n [usize]>
 /// Whether node `c` alone is one of `cat`.
 #[cfg(test)]
 fn one(doc: &Document, c: usize, cat: Cat) -> bool {
-    let kind = doc.nodes[c].kind;
+    fits(doc.nodes[c].kind, cat)
+}
+
+/// Whether a node of `kind` alone is one of `cat`. A slot of the four
+/// categories of a fixed shape (the module doc) is no one node.
+pub(crate) fn fits(kind: NodeKind, cat: Cat) -> bool {
     let iri = matches!(kind, NodeKind::Iri { .. });
     let literal = matches!(kind, NodeKind::Literal { .. });
     if let NodeKind::Construct(k) = kind {

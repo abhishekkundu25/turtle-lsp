@@ -32,6 +32,18 @@ pub(crate) fn writes(syntax: Syntax) -> bool {
     }
 }
 
+/// Whether completion offers anything in a document of `syntax`. Everything
+/// it offers is a keyword or a prefixed name: N-Triples and N-Quads allow
+/// neither. RDF/XML and OWL/XML get none. OWL Functional syntax gets its
+/// keywords and terms, and completion is the one feature that edits it: an
+/// accepted term may add its `Prefix( … )` declaration.
+pub(crate) fn completes(syntax: Syntax) -> bool {
+    match syntax {
+        Syntax::Turtle | Syntax::TriG | Syntax::JsonLd | Syntax::OwlFunctional => true,
+        Syntax::NTriples | Syntax::NQuads | Syntax::RdfXml | Syntax::OwlXml => false,
+    }
+}
+
 /// Analyses of RDF/XML documents for the tests of the gates.
 #[cfg(test)]
 pub(crate) mod rdfxml_fixture {
@@ -215,7 +227,15 @@ mod syntax_table {
     #[test]
     fn every_syntax_answers_as_today() {
         let mut got = line(&[
-            "syntax", "prefixes", "line", "keyword", "writes", "follows", "hinted", "tokens",
+            "syntax",
+            "prefixes",
+            "line",
+            "keyword",
+            "writes",
+            "completes",
+            "follows",
+            "hinted",
+            "tokens",
             "splice",
         ]);
         for s in ALL {
@@ -226,6 +246,7 @@ mod syntax_table {
                 yes(s.is_line_based()),
                 yes(s.has_keyword_header()),
                 yes(super::writes(s)),
+                yes(super::completes(s)),
                 yes(super::kept::follows(s)),
                 yes(super::inlay::hinted(s)),
                 yes(!s.tokens(text(s)).is_empty()),
@@ -243,15 +264,15 @@ mod syntax_table {
             got += &line(&row);
         }
         let want = "\
-            syntax              prefixes  line      keyword   writes    follows   hinted    tokens    splice\n\
-            turtle              yes       no        no        yes       yes       yes       yes       ok\n\
-            trig                yes       no        no        yes       yes       yes       yes       ok\n\
-            ntriples            no        yes       no        yes       yes       yes       yes       ok\n\
-            nquads              no        yes       no        yes       yes       yes       yes       ok\n\
-            jsonld              no        no        no        yes       no        yes       no        Syntax\n\
-            rdfxml              no        no        no        no        no        no        no        Syntax\n\
-            ofn                 no        no        yes       no        no        no        no        Syntax\n\
-            owx                 no        no        yes       no        no        no        no        Syntax\n\
+            syntax              prefixes  line      keyword   writes    completes follows   hinted    tokens    splice\n\
+            turtle              yes       no        no        yes       yes       yes       yes       yes       ok\n\
+            trig                yes       no        no        yes       yes       yes       yes       yes       ok\n\
+            ntriples            no        yes       no        yes       no        yes       yes       yes       ok\n\
+            nquads              no        yes       no        yes       no        yes       yes       yes       ok\n\
+            jsonld              no        no        no        yes       yes       no        yes       no        Syntax\n\
+            rdfxml              no        no        no        no        no        no        no        no        Syntax\n\
+            ofn                 no        no        yes       no        yes       no        no        no        Syntax\n\
+            owx                 no        no        yes       no        no        no        no        no        Syntax\n\
             runs_on             turtle    trig      ntriples  nquads    jsonld    rdfxml    ofn       owx\n\
             Syntax              yes       yes       yes       yes       yes       yes       yes       yes\n\
             UndeclaredPrefix    yes       yes       yes       yes       yes       no        no        no\n\
