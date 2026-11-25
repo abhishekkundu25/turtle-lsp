@@ -31,8 +31,8 @@
 
 use super::ofn::{fits, listed, slot_of, terms, written};
 use super::{
-    Best, Candidate, Slot, finish, fuzzy, items, local_name_candidates_where, namespace_terms_best,
-    ranking,
+    Best, Candidate, Slot, finish, fuzzy, items, local_name_candidates_where,
+    namespace_terms_where, ranking,
 };
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::{Knowledge, namespace_of};
@@ -254,7 +254,9 @@ fn full(
     declared: &PrefixMap,
 ) -> (Vec<Candidate>, Option<Vec<String>>) {
     let slot = slot_of(iris);
-    let fits = |iri: &str, vocab: Option<TermKind>| fits(k, iris, iri, vocab);
+    let fits = |iri: &str, vocab: Option<TermKind>| {
+        (vocab.is_some() || oxiri::Iri::parse(iri).is_ok()) && fits(k, iris, iri, vocab)
+    };
     let promoted = |_: Iri| false;
     // Labelled by local name while ranked; written in full after.
     let by_local = |l: &str| format!(":{l}");
@@ -285,7 +287,7 @@ fn full(
     };
     for (ns, l) in spaces {
         if !ns.is_empty() {
-            cands.extend(namespace_terms_best(
+            cands.extend(namespace_terms_where(
                 k,
                 ns,
                 l,
@@ -294,6 +296,7 @@ fn full(
                 None,
                 Some(best),
                 &fits,
+                &|_| true,
             ));
         }
     }
@@ -478,17 +481,25 @@ mod tests {
             ],
             "after the axioms",
         );
-        let text = onto("").replacen(
+        let between_prefixes = onto("").replacen(
             "    <Prefix name=\"rdfs\"",
             "    <|\n    <Prefix name=\"rdfs\"",
             1,
         );
-        let labels = at_doc(&text).labels();
+        let labels = at_doc(&between_prefixes).labels();
+        has(
+            &labels,
+            &["Prefix"],
+            &["Import", "Annotation", "SubClassOf"],
+            "before a prefix",
+        );
+        let after_prefixes = onto("").replacen("    <Declaration>", "    <|\n    <Declaration>", 1);
+        let labels = at_doc(&after_prefixes).labels();
         has(
             &labels,
             &["Prefix", "Import", "Annotation", "SubClassOf"],
             &[],
-            "after a prefix",
+            "after all prefixes",
         );
     }
 
@@ -1012,5 +1023,109 @@ mod tests {
                 item.label
             );
         }
+    }
+
+    /// Before a `<Prefix>`, only `<Prefix>` is offered, so accepting an
+    /// ontology child never moves a `<Prefix>` after an import, annotation or
+    /// axiom.
+    #[test]
+    fn before_a_prefix_only_prefix_is_offered() {
+        let text = "<?xml version=\"1.0\"?>\n\
+            <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+                <|\n\
+                <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n\
+                <Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>\n\
+            </Ontology>\n";
+        let at = at_doc(text);
+        assert_eq!(at.labels(), ["Prefix"]);
+        // Typing `<Im` before `<Prefix>` does not offer `Import`.
+        let typing_import = text.replacen("<|", "<Im|", 1);
+        assert!(at_doc(&typing_import).labels().is_empty());
+        // Accepting the `Prefix` snippet and filling it leaves 0 errors.
+        let list = at.list(true);
+        let prefix = list.items.iter().find(|i| i.label == "Prefix").unwrap();
+        let after = at.accepted(prefix).replacen(
+            "<Prefix name=\"\" IRI=\"\"/>",
+            "<Prefix name=\"other\" IRI=\"http://example.org/other#\"/>",
+            1,
+        );
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+        // After all `<Prefix>` elements and before `<Import>`: only `Prefix` and `Import`.
+        let before_import = "<?xml version=\"1.0\"?>\n\
+            <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+                <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n\
+                <|\n\
+                <Import>http://example.org/other</Import>\n\
+                <Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>\n\
+            </Ontology>\n";
+        let labels = at_doc(before_import).labels();
+        has(
+            &labels,
+            &["Prefix", "Import"],
+            &["Annotation", "SubClassOf"],
+            "before import",
+        );
+    }
+
+    /// A closed attribute value with leading or trailing white space is
+    /// replaced whole between its quotes, never with a zero-width edit.
+    #[test]
+    fn a_closed_value_with_leading_space_is_replaced_whole() {
+        let ttl = "@prefix ex: <http://example.org/> .\n\
+                   @prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                   ex:Person a owl:Class .\n";
+        let text = onto("<Declaration><Class IRI=\"| http://example.org/B \"/></Declaration>");
+        let a = at(&text, &[("file:///w/terms.ttl", ttl)]);
+        assert_eq!(errors(&a.text), Vec::<String>::new());
+        let item = a.item("http://example.org/Person");
+        let after = a.accepted(&item);
+        assert!(
+            after.contains("<Class IRI=\"http://example.org/Person\"/>"),
+            "{after}"
+        );
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+        // Same for `<IRI>` element text with leading and trailing spaces.
+        let text = onto(
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><IRI>| http://example.org/B </IRI><Literal>x</Literal></AnnotationAssertion>",
+        );
+        let a = at(&text, &[("file:///w/terms.ttl", ttl)]);
+        assert_eq!(errors(&a.text), Vec::<String>::new());
+        let after = a.accepted(&a.item("http://example.org/Person"));
+        assert!(
+            after.contains("<IRI>http://example.org/Person </IRI>"),
+            "{after}"
+        );
+        assert_eq!(errors(&after), Vec::<String>::new(), "{after}");
+    }
+
+    /// Full-IRI completion offers valid workspace IRIs whose local part is
+    /// not a `PN_LOCAL` (such as `+`), both by full IRI and by local name,
+    /// while `abbreviatedIRI` keeps requiring `PN_LOCAL`.
+    #[test]
+    fn full_iri_offers_valid_iris_outside_pn_local() {
+        let ttl = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                   <http://example.org/A+B> a owl:Class .\n\
+                   <http://example.org/Apple> a owl:Class .\n";
+        let others = [("file:///w/terms.ttl", ttl)];
+        for axiom in [
+            "<Declaration><Class IRI=\"http://example.org/A|\"/></Declaration>",
+            "<Declaration><Class IRI=\"http://example.org/A+|\"/></Declaration>",
+            "<Declaration><Class IRI=\"A|\"/></Declaration>",
+            "<AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><IRI>http://example.org/A|</IRI><Literal>x</Literal></AnnotationAssertion>",
+        ] {
+            let at = at(&onto(axiom), &others);
+            let labels = at.labels();
+            has(&labels, &["http://example.org/A+B"], &[], axiom);
+            let after = at.accepted(&at.item("http://example.org/A+B"));
+            assert_eq!(errors(&after), Vec::<String>::new(), "{axiom}:\n{after}");
+        }
+        // `abbreviatedIRI` still omits `A+B`, which is not a `PN_LOCAL`.
+        let abbr = onto("<Declaration><Class abbreviatedIRI=\"ex:A|\"/></Declaration>").replacen(
+            "    <Prefix name=\"rdfs\"",
+            "    <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n    <Prefix name=\"rdfs\"",
+            1,
+        );
+        let labels = at(&abbr, &others).labels();
+        has(&labels, &["ex:Apple"], &["ex:A+B"], "abbreviatedIRI");
     }
 }

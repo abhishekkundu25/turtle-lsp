@@ -53,10 +53,11 @@ describe("completion in an OWL/XML document", () => {
   // The completion with `typed` written on the empty line of the ontology,
   // the cursor at its `|`.
   async function complete(typed) {
-    const line = typed.replace("|", "")
+    const caret = typed.indexOf("|")
+    const line = typed.slice(0, caret) + typed.slice(caret + 1)
     const text = ONTO.replace("\n\n</Ontology>", `\n    ${line}\n</Ontology>`)
     s.change(uri, text, ++version)
-    const res = await s.request("textDocument/completion", { textDocument: { uri }, position: positionOf(text, line, typed.indexOf("|")) })
+    const res = await s.request("textDocument/completion", { textDocument: { uri }, position: positionOf(text, line, caret) })
     return { res, text }
   }
 

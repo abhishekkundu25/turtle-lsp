@@ -6,9 +6,10 @@
 //!
 //! The cursor ([`crate::rdfxml::xml::cursor`]) reads what is open at the
 //! offset, so a document half typed is read as far as it goes. Inside the
-//! root `Ontology`, its children so far say which part of the schema's order
-//! comes next ([`Phase`]): no `<Prefix>` after an import, an annotation or
-//! an axiom. Inside a construct, its children so far fill its signature
+//! root `Ontology`, its children before and after the offset say which part
+//! of the schema's order comes there ([`Phase`]): no `<Prefix>` after an
+//! import, an annotation or an axiom, and no import, annotation or axiom
+//! before a `<Prefix>`. Inside a construct, its children so far fill its signature
 //! through the slot machine of Functional syntax ([`Construct`]), read as
 //! the reader reads them ([`super::reader`]):
 //! - a keyword's element is a construct where a slot takes it as one, else
@@ -42,8 +43,8 @@ use super::reader::{Phase, element, takes};
 use crate::ofn::expected::{Construct, Iris, Keys, Operand, items};
 use crate::ofn::signature::{Cat, Entity, keyword_in, signature};
 use crate::ofn::tree::Keyword;
-use crate::rdfxml::xml::Name;
 use crate::rdfxml::xml::cursor::{self, At, Document};
+use crate::rdfxml::xml::{self, Name};
 use crate::syntax::names::newline;
 use crate::syntax::{Parsed, Span};
 use std::borrow::Cow;
@@ -61,9 +62,10 @@ pub(crate) enum Expected {
     Elements(Names),
     /// An IRI.
     Iri {
-        /// What its edit replaces: a value between its quotes (one with no
-        /// closing quote to where the scanner ends it), an element's text
-        /// without its white space; up to a line break.
+        /// What its edit replaces: a closed value between its quotes (an
+        /// unclosed one to the first white space after the offset, or to
+        /// where the scanner ends it), or an element's text without its
+        /// white space.
         span: Span,
         iris: Iris,
         form: Form,
@@ -120,7 +122,7 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
                 return None;
             }
             let elements = match inner.last() {
-                None => ontology(&root.children),
+                None => ontology(text, name.end as usize, root, &c.prefixes),
                 Some(e) => within(e)?,
             };
             Some(Expected::Elements(Names {
@@ -133,8 +135,9 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
             let (iris, abbreviated) = value(&v.tag.name, &v.attr.name)?;
             // A value with no closing quote runs to where the scanner ends
             // it (a `<`, the end of the text): the reader reads it whole.
+            let closed = v.attr.span.end > v.attr.value.span.end;
             let end = v.span.end.max(v.attr.value.span.end);
-            let span = typed(text, Span::new(v.span.start, end), offset)?;
+            let span = typed(text, Span::new(v.span.start, end), offset, closed)?;
             Some(Expected::Iri {
                 span,
                 iris,
@@ -157,7 +160,7 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
             let start = span.start + (s.len() - s.trim_start_matches(WHITE).len()) as u32;
             let end = span.start + s.trim_end_matches(WHITE).len() as u32;
             let o = offset as u32;
-            let span = typed(text, Span::new(start.min(o), end.max(o)), offset)?;
+            let span = typed(text, Span::new(start.min(o), end.max(o)), offset, true)?;
             Some(Expected::Iri {
                 span,
                 iris: Iris::Any,
@@ -168,17 +171,26 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
     }
 }
 
-/// `span`, where an IRI is typed up to `offset`, cut at the first white
-/// space after it; `None` when there is white space before it (a value not
-/// closed, the offset on the next line).
-fn typed(text: &str, span: Span, offset: usize) -> Option<Span> {
+/// `span`, where an IRI is typed up to `offset`: whole when `closed` (a
+/// value between its quotes, or an element's trimmed text), else cut at the
+/// first white space after `offset`. `None` when there is white space before
+/// `offset` (a value not closed, the offset on the next line), or when an
+/// unclosed value starts with white space before more text (cutting there
+/// would leave that text after the inserted IRI).
+fn typed(text: &str, span: Span, offset: usize, closed: bool) -> Option<Span> {
     let (start, end) = (span.start as usize, span.end as usize);
     if text[start..offset].contains(WHITE) {
         return None;
     }
+    if closed {
+        return Some(span);
+    }
     let rest = &text[offset..end];
-    let end = offset + rest.find(WHITE).unwrap_or(rest.len());
-    Some(Span::new(span.start, end as u32))
+    let cut = rest.find(WHITE).unwrap_or(rest.len());
+    if offset == start && cut == 0 && !rest.trim_start_matches(WHITE).is_empty() {
+        return None;
+    }
+    Some(Span::new(span.start, (offset + cut) as u32))
 }
 
 /// The element `name` names in OWL's namespace, if it is one.
@@ -225,19 +237,153 @@ fn owl_prefix(typed: &str, prefixes: &BTreeMap<&str, Cow<'_, str>>) -> String {
     }
 }
 
-/// The children of `Ontology` that may come after `children`: from the
-/// part of the schema's order the last of them is in.
-fn ontology(children: &[Name<'_>]) -> Vec<Element> {
-    let phase = children
+/// The children of `Ontology` that may come at byte `after`: from the part
+/// of the schema's order the last child before it is in, up to the earliest
+/// in-order child after it.
+fn ontology(
+    text: &str,
+    after: usize,
+    root: &cursor::Element<'_>,
+    prefixes: &BTreeMap<&str, Cow<'_, str>>,
+) -> Vec<Element> {
+    let min = root
+        .children
         .iter()
         .filter_map(|c| owl(c).and_then(Phase::of))
         .max()
         .unwrap_or(Phase::Prefixes);
+    let max = next_phase(text, after, root.tag.name.raw, min, prefixes);
     std::iter::once(Keyword::Prefix)
         .chain(items())
         .map(Element::Keyword)
-        .filter(|&el| Phase::of(el).is_some_and(|p| p >= phase))
+        .filter(|&el| Phase::of(el).is_some_and(|p| (min..=max).contains(&p)))
         .collect()
+}
+
+/// The earliest phase of an in-order top-level child of `root` after byte
+/// `from` (one whose phase is at least `min`, since any earlier child is
+/// already misplaced). `Phase::Axioms` when none follows.
+fn next_phase(
+    text: &str,
+    from: usize,
+    root: &str,
+    min: Phase,
+    prefixes: &BTreeMap<&str, Cow<'_, str>>,
+) -> Phase {
+    if min == Phase::Axioms {
+        return Phase::Axioms;
+    }
+    let b = text.as_bytes();
+    let mut i = from;
+    let mut stack: Vec<&str> = Vec::new();
+    let mut skip = 0usize;
+    while let Some(lt) = text[i..].find('<') {
+        let at = i + lt;
+        let rest = &text[at..];
+        if let Some((open, close)) = [("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>")]
+            .into_iter()
+            .find(|(open, _)| rest.starts_with(open))
+        {
+            let body = &rest[open.len()..];
+            i = at + open.len() + body.find(close).map_or(body.len(), |e| e + close.len());
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("</") {
+            let len = after.find(|c| !xml::is_name_char(c)).unwrap_or(after.len());
+            let end = &after[..len];
+            let tail = &after[len..];
+            i = at
+                + 2
+                + len
+                + tail.find(['<', '>']).map_or(tail.len(), |p| {
+                    if tail.as_bytes()[p] == b'>' { p + 1 } else { p }
+                });
+            if skip > 0 {
+                skip -= 1;
+            } else if let Some(k) = stack.iter().rposition(|n| *n == end) {
+                stack.truncate(k);
+            } else if stack.is_empty() && end == root {
+                break;
+            }
+            continue;
+        }
+        let after = &rest[1..];
+        if !after.starts_with(xml::is_name_start_char) {
+            i = at + 1;
+            continue;
+        }
+        let name_len = after.find(|c| !xml::is_name_char(c)).unwrap_or(after.len());
+        let qname = &after[..name_len];
+        let attrs_start = at + 1 + name_len;
+        let mut j = attrs_start;
+        let mut quote = None;
+        let mut prev = 0u8;
+        let mut empty = false;
+        while j < b.len() {
+            match (quote, b[j]) {
+                (_, b'<') => break,
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), _) => {}
+                (None, c @ (b'"' | b'\'')) => quote = Some(c),
+                (None, b'>') => {
+                    empty = prev == b'/';
+                    j += 1;
+                    break;
+                }
+                _ => {}
+            }
+            prev = b[j];
+            j += 1;
+        }
+        let attrs_end = if j > attrs_start && b[j - 1] == b'>' {
+            j - 1 - usize::from(empty)
+        } else {
+            j
+        };
+        if stack.is_empty() && skip == 0 {
+            let attrs = &text[attrs_start..attrs_end];
+            if let Some(local) = owl_local(qname, attrs, prefixes)
+                && let Some(p) = element(local).and_then(Phase::of)
+                && p >= min
+            {
+                return p;
+            }
+        }
+        if !empty {
+            if stack.len() < xml::MAX_DEPTH {
+                stack.push(qname);
+            } else {
+                skip += 1;
+            }
+        }
+        i = j;
+    }
+    Phase::Axioms
+}
+
+/// The local name of start tag `qname` (with raw attributes `attrs`) if it is
+/// in OWL's namespace, using its own `xmlns` declarations and `prefixes`.
+fn owl_local<'a>(
+    qname: &'a str,
+    attrs: &str,
+    prefixes: &BTreeMap<&str, Cow<'_, str>>,
+) -> Option<&'a str> {
+    let (pfx, local) = qname.split_once(':').unwrap_or(("", qname));
+    let own = attrs
+        .contains("xmlns")
+        .then(|| {
+            if pfx.is_empty() {
+                attribute(attrs, "xmlns")
+            } else {
+                attribute(attrs, &format!("xmlns:{pfx}"))
+            }
+        })
+        .flatten();
+    let is_owl = match own {
+        Some(ns) => ns == OWL,
+        None => prefixes.get(pfx).is_some_and(|ns| ns == OWL),
+    };
+    is_owl.then_some(local)
 }
 
 /// The elements that may come next in the open element `e`; `None` in an
@@ -912,10 +1058,117 @@ mod tests {
         ] {
             assert_eq!(at_text(text), None, "{text}");
         }
-        // The value between its quotes, to the first white space after the
-        // offset.
+        // Closed values are replaced whole between their quotes (even with
+        // white space inside); unclosed values cut at the first white space
+        // after the offset.
         let (typed, ..) = iri("  <SubClassOf><Class IRI=\"http://example.org/o#A|\nB\"/>");
+        assert_eq!(typed, "http://example.org/o#A\nB");
+        let (typed, ..) = iri("  <SubClassOf><Class IRI=\"http://example.org/o#A|\nB");
         assert_eq!(typed, "http://example.org/o#A");
+        let (typed, ..) =
+            iri("  <Declaration><Class IRI=\"| http://example.org/B \"/></Declaration>");
+        assert_eq!(typed, " http://example.org/B ");
+        let (typed, ..) = iri(
+            "  <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\":n\"/><IRI>| http://example.org/B </IRI></AnnotationAssertion>",
+        );
+        assert_eq!(typed, " http://example.org/B");
+        // An unclosed value whose leading white space precedes more text
+        // offers nothing (cutting there would leave that text behind).
+        assert_eq!(
+            at_("  <Declaration><Class IRI=\"| http://example.org/B</Declaration>"),
+            None
+        );
+        // An unclosed empty value followed only by indentation before the
+        // next tag keeps the empty span at the offset.
+        let (typed, ..) =
+            iri("  <SubClassOf><Class IRI=\"|\n    <Class IRI=\"http://example.org/B\"/>");
+        assert_eq!(typed, "");
+    }
+
+    #[test]
+    fn ontology_children_respect_elements_after_the_cursor() {
+        let bare = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n";
+        let elems = |body: &str| match at_text(&format!("{bare}{body}\n</Ontology>\n")) {
+            Some(Expected::Elements(Names { elements, .. })) => elements,
+            other => panic!("{body:?}: {other:?}"),
+        };
+        // Before a `<Prefix>`: only `Prefix`.
+        assert_eq!(
+            elems("  <|\n  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>"),
+            keywords(&[K::Prefix])
+        );
+        assert_eq!(
+            elems("  <Im|\n  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>"),
+            keywords(&[K::Prefix])
+        );
+        assert_eq!(
+            elems("  <|<Prefix name=\"ex\" IRI=\"http://example.org/\"/>"),
+            keywords(&[K::Prefix])
+        );
+        // Between two `<Prefix>` elements: only `Prefix`.
+        assert_eq!(
+            elems(
+                "  <Prefix name=\"a\" IRI=\"http://example.org/a#\"/>\n  <|\n  <Prefix name=\"b\" IRI=\"http://example.org/b#\"/>"
+            ),
+            keywords(&[K::Prefix])
+        );
+        // Before an `<Import>`: `Prefix` and `Import` only.
+        assert_eq!(
+            elems(
+                "  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <|\n  <Import>http://example.org/i</Import>"
+            ),
+            keywords(&[K::Prefix, K::Import])
+        );
+        // Before an `<Annotation>`: `Prefix`, `Import` and `Annotation` only.
+        assert_eq!(
+            elems(
+                "  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <|\n  <Annotation><AnnotationProperty abbreviatedIRI=\"ex:p\"/><Literal>x</Literal></Annotation>"
+            ),
+            keywords(&[K::Prefix, K::Import, K::Annotation])
+        );
+        // Between `<Import>` and `<Annotation>`: `Import` and `Annotation`.
+        assert_eq!(
+            elems(
+                "  <Import>http://example.org/i</Import>\n  <|\n  <Annotation><AnnotationProperty abbreviatedIRI=\"ex:p\"/><Literal>x</Literal></Annotation>"
+            ),
+            keywords(&[K::Import, K::Annotation])
+        );
+        // After all `<Prefix>` elements, before an axiom: everything fits.
+        let after_prefixes = elems(
+            "  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <|\n  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>",
+        );
+        for k in [K::Prefix, K::Import, K::Annotation, K::SubClassOf] {
+            assert!(after_prefixes.contains(&Element::Keyword(k)), "{k:?}");
+        }
+        // Comments are skipped; a `<Prefix>` in a comment does not cap the phase.
+        let after_comment = elems(
+            "  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n  <|\n  <!-- <Prefix name=\"x\" IRI=\"http://example.org/x#\"/> -->\n  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>",
+        );
+        assert!(after_comment.contains(&Element::Keyword(K::Import)));
+        assert!(after_comment.contains(&Element::Keyword(K::SubClassOf)));
+        // An already-misplaced `<Prefix>` after an axiom does not block axioms.
+        let after_axiom = elems(
+            "  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n  <|\n  <Prefix name=\"ex\" IRI=\"http://example.org/\"/>",
+        );
+        assert!(after_axiom.contains(&Element::Keyword(K::SubClassOf)));
+        assert!(!after_axiom.contains(&Element::Keyword(K::Prefix)));
+        // Prefixed `<owl:Ontology>` with `<owl:Prefix>`.
+        let prefixed = "<owl:Ontology xmlns:owl=\"http://www.w3.org/2002/07/owl#\">\n  <owl:|\n  <owl:Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n</owl:Ontology>\n";
+        let Some(Expected::Elements(Names {
+            prefix, elements, ..
+        })) = at_text(prefixed)
+        else {
+            panic!()
+        };
+        assert_eq!(prefix, "owl:");
+        assert_eq!(elements, keywords(&[K::Prefix]));
+        // Inside an existing complete tag name before `<Prefix>`: nothing.
+        assert_eq!(
+            at_text(&format!(
+                "{bare}  <Pr|efix name=\"a\" IRI=\"http://example.org/a#\"/>\n  <Prefix name=\"b\" IRI=\"http://example.org/b#\"/>\n</Ontology>\n"
+            )),
+            None
+        );
     }
 
     #[test]

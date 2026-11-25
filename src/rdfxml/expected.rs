@@ -12,8 +12,9 @@
 //! `"Collection"` node elements, with `"Triple"` one node element, and with
 //! `"Literal"` (or a value the grammar reads as it) XML that is no RDF/XML.
 //! A property element that has its object already (a node element closed in
-//! it, `rdf:resource`, `rdf:nodeID`, `rdf:datatype`) takes no element. A
-//! root named in no namespace is no RDF/XML: nothing comes in it.
+//! it, non-white text, `rdf:resource`, `rdf:nodeID`, `rdf:datatype`, or a
+//! property attribute) takes no element. A root named in no namespace is no
+//! RDF/XML: nothing comes in it.
 //!
 //! An element name is not offered where replacing it would break the
 //! document: in the start tag of an element whose end tag names it too.
@@ -97,6 +98,9 @@ pub(crate) struct Node {
 enum Content {
     /// Node elements.
     Nodes,
+    /// Node element of an `rdf:parseType="Triple"` property element, which
+    /// holds exactly one triple.
+    TripleNode,
     /// Property elements of a node.
     Properties(Node),
     /// No RDF/XML element: an XML literal, or a property element that has
@@ -104,14 +108,28 @@ enum Content {
     None,
 }
 
+const ITS: &str = "http://www.w3.org/2005/11/its";
+
 /// What may come at byte `offset` of `doc`, which read `text`; `None` where
 /// nothing does.
 pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Option<Expected<'d>> {
     let c = doc.at(offset);
-    let content = content(&c.open)?;
+    let content = match content(&c.open) {
+        Some(content) => content,
+        None if c.open.is_empty() => match &c.at {
+            // A standalone document may start with a node element instead of
+            // `rdf:RDF` (RDF/XML 1.1, 7.2.1): its start tag is in node position.
+            At::Value(v) if v.tag.name.ns().is_some() && !v.tag.name.is(RDF, "RDF") => {
+                Content::Nodes
+            }
+            _ => return None,
+        },
+        None => return None,
+    };
     // The end tags a new element at the offset would meet, up to the one
     // that closes it.
     let mut taken = Vec::new();
+    let mut self_root = None;
     let (slot, span) = match c.at {
         At::Name(span) => {
             let typed = text.get(span.start as usize..span.end as usize)?;
@@ -122,9 +140,15 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             if taken.last() == Some(&typed) {
                 return None;
             }
+            // Inside `rdf:parseType="Triple"`, changing an existing
+            // `rdf:Description` to a typed class adds an `rdf:type` triple and
+            // can break the single-triple constraint.
+            if matches!(content, Content::TripleNode) && is_rdf_description(typed, &c.prefixes) {
+                return None;
+            }
             (
                 match content {
-                    Content::Nodes => Slot::NodeElement,
+                    Content::Nodes | Content::TripleNode => Slot::NodeElement,
                     Content::Properties(node) => Slot::PropertyElement(node),
                     Content::None => return None,
                 },
@@ -150,7 +174,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             }
             let name = &v.attr.name;
             let of = match content {
-                Content::Nodes if name.is(RDF, "about") => Value::About,
+                Content::Nodes | Content::TripleNode if name.is(RDF, "about") => Value::About,
                 Content::Properties(node) if name.is(RDF, "resource") => Value::Resource {
                     property: iri(&v.tag.name),
                     node,
@@ -169,19 +193,29 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
                     let name = text.get(lead.start as usize + 1..lead.end as usize - 1)?;
                     doc.entity(name).map(|ns| (name, ns))
                 });
+            if c.open.is_empty() && !v.attr.name.entity && v.attr.span.end > v.attr.value.span.end {
+                self_root = Some(v.tag);
+            }
             (Slot::Value { of, quote, entity }, span)
         }
         At::Text(_) | At::Elsewhere => return None,
     };
-    let root = c.open.into_iter().next()?.tag;
-    let closed = text
-        .get(root.span.start as usize..root.span.end as usize)
-        .is_some_and(|t| t.ends_with('>'))
-        && root
-            .attrs
-            .last()
-            .is_none_or(|a| !a.name.entity && a.span.end > a.value.span.end);
-    let root = (closed && !root.name.entity).then_some(root);
+    let root = c
+        .open
+        .into_iter()
+        .next()
+        .map(|e| e.tag)
+        .or(self_root)
+        .filter(|root| {
+            let closed = text
+                .get(root.span.start as usize..root.span.end as usize)
+                .is_some_and(|t| t.ends_with('>'))
+                && root
+                    .attrs
+                    .last()
+                    .is_none_or(|a| !a.name.entity && a.span.end > a.value.span.end);
+            closed && !root.name.entity
+        });
     Some(Expected {
         slot,
         span,
@@ -205,7 +239,7 @@ fn content(open: &[Element<'_>]) -> Option<Content> {
     };
     for e in inner {
         content = match content {
-            Content::Nodes => Content::Properties(node(&e.tag)),
+            Content::Nodes | Content::TripleNode => Content::Properties(node(&e.tag)),
             Content::Properties(_) => property_content(e),
             Content::None => Content::None,
         };
@@ -215,13 +249,16 @@ fn content(open: &[Element<'_>]) -> Option<Content> {
 
 /// What a property element holds, by its `rdf:parseType`.
 fn property_content(e: &Element<'_>) -> Content {
-    let attr = |local: &str| e.tag.attrs.iter().find(|a| a.name.is(RDF, local));
-    match attr("parseType").map(|a| &*a.value.text) {
+    let parse_type = e
+        .tag
+        .attrs
+        .iter()
+        .find(|a| a.name.is(RDF, "parseType"))
+        .map(|a| &*a.value.text);
+    match parse_type {
         None => {
-            let has_object = !e.children.is_empty()
-                || ["resource", "nodeID", "datatype"]
-                    .iter()
-                    .any(|l| attr(l).is_some());
+            let has_object =
+                !e.children.is_empty() || e.has_text || e.tag.attrs.iter().any(fixes_object);
             if has_object {
                 Content::None
             } else {
@@ -229,10 +266,49 @@ fn property_content(e: &Element<'_>) -> Content {
             }
         }
         Some("Resource") => Content::Properties(Node::default()),
-        Some("Collection" | "Triple") => Content::Nodes,
+        Some("Collection") => Content::Nodes,
+        Some("Triple") => Content::TripleNode,
         // "Literal", and any other value, which reads as it.
         Some(_) => Content::None,
     }
+}
+
+/// Whether raw element name `typed` names `rdf:Description` under `prefixes`.
+fn is_rdf_description(typed: &str, prefixes: &BTreeMap<&str, Cow<'_, str>>) -> bool {
+    match typed.split_once(':') {
+        Some((p, l)) => l == "Description" && prefixes.get(p).map(Cow::as_ref) == Some(RDF),
+        None => typed == "Description" && prefixes.get("").map(Cow::as_ref) == Some(RDF),
+    }
+}
+
+/// Whether `attr` on a property element with no `rdf:parseType` fixes its
+/// object, as [`super::grammar`] reads it: `rdf:resource`, `rdf:nodeID`,
+/// `rdf:datatype`, `rdf:type`, or any property attribute.
+fn fixes_object(attr: &xml::Attr<'_>) -> bool {
+    let n = &attr.name;
+    if n.ns() == Some(xml::XML_NS)
+        || n.raw.starts_with("xml")
+        || n.is(ITS, "dir")
+        || n.is(ITS, "version")
+    {
+        return false;
+    }
+    if n.ns() == Some(RDF) {
+        return !matches!(
+            n.local(),
+            "ID" | "about"
+                | "parseType"
+                | "version"
+                | "annotation"
+                | "annotationNodeID"
+                | "aboutEach"
+                | "aboutEachPrefix"
+                | "bagID"
+                | "li"
+                | "RDF"
+        );
+    }
+    true
 }
 
 /// The node a node element's start tag describes.
@@ -269,26 +345,62 @@ fn iri(name: &xml::Name<'_>) -> Option<String> {
 /// editor may have written with the `<`), or be cut by a `<` (which also
 /// ends a value) or the end of the text. Comments, CDATA sections and
 /// processing instructions are passed over.
-fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
+/// Scan past the attributes of a start tag from byte `from` (after its name)
+/// as [`super::xml`] does: returns `(next_pos, empty)` where `empty` is true
+/// only when the tag ends with `/>` in attribute position (not inside a
+/// quoted attribute value or an unquoted attribute word).
+fn scan_tag(text: &str, from: usize) -> (usize, bool) {
     let b = text.as_bytes();
     let mut i = from;
-    let mut quote = None;
-    let mut prev = 0;
-    while i < b.len() {
-        match (quote, b[i]) {
-            (_, b'<') => break,
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, c @ (b'"' | b'\'')) => quote = Some(c),
-            (None, b'>') if prev == b'/' => return Vec::new(),
-            (None, b'>') => {
-                i += 1;
-                break;
-            }
+    let skip_space = |i: &mut usize| {
+        while *i < b.len() && matches!(b[*i], b' ' | b'\t' | b'\r' | b'\n') {
+            *i += 1;
+        }
+    };
+    loop {
+        skip_space(&mut i);
+        match b.get(i) {
+            None | Some(b'<') => return (i, false),
+            Some(b'>') => return (i + 1, false),
+            Some(b'/') if b.get(i + 1) == Some(&b'>') => return (i + 2, true),
             _ => {}
         }
-        prev = b[i];
+        let name_len = text[i..]
+            .find(|c| !xml::is_name_char(c))
+            .unwrap_or(b.len() - i);
+        if name_len == 0 {
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        i += name_len;
+        skip_space(&mut i);
+        if b.get(i) != Some(&b'=') {
+            continue;
+        }
         i += 1;
+        skip_space(&mut i);
+        let Some(&q) = b.get(i).filter(|c| matches!(c, b'"' | b'\'')) else {
+            // Unquoted attribute word: `xml.rs` skips up to space, `<` or `>`,
+            // including a `/` before `>`, so `/>` after it reads as `>`.
+            while i < b.len() && !matches!(b[i], b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'<') {
+                i += 1;
+            }
+            continue;
+        };
+        i += 1;
+        while i < b.len() && b[i] != q && b[i] != b'<' {
+            i += 1;
+        }
+        if b.get(i) == Some(&q) {
+            i += 1;
+        }
+    }
+}
+
+fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
+    let (mut i, empty) = scan_tag(text, from);
+    if empty {
+        return Vec::new();
     }
     let name = |s: &'t str| &s[..s.find(|c| !xml::is_name_char(c)).unwrap_or(s.len())];
     // The elements opened after it and still open, as the scanner closes
@@ -317,15 +429,14 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
         {
             let body = &rest[open.len()..];
             i = at + open.len() + body.find(close).map_or(body.len(), |e| e + close.len());
-        } else {
-            // A start tag, to its `>` or the next `<`, opens but for `/>`;
-            // a `<` that no name follows is text.
-            let empty = rest[1..]
-                .find(['<', '>'])
-                .is_some_and(|e| rest[1..][e..].starts_with('>') && rest[..=e].ends_with('/'));
-            if rest[1..].starts_with(xml::is_name_start_char) && !empty {
-                inner.push(name(&rest[1..]));
+        } else if rest[1..].starts_with(xml::is_name_start_char) {
+            let n = name(&rest[1..]);
+            let (next, empty) = scan_tag(text, at + 1 + n.len());
+            if !empty {
+                inner.push(n);
             }
+            i = next;
+        } else {
             i = at + 1;
         }
     }
@@ -715,5 +826,126 @@ mod tests {
         assert!(!e.may_declare("rdf"));
         assert!(e.may_declare("skos"));
         assert!(!e.may_declare(""));
+    }
+
+    #[test]
+    fn a_root_node_element_takes_rdf_about_values() {
+        let want = format!(
+            "{:?}",
+            Slot::Value {
+                of: Value::About,
+                quote: b'"',
+                entity: None,
+            }
+        );
+        for (marked, expected_typed) in [
+            (
+                format!(
+                    "<?xml version=\"1.0\"?>\n<owl:Class xmlns:rdf=\"{RDF}\" xmlns:owl=\"{OWL}\" rdf:about=\"{EX}Pe|\"/>\n"
+                ),
+                format!("{EX}Pe"),
+            ),
+            (
+                format!("<rdf:Description xmlns:rdf=\"{RDF}\" rdf:about=\"{EX}A|B\"/>\n"),
+                format!("{EX}AB"),
+            ),
+            (
+                format!("<owl:Class xmlns:rdf=\"{RDF}\" xmlns:owl=\"{OWL}\" rdf:about=\"{EX}Pe|"),
+                format!("{EX}Pe"),
+            ),
+        ] {
+            let (got, typed) = slot(&marked).expect(&marked);
+            assert_eq!((got, typed), (want.clone(), expected_typed), "{marked}");
+        }
+        // Declarations on a closed root node element never overlap the value edit.
+        let marked =
+            format!("<owl:Class xmlns:rdf=\"{RDF}\" xmlns:owl=\"{OWL}\" rdf:about=\"{EX}Pe|\"/>\n");
+        let offset = marked.find('|').unwrap();
+        let text = marked.replacen('|', "", 1);
+        let doc = Document::read(&text);
+        let e = at(&text, &doc, offset).unwrap();
+        assert!(e.may_declare("skos"));
+        let (ins, _) = e
+            .declare(&text, "skos", "http://www.w3.org/2004/02/skos/core#")
+            .unwrap();
+        assert!(ins < e.span.start || ins > e.span.end);
+        // Unclosed value ending in `>` cannot take a declaration.
+        let unclosed =
+            format!("<owl:Class xmlns:rdf=\"{RDF}\" xmlns:owl=\"{OWL}\" rdf:about=\"{EX}Pe>|");
+        let offset = unclosed.find('|').unwrap();
+        let text = unclosed.replacen('|', "", 1);
+        let doc = Document::read(&text);
+        let e = at(&text, &doc, offset).unwrap();
+        assert!(!e.may_declare("skos"));
+        // Root `rdf:RDF`, a root in no namespace, or `rdf:resource` on a root node: nothing.
+        for marked in [
+            format!("<rdf:RDF xmlns:rdf=\"{RDF}\" rdf:about=\"{EX}A|\"/>"),
+            format!("<Class xmlns:rdf=\"{RDF}\" rdf:about=\"{EX}A|\"/>"),
+            format!("<owl:Class xmlns:rdf=\"{RDF}\" xmlns:owl=\"{OWL}\" rdf:resource=\"{EX}A|\"/>"),
+        ] {
+            assert_eq!(slot(&marked), None, "{marked}");
+        }
+    }
+
+    #[test]
+    fn a_property_with_text_or_property_attributes_takes_no_node_element() {
+        let open = format!("{HEAD}  <rdf:Description rdf:about=\"{EX}s\">\n    ");
+        for marked in [
+            format!("{open}<ex:q>text<|</ex:q>"),
+            format!("{open}<ex:q><![CDATA[text]]><|</ex:q>"),
+            format!("{open}<ex:q ex:label=\"abc\"><|</ex:q>"),
+            format!("{open}<ex:q rdf:type=\"{EX}T\"><|</ex:q>"),
+            format!("{open}<ex:q rdf:value=\"x\"><|</ex:q>"),
+        ] {
+            assert_eq!(slot(&marked), None, "{marked}");
+        }
+        // Whitespace-only content, comments, and syntax attributes that do not
+        // fix the object still allow a node element.
+        for marked in [
+            format!("{open}<ex:q>  \n  <|</ex:q>"),
+            format!("{open}<ex:q><!-- note --><|</ex:q>"),
+            format!("{open}<ex:q rdf:ID=\"r1\"><|</ex:q>"),
+            format!("{open}<ex:q xml:lang=\"en\"><|</ex:q>"),
+            format!("{open}<ex:q rdf:annotation=\"{EX}a\"><|</ex:q>"),
+        ] {
+            assert_eq!(element(&marked).as_deref(), Some("NodeElement"), "{marked}");
+        }
+    }
+
+    #[test]
+    fn end_tags_matches_scanner_on_unquoted_attrs_and_quoted_gt() {
+        // Quoted `>` in a nested self-closing tag (A1): outer tag is still matched.
+        assert_eq!(
+            slot(&format!(
+                "{HEAD}  <|ex:Person><ex:Person ex:q=\">\"/></ex:Person>\n</rdf:RDF>\n"
+            )),
+            None
+        );
+        // Unquoted attribute word runs over `/>` in xml.rs, leaving the tag open
+        // to match the following `</rdf:Description>` (chaos 2065).
+        assert_eq!(
+            slot(&format!(
+                "{HEAD}  <|rdf:Description rdf:about=rce=\"{EX}b\"/></rdf:Description>\n</rdf:RDF>\n"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn existing_rdf_description_in_parse_type_triple_is_not_retyped() {
+        let open = format!(
+            "{HEAD}  <rdf:Description rdf:about=\"{EX}s\">\n    <ex:says rdf:parseType=\"Triple\">\n      "
+        );
+        assert_eq!(
+            slot(&format!(
+                "{open}<|rdf:Description rdf:about=\"{EX}a\"><ex:p rdf:resource=\"{EX}b\"/></rdf:Descrip"
+            )),
+            None
+        );
+        // Typing a fresh or partial name still offers node elements.
+        assert_eq!(
+            element(&format!("{open}<rdf:Des|")).as_deref(),
+            Some("NodeElement")
+        );
     }
 }

@@ -751,11 +751,15 @@ fn checked(k: usize) {
 /// ([`xml_declares`]).
 ///
 /// An element name accepted without snippets (the public `complete` takes
-/// none) leaves its start tag open while the user types on (`<` becomes
-/// `<Class`, one error more): such an item's declaration is checked against
-/// the document with the name written instead. A parse per item would be up to 200 per completion:
-/// the items checked are the first to add each declaration, and of the
-/// others the first, the middle and the last.
+/// none) on an incomplete or bare `<` start tag leaves the start tag open
+/// while the user types on (`<` becomes `<Class`, one error more): such an
+/// item's declaration is checked against the document with the name written
+/// instead, and one with no declaration is skipped. When the original start
+/// tag was already complete (had a name and closed with `>`), the edited
+/// document is reparsed and checked against the original parse. A parse per
+/// item would be up to 200 per completion: the items checked are the first
+/// to add each declaration, and of the others the first, the middle and the
+/// last.
 fn xml_completions_keep_the_parse(
     syntax: Syntax,
     text: &str,
@@ -794,19 +798,22 @@ fn xml_completions_keep_the_parse(
         };
         // An element name follows the `<` of its start tag; a value, a quote
         // or the `>` of an `IRI` or `AbbreviatedIRI` element.
-        let name = a
+        let span = a
             .offset(enc, main.range.start)
-            .is_some_and(|s| text[..s as usize].ends_with('<'));
+            .zip(a.offset(enc, main.range.end));
+        let name = span.is_some_and(|(s, _)| text[..s as usize].ends_with('<'));
+        let complete =
+            name && span.is_some_and(|(s, e)| complete_start_tag(text, s as usize, e as usize));
         let mut edits = vec![main.clone()];
         edits.extend(added.into_iter().flatten().cloned());
         let after = applied(a, text, enc, &edits)
             .unwrap_or_else(|m| panic!("completion '{label}' {m}: {edits:?}"));
-        checked(usize::from(name));
-        let was = match (name, added) {
-            (false, _) => before.clone(),
-            (true, None) => continue,
-            (true, Some(_)) => errors(&read(&applied(a, text, enc, &[main]).unwrap())),
+        let was = match (name, complete, added) {
+            (false, _, _) | (true, true, _) => before.clone(),
+            (true, false, None) => continue,
+            (true, false, Some(_)) => errors(&read(&applied(a, text, enc, &[main]).unwrap())),
         };
+        checked(usize::from(name));
         let now = errors(&read(&after));
         if now.len() > was.len() {
             // The difference: the lists are long.
@@ -824,6 +831,26 @@ fn xml_completions_keep_the_parse(
             );
         }
     }
+}
+
+/// Whether the start tag whose name is `text[start..end]` already has a
+/// name and closes with `>` before any `<` (ignoring `>` inside quotes).
+fn complete_start_tag(text: &str, start: usize, end: usize) -> bool {
+    if start >= end {
+        return false;
+    }
+    let mut quote = None;
+    for &b in &text.as_bytes()[end..] {
+        match (quote, b) {
+            (_, b'<') => return false,
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, c @ (b'"' | b'\'')) => quote = Some(c),
+            (None, b'>') => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The `additional_text_edits` of completion `label` in an RDF/XML or

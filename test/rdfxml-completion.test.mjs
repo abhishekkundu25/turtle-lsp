@@ -56,9 +56,11 @@ describe("completion in an RDF/XML document", () => {
 
   // The completion with `typed` written before `</rdf:RDF>`, at its `|`.
   async function complete(typed) {
-    const text = ONTO.replace("\n</rdf:RDF>", `\n${typed.replace("|", "")}\n</rdf:RDF>`)
+    const caret = typed.indexOf("|")
+    const line = typed.slice(0, caret) + typed.slice(caret + 1)
+    const text = ONTO.replace("\n</rdf:RDF>", `\n${line}\n</rdf:RDF>`)
     s.change(uri, text, ++version)
-    const before = HEAD + "\n" + typed.slice(0, typed.indexOf("|"))
+    const before = HEAD + "\n" + typed.slice(0, caret)
     const position = positionOf(text, before)
     const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
     return { res, text }

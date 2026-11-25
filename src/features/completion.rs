@@ -329,6 +329,23 @@ pub(crate) fn namespace_terms_best(
     best: Option<Best>,
     fits: Fits,
 ) -> Vec<Candidate> {
+    namespace_terms_where(k, ns, local, slot, label, import, best, fits, &is_pn_local)
+}
+
+/// [`namespace_terms_best`], checking each workspace local name with
+/// `valid_local` instead of Turtle's `PN_LOCAL`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn namespace_terms_where(
+    k: &Knowledge,
+    ns: &str,
+    local: &str,
+    slot: Slot,
+    label: &dyn Fn(&str) -> String,
+    import: Option<(String, String)>,
+    best: Option<Best>,
+    fits: Fits,
+    valid_local: &dyn Fn(&str) -> bool,
+) -> Vec<Candidate> {
     let mut cands = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
     if let Some(v) = VOCABS.by_namespace(ns) {
@@ -361,7 +378,7 @@ pub(crate) fn namespace_terms_best(
         let Some(l) = iri.strip_prefix(ns) else {
             continue;
         };
-        if l.is_empty() || seen.contains(l) || !is_pn_local(l) || !fuzzy(local, l) {
+        if l.is_empty() || seen.contains(l) || !valid_local(l) || !fuzzy(local, l) {
             continue;
         }
         if !fits(&iri, None) {

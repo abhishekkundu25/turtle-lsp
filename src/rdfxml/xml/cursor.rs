@@ -53,6 +53,9 @@ pub(crate) struct Element<'a> {
     /// The names of its child elements closed before the offset, in order
     /// (read from an entity's replacement text, with the reference's span).
     pub(crate) children: Vec<Name<'a>>,
+    /// Whether non-white character data was seen directly in this element
+    /// before the offset.
+    pub(crate) has_text: bool,
 }
 
 /// Where the offset is.
@@ -213,14 +216,15 @@ impl<'t> Document<'t> {
     }
 }
 
-/// One event read before the offset: an element opens, or closes as a
-/// child of the one it is in.
+/// One event read before the offset: an element opens, closes as a child
+/// of the one it is in, or adds non-white text to it.
 fn apply<'a>(open: &mut Vec<Element<'a>>, e: Event<'a>) {
     tick();
     match e {
         Event::Start(tag) => open.push(Element {
             tag,
             children: Vec::new(),
+            has_text: false,
         }),
         Event::End(_) => {
             if let Some(closed) = open.pop()
@@ -229,7 +233,15 @@ fn apply<'a>(open: &mut Vec<Element<'a>>, e: Event<'a>) {
                 parent.children.push(closed.tag.name);
             }
         }
-        Event::Text { .. } | Event::Pi(..) | Event::Eof => {}
+        Event::Text { text, .. } => {
+            if let Some(parent) = open.last_mut()
+                && !parent.has_text
+                && !super::is_whitespace(&text)
+            {
+                parent.has_text = true;
+            }
+        }
+        Event::Pi(..) | Event::Eof => {}
     }
 }
 
@@ -804,5 +816,36 @@ mod tests {
         assert_eq!(short, long);
         // Each item is read: a step per construct and per event at least.
         assert!(small >= 10.0, "{small}");
+    }
+
+    #[test]
+    fn open_elements_record_non_whitespace_text_before_the_offset() {
+        for (body, want) in [
+            ("<ex:q>text<|</ex:q>", true),
+            ("<ex:q>  text  <|</ex:q>", true),
+            ("<ex:q><![CDATA[text]]><|</ex:q>", true),
+            ("<ex:q>&amp;<|</ex:q>", true),
+            ("<ex:q>text<!-- note --><|</ex:q>", true),
+            ("<ex:q><|</ex:q>", false),
+            ("<ex:q>  \n\t <|</ex:q>", false),
+            ("<ex:q><![CDATA[  \n ]]><|</ex:q>", false),
+            ("<ex:q><!-- note --><|</ex:q>", false),
+            ("<ex:q><?pi data?><|</ex:q>", false),
+        ] {
+            check(&format!("{RDF_HEAD}  {body}\n</rdf:RDF>\n"), |_, _, c| {
+                assert_eq!(c.open.last().unwrap().has_text, want, "{body}");
+            });
+        }
+        // Entity references: non-whitespace vs whitespace-only expansion.
+        let with_entities = format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE rdf:RDF [\n  <!ENTITY t \"hi\">\n  <!ENTITY ws \"  \">\n]>\n{}",
+            RDF_HEAD.split_once('\n').unwrap().1
+        );
+        check(&format!("{with_entities}<ex:q>&t;<|</ex:q>"), |_, _, c| {
+            assert!(c.open.last().unwrap().has_text);
+        });
+        check(&format!("{with_entities}<ex:q>&ws;<|</ex:q>"), |_, _, c| {
+            assert!(!c.open.last().unwrap().has_text);
+        });
     }
 }

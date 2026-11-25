@@ -88,7 +88,7 @@ pub(super) fn complete(
     let prefixes: PrefixMap = e
         .prefixes
         .iter()
-        .filter(|(p, _)| !p.is_empty())
+        .filter(|(p, _)| is_nc_name(p))
         .map(|(p, ns)| (p.to_string(), ns.to_string()))
         .collect();
     let (cands, incomplete) = match &e.slot {
@@ -161,6 +161,18 @@ fn elements(
         };
         let label = |l: &str| format!("{pfx}:{l}");
         let fits = |iri: &str, vocab: Option<TermKind>| in_ns(&ns, iri, vocab);
+        if node.is_none() && ns == RDF && fuzzy(local, "Description") {
+            extras.push(Candidate {
+                iri: Some(format!("{RDF}Description")),
+                import: import.clone(),
+                ..Candidate::plain(
+                    label("Description"),
+                    CompletionItemKind::CLASS,
+                    "a node, typed by its rdf:type properties".into(),
+                    0,
+                )
+            });
+        }
         cands = namespace_terms_best(k, &ns, local, slot, &label, import, Some(best), &fits);
     } else {
         incomplete = true;
@@ -223,17 +235,21 @@ fn elements(
     };
     let write = |iri: &str| qname(iri, prefixes, default);
     incomplete |= apply_ranking(&mut cands, ranked, kind, k, &wanted, &write);
-    // One item per IRI, the first way found to write it; only the
-    // declarations the root can take; no name an end tag that follows would
-    // take.
-    let mut seen = FxHashSet::default();
-    cands.retain(|c| c.iri.as_ref().is_none_or(|i| seen.insert(i.clone())));
+    // One item per IRI, the first way found to write it; only valid absolute
+    // IRIs (skipping prefixes bound to a malformed namespace URI), only the
+    // declarations the root can take, and no name an end tag that follows
+    // would take.
     for list in [&mut cands, &mut extras] {
         list.retain(|c| {
-            c.import.as_ref().is_none_or(|(p, _)| e.may_declare(p))
+            c.iri
+                .as_deref()
+                .is_none_or(|i| oxiri::Iri::parse(i).is_ok())
+                && c.import.as_ref().is_none_or(|(p, _)| e.may_declare(p))
                 && !e.taken.contains(&c.label.as_str())
         });
     }
+    let mut seen: FxHashSet<String> = extras.iter().filter_map(|c| c.iri.clone()).collect();
+    cands.retain(|c| c.iri.as_ref().is_none_or(|i| seen.insert(i.clone())));
     incomplete |= finish(&mut cands, Ranking::default(), slot, typed, k, prefixes);
     incomplete |= finish(&mut extras, Ranking::default(), slot, typed, k, prefixes);
     let room = LIMIT.saturating_sub(extras.len());
@@ -290,6 +306,7 @@ fn values(
         typed,
         promoted: &promoted,
     };
+    let mut incomplete = false;
     let mut cands = match entity {
         Some((name, ns)) => {
             let label = |l: &str| format!("&{name};{l}");
@@ -299,11 +316,18 @@ fn values(
         None => {
             // The bundled vocabularies' terms once something is typed (but
             // as subjects), and the datatypes, which are few.
-            let vocabularies = match slot {
-                Slot::Subject => false,
-                Slot::Datatype => true,
-                Slot::Class | Slot::Predicate | Slot::Object => !typed.is_empty(),
+            let (vocabularies, skipped_vocabularies) = match slot {
+                Slot::Subject => (false, false),
+                Slot::Datatype => (true, false),
+                Slot::Class | Slot::Predicate | Slot::Object => {
+                    (!typed.is_empty(), typed.is_empty())
+                }
             };
+            // Bundled vocabularies are skipped while nothing is typed, and
+            // before a `#`, `/` or `:` is typed matching checks only the
+            // local name so typing a scheme or namespace can add matches.
+            incomplete =
+                skipped_vocabularies || (!typed.is_empty() && !typed.contains(['#', '/', ':']));
             iris(k, typed, slot, vocabularies, &fits, best, quote)
         }
     };
@@ -324,7 +348,7 @@ fn values(
             .flatten()
             .map(|l| (l, None))
     };
-    let mut incomplete = apply_ranking(
+    incomplete |= apply_ranking(
         &mut cands,
         ranked,
         CompletionItemKind::REFERENCE,
@@ -589,8 +613,15 @@ fn fits(k: &Knowledge, slot: Slot, iri: &str, vocab: Option<TermKind>) -> bool {
 }
 
 /// Whether `iri` names a datatype: one of the reserved vocabulary's (OWL 2,
-/// section 2.4), or one the workspace types `rdfs:Datatype`.
+/// section 2.4), an RDF literal datatype (`rdf:HTML`, `rdf:JSON`,
+/// `rdf:dirLangString`), or one the workspace types `rdfs:Datatype`.
 fn is_datatype(k: &Knowledge, iri: &str, vocab: Option<TermKind>) -> bool {
+    if matches!(
+        iri.strip_prefix(RDF),
+        Some("HTML" | "JSON" | "dirLangString")
+    ) {
+        return true;
+    }
     match Entity::reserved(iri, vocab == Some(TermKind::Class)) {
         Some(kinds) => kinds.contains(&Entity::Datatype),
         None => k
@@ -1231,5 +1262,152 @@ mod tests {
             at.replaced("http://example.org/Pump"),
             "http://example.org/Pum"
         );
+    }
+
+    #[test]
+    fn qualified_rdf_prefix_offers_rdf_description_in_node_position() {
+        for body in ["  <rdf:Des|/>\n", "  <rdf:Des|\n", "  <rdf:|/>\n"] {
+            let labels = at(&onto(body)).labels();
+            assert!(has(&labels, "rdf:Description"), "{body}: {labels:?}");
+            assert_eq!(
+                labels.iter().filter(|l| *l == "rdf:Description").count(),
+                1,
+                "{body}: {labels:?}"
+            );
+        }
+        // Custom prefix bound to RDF's namespace.
+        let custom = onto("  <r:Des|/>\n").replace(
+            "xmlns:ex=",
+            "xmlns:r=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=",
+        );
+        assert!(has(&at(&custom).labels(), "r:Description"));
+        // Even if the workspace types rdf:Description as a class, no duplicate.
+        let ttl = "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\nrdf:Description a owl:Class .\n";
+        let labels = at_with(&onto("  <rdf:Des|/>\n"), &[("file:///w/d.ttl", ttl)]).labels();
+        assert_eq!(
+            labels.iter().filter(|l| *l == "rdf:Description").count(),
+            1,
+            "{labels:?}"
+        );
+        // Never in property-element position.
+        let prop = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <rdf:Des|/>\n  </rdf:Description>\n",
+        ));
+        assert!(!has(&prop.labels(), "rdf:Description"));
+    }
+
+    #[test]
+    fn empty_rdf_resource_is_incomplete_when_vocabularies_are_skipped() {
+        let open = "  <ex:Pump rdf:about=\"http://example.org/p1\">\n    ";
+        for prop in ["rdf:type", "ex:feeds", "rdfs:subPropertyOf"] {
+            let list = at(&onto(&format!("{open}<{prop} rdf:resource=\"|\"/>\n"))).list();
+            assert!(list.is_incomplete, "{prop} should be incomplete");
+        }
+        let labels = at(&onto(&format!("{open}<rdf:type rdf:resource=\"Th|\"/>\n"))).labels();
+        assert!(has(&labels, &format!("{OWL}Thing")), "{labels:?}");
+    }
+
+    #[test]
+    fn rdf_datatypes_are_offered_for_rdf_datatype_and_omitted_as_classes() {
+        let rdf = super::RDF;
+        let dts = [
+            "HTML",
+            "JSON",
+            "dirLangString",
+            "langString",
+            "XMLLiteral",
+            "PlainLiteral",
+        ];
+        // Excluded from node-element names and rdf:type resource values.
+        for body in [
+            "  <|\n",
+            "  <rdf:|/>\n",
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <rdf:type rdf:resource=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#|\"/>\n  </rdf:Description>\n",
+        ] {
+            let labels = at(&onto(body)).labels();
+            for dt in dts {
+                assert!(
+                    !has(&labels, &format!("rdf:{dt}")) && !has(&labels, &format!("{rdf}{dt}")),
+                    "{dt} offered in {body}: {labels:?}"
+                );
+            }
+        }
+        // Offered in rdf:datatype values.
+        let all = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:power rdf:datatype=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#|\">x</ex:power>\n  </rdf:Description>\n",
+        ))
+        .labels();
+        for dt in dts {
+            assert!(has(&all, &format!("{rdf}{dt}")), "{dt} not in {all:?}");
+        }
+        let ht = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:power rdf:datatype=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#HT|\">x</ex:power>\n  </rdf:Description>\n",
+        ))
+        .labels();
+        assert!(has(&ht, &format!("{rdf}HTML")), "{ht:?}");
+    }
+
+    #[test]
+    fn a_root_node_element_completes_rdf_about() {
+        let ttl = "@prefix ex: <http://example.org/> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\nex:Person a owl:Class .\n";
+        let marked = "<?xml version=\"1.0\"?>\n<owl:Class xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:owl=\"http://www.w3.org/2002/07/owl#\" rdf:about=\"http://example.org/Pe|\"/>\n";
+        let at = at_with(marked, &[("file:///w/terms.ttl", ttl)]);
+        let labels = at.labels();
+        assert!(has(&labels, "http://example.org/Person"), "{labels:?}");
+        let after = at.accepted(&at.item("http://example.org/Person"));
+        let parsed = Analysis::new(URI.into(), &after, Arc::default(), true);
+        assert!(
+            parsed.parsed.errors.is_empty(),
+            "{:?}",
+            parsed.parsed.errors
+        );
+        // Root rdf:RDF gets no rdf:about completion.
+        let rdf_root = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" rdf:about=\"http://example.org/Pe|\"/>\n";
+        assert!(
+            at_with(rdf_root, &[("file:///w/terms.ttl", ttl)])
+                .labels()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_property_element_with_text_or_property_attrs_offers_no_node_element() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n    ";
+        for body in [
+            format!("{open}<ex:feeds>text<|</ex:feeds>\n  </rdf:Description>\n"),
+            format!("{open}<ex:feeds ex:label=\"abc\"><|</ex:feeds>\n  </rdf:Description>\n"),
+            format!(
+                "{open}<ex:feeds rdf:type=\"http://example.org/Valve\"><|</ex:feeds>\n  </rdf:Description>\n"
+            ),
+        ] {
+            assert_eq!(at(&onto(&body)).labels(), Vec::<String>::new(), "{body}");
+        }
+        // Whitespace-only text and rdf:ID still allow a nested node element.
+        for body in [
+            format!("{open}<ex:feeds>  <|</ex:feeds>\n  </rdf:Description>\n"),
+            format!("{open}<ex:feeds rdf:ID=\"r1\"><|</ex:feeds>\n  </rdf:Description>\n"),
+        ] {
+            let labels = at(&onto(&body)).labels();
+            assert!(has(&labels, "rdf:Description"), "{body}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_namespace_iri_does_not_offer_invalid_element_names() {
+        let doc = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/>22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n\
+              <|ex:A rdf:about=\"http://example.org/a\" ex:name=\"a\"/>\n\
+            </rdf:RDF>\n";
+        let labels = at(doc).labels();
+        assert!(!has(&labels, "rdf:about"), "{labels:?}");
+        // A prefix name that is not an XML NCName (chaos 27859) is never offered.
+        let bad_pfx = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+                     xmlns:owl=\"http://www.w3.org/2002/07/owl#\"\n\
+                     xmlns:&e40;rdfs=\"http://www.w3.org/2000/01/rdf-schema#\">\n\
+              <|owl:Class rdf:about=\"http://example.org/A\"/>\n\
+            </rdf:RDF>\n";
+        let labels = at(bad_pfx).labels();
+        assert!(!labels.iter().any(|l| l.starts_with('&')), "{labels:?}");
     }
 }
