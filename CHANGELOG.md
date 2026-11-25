@@ -54,8 +54,8 @@
   prose) and builds the tree the Functional parser builds, so the axioms
   become the triples of the same W3C mapping and every feature that reads
   Functional syntax reads OWL/XML: hover, definition, references,
-  highlights, the outline, workspace symbols, folding, the lints that need
-  no edit, `check`, `query`, SHACL validation and reasoning. Relative IRIs
+  highlights, the outline, workspace symbols, folding, the lints RDF/XML
+  gets, `check`, `query`, SHACL validation and reasoning. Relative IRIs
   resolve against `xml:base` and the file's URL, as XML Base says; where
   OWL API, which joins a relative IRI to the `xml:base` as strings, reads
   another IRI (ROBOT writes `IRI="/Book"` under
@@ -113,8 +113,10 @@
   reference lens, outline, folding and type hierarchy on the exact attribute
   value or qualified name, and diagnostics: `xml-syntax` and `rdfxml-syntax`
   with recovery, SHACL results, reasoning findings, `invalid-literal`,
-  `undescribed-term` and `deprecated-term`. VS Code, Neovim and the browser
-  editor attach to these files and keep them in their XML language.
+  `undescribed-term`, `unknown-term` (a misspelt vocabulary term, its "did
+  you mean" in the message, with no fix) and `deprecated-term`. VS Code,
+  Neovim and the browser editor attach to these files and keep them in
+  their XML language.
 - **Rename in RDF/XML.** A rename of an IRI, from any file, edits the
   RDF/XML workspace files that use it too, and a rename can start inside
   one, on a start or an end tag. Each use keeps its form (a relative value

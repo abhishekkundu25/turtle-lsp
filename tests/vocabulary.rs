@@ -499,8 +499,8 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
     ),
     (
         "rdf:foo",
-        3,
-        "RDF/XML rdfms-rdf-names-use warn-001 to warn-003 use a name in the rdf namespace that RDF does not define, to test the warning",
+        6,
+        "RDF/XML rdfms-rdf-names-use warn-001 to warn-003 use a name in the rdf namespace that RDF does not define, to test the warning: in each .rdf and in its .nt result",
     ),
     (
         "rdfs:definedBy",
@@ -519,8 +519,8 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
     ),
     (
         "owl:DataProperty",
-        1,
-        "the OWL 2 Primer's appendix ontology in Turtle (owl2-primer/59.ttl) types :hasSSN owl:DataProperty; the class is owl:DatatypeProperty (the RDF/XML text has the same fault, but RDF/XML gets no unknown-term)",
+        2,
+        "the OWL 2 Primer's appendix ontology in Turtle and in RDF/XML (owl2-primer/59.ttl, 59.rdf) types :hasSSN owl:DataProperty; the class is owl:DatatypeProperty",
     ),
     (
         "owl:subClassOf",
@@ -532,7 +532,9 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
 /// The files `check --root tests/w3c` reads, as it finds them: RDF in any
 /// letter case, SPARQL only in lower case, no hidden folder.
 fn w3c_files(dir: &Path, root: &Path, out: &mut Vec<BatchFile>) {
-    const RDF_EXTENSIONS: &[&str] = &["ttl", "turtle", "trig", "nt", "nq", "jsonld", "rdf", "owl"];
+    const RDF_EXTENSIONS: &[&str] = &[
+        "ttl", "turtle", "trig", "nt", "nq", "jsonld", "rdf", "owl", "ofn", "owx",
+    ];
     const SPARQL_EXTENSIONS: &[&str] = &["rq", "sparql", "ru"];
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

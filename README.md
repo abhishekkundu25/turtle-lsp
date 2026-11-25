@@ -511,8 +511,9 @@ reads `.owl` and `.rdf` files as workspace files. Only a rename edits them.
   outline, folding and type hierarchy, each on the exact attribute value or
   qualified name. Diagnostics: XML and RDF/XML syntax errors with recovery
   (`xml-syntax`, `rdfxml-syntax`), SHACL results, reasoning findings, and the
-  lints that need no edit (`invalid-literal`, `undescribed-term`,
-  `deprecated-term`).
+  lints of its terms and literals (`invalid-literal`, `undescribed-term`,
+  `unknown-term`, `deprecated-term`), each "did you mean" in the message
+  only.
 - **Rename edits RDF/XML**: renaming an IRI, from any file, edits the
   RDF/XML workspace files that use it too, and a rename can start inside
   one (on an element name in its start or end tag, an attribute name, an
@@ -582,7 +583,7 @@ in attribute values.
 OWL 2 Functional-Style Syntax is what ROBOT and Protégé write for many OBO
 edit files (`cl-edit.owl`, `hp-edit.owl`, `ro-edit.owl`). turtle-lsp reads a
 `.ofn` file, and a `.owl` whose text starts with `Prefix(` or `Ontology(`,
-as Functional syntax, read-only, as it reads RDF/XML.
+as Functional syntax, read-only: nothing formats, completes, fixes or renames it.
 
 - **Read as RDF**: each axiom becomes the RDF triples the W3C [mapping to
   RDF graphs](https://www.w3.org/TR/owl2-mapping-to-rdf/) gives it (an
@@ -598,9 +599,10 @@ as Functional syntax, read-only, as it reads RDF/XML.
   the outline (each term once, at its declaration; a term the file never
   declares, at the first axiom about it), workspace symbols and folding,
   as for an RDF/XML file; no semantic tokens or inlay hints (the editor's
-  grammar colours it). The lints that need no edit run on it, at the
-  exact text of each IRI: `invalid-literal`, `deprecated-term`,
-  `undescribed-term`.
+  grammar colours it). The lints of its terms and literals run on it, at
+  the exact text of each IRI: `invalid-literal`, `unknown-term`,
+  `deprecated-term`, `undescribed-term`, each "did you mean" in the
+  message only.
 - **Errors**: every error has the code `ofn-syntax` and its exact span, in
   the editors and in `check` (same exit codes as any syntax: 1 for an
   error). The parse goes on at the next axiom after an error, so each typo
@@ -704,8 +706,9 @@ read-only, as it reads OWL Functional syntax.
 - **In the editor**: hover, definition, references, document highlight,
   the outline, workspace symbols and folding, as for a Functional file, at
   the exact text of each IRI (the attribute value, or the content of an
-  `IRI` element). The lints that need no edit run on it: `invalid-literal`,
-  `deprecated-term`, `undescribed-term`.
+  `IRI` element). The lints of its terms and literals run on it:
+  `invalid-literal`, `unknown-term`, `deprecated-term`, `undescribed-term`,
+  each "did you mean" in the message only.
 - **Errors**: two codes. `xml-syntax` is what the XML scanner reports, as
   in RDF/XML: an unclosed element, a broken attribute, an undeclared
   entity. `owx-syntax` is the rest, each at its exact span: an element

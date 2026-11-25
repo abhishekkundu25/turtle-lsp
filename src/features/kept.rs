@@ -407,11 +407,12 @@ mod tests {
     use crate::features::rdfxml_fixture as fx;
     use crate::knowledge::Source;
 
-    /// Of the kept checks, RDF/XML runs the lints that need no edit:
-    /// `invalid-literal`, and of the term uses `deprecated-term` alone (its
-    /// misspelt `rdfs:labl` gives no `unknown-term`); no label check.
+    /// Of the kept checks, RDF/XML runs the lints of its terms and
+    /// literals: `invalid-literal` and the term uses (its misspelt
+    /// `rdfs:labl` gives an `unknown-term`), none with fix data; no label
+    /// check.
     #[test]
-    fn rdfxml_keeps_the_lints_that_need_no_edit() {
+    fn rdfxml_keeps_the_lints_of_its_terms_and_literals() {
         let uri = "file:///w/onto.owl";
         let (turtle, k) = (fx::turtle(uri), Knowledge::default());
         let kept = Kept::of(&turtle, &k);
@@ -430,13 +431,26 @@ mod tests {
             let kept = Kept::of(&a, &k);
             assert_eq!(
                 found(&kept),
-                [Check::Literals],
+                [Check::TermUses, Check::Literals],
                 "{:?}",
                 a.parsed.refs[0].form
             );
             let literal = kept.findings(Check::Literals).next().unwrap();
             assert!(literal.diagnostic.data.is_none());
+            let terms: Vec<_> = kept.findings(Check::TermUses).collect();
+            assert_eq!(terms.len(), 1, "{terms:?}");
+            assert_eq!(
+                terms[0].diagnostic.code,
+                Some(lsp_types::NumberOrString::String("unknown-term".into()))
+            );
+            assert!(terms[0].diagnostic.data.is_none());
         }
+        // In Turtle the same warning carries its fix.
+        let terms: Vec<_> = kept.findings(Check::TermUses).collect();
+        assert!(
+            terms.iter().all(|f| f.diagnostic.data.is_some()),
+            "{terms:?}"
+        );
     }
 
     /// An RDF/XML document is checked again in full on a change of the
@@ -445,9 +459,18 @@ mod tests {
     #[test]
     fn rdfxml_is_not_followed_through_the_index() {
         let uri = "file:///w/onto.owl";
-        // Another document deprecates `ex:b`, which each uses.
+        // Another document deprecates `ex:b`, which each uses, and describes
+        // the misspelt `rdfs:labl`, which is then known.
         let other = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
-            <http://example.org/b> owl:deprecated true .\n";
+            <http://example.org/b> owl:deprecated true .\n\
+            <http://www.w3.org/2000/01/rdf-schema#labl> a owl:AnnotationProperty .\n";
+        let unknown = |kept: &Kept| {
+            (kept.findings(Check::TermUses)).any(|f| {
+                f.diagnostic
+                    .message
+                    .contains("is not defined in the rdfs vocabulary")
+            })
+        };
         for (a, followed) in [
             (fx::turtle(uri), true),
             (fx::written(uri, fx::TURTLE), false),
@@ -458,6 +481,7 @@ mod tests {
             k.set(uri, Source::Open, a.clone());
             let mut kept = Kept::default();
             kept.update(&a, &k);
+            assert!(unknown(&kept));
             let b = Analysis::new("file:///w/b.ttl".into(), other, Arc::default(), true);
             k.set("file:///w/b.ttl", Source::Open, Arc::new(b));
             kept.update(&a, &k);
@@ -466,6 +490,7 @@ mod tests {
             let deprecated = (kept.findings(Check::TermUses))
                 .any(|f| f.diagnostic.message.contains("deprecated"));
             assert!(deprecated);
+            assert!(!unknown(&kept));
         }
     }
 }
