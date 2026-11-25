@@ -39,7 +39,7 @@ use crate::knowledge::Knowledge;
 use crate::ofn::expected::{self, Header, Iris};
 use crate::ofn::signature::Entity;
 use crate::ofn::tree::Keyword;
-use crate::syntax::Iri;
+use crate::syntax::{Iri, PrefixMap};
 use crate::vocab::TermKind;
 use lsp_types::*;
 use rustc_hash::FxHashSet;
@@ -61,28 +61,11 @@ pub(super) fn complete(
     let typed = &text[e.word.start as usize..offset];
     let replace = a.range(enc, e.word);
     let prefixes = expected::prefixes(&a.parsed);
-    let slot = slot_of(&e.iris);
-    let fits = |iri: &str, vocab: Option<TermKind>| fits(k, &e.iris, iri, vocab);
-    let promoted = |_: Iri| false;
-    let best = Best {
-        typed,
-        promoted: &promoted,
-    };
     // The terms, and the keywords and prefixes, which keep their places
     // under the cap: a slot of a large ontology has more than it of terms.
-    let mut cands = Vec::new();
     let mut extras = Vec::new();
-    let mut incomplete = false;
-    if let Some((pfx, local)) = typed.split_once(':') {
-        if e.iris == Iris::None {
-            return CompletionResponse::Array(vec![]);
-        }
-        match prefixed_terms_where(k, pfx, local, slot, &prefixes, Some(best), &fits) {
-            Some(c) => cands = c,
-            None => return CompletionResponse::Array(vec![]),
-        }
-    } else {
-        incomplete = true;
+    let incomplete = !typed.contains(':');
+    if incomplete {
         for &kw in &e.keywords {
             if fuzzy(typed, kw.as_str()) {
                 extras.push(Candidate::plain(
@@ -93,33 +76,12 @@ pub(super) fn complete(
                 ));
             }
         }
-        if e.iris != Iris::None {
-            // The well-known prefixes once something is typed, as in Turtle.
-            prefix_candidates(&mut extras, typed, &prefixes, DIRECTIVE, false);
-            let mut seen = FxHashSet::default();
-            for (p, ns) in prefixes.iter() {
-                if seen.insert(ns.as_str()) {
-                    let label = |l: &str| format!("{p}:{l}");
-                    let terms =
-                        namespace_terms_best(k, ns, typed, slot, &label, None, Some(best), &fits);
-                    cands.extend(terms);
-                }
-            }
-            local_name_candidates_where(&mut cands, typed, slot, &prefixes, &fits);
-            // A term of a namespace in scope is found twice: keep the first.
-            let mut labels = FxHashSet::default();
-            cands.retain(|c| labels.insert(c.label.clone()));
-        }
     }
-    let ranked = ranking::Ranking::default;
-    incomplete |= finish(&mut cands, ranked(), slot, typed, k, &prefixes);
-    incomplete |= finish(&mut extras, ranked(), slot, typed, k, &prefixes);
-    let room = LIMIT.saturating_sub(extras.len());
-    if cands.len() > room {
-        cands.truncate(room);
-        incomplete = true;
-    }
-    let cands = merged(cands, extras, typed);
+    let Some(cands) = terms(k, typed, &e.iris, &prefixes, &mut extras) else {
+        return CompletionResponse::Array(vec![]);
+    };
+    let (cands, cut) = listed(cands, extras, typed, &e.iris, k, &prefixes);
+    let incomplete = incomplete || cut;
     let header = std::cell::OnceCell::new();
     let mut items = items(cands, replace, &prefixes, DIRECTIVE, |p, ns| {
         let header = header.get_or_init(|| Header::of(text, &a.parsed));
@@ -145,6 +107,76 @@ pub(super) fn complete(
     })
 }
 
+/// The terms `iris` takes that match `typed` (a prefixed name, or part of
+/// a local name), written with `prefixes`: after `prefix:` that
+/// namespace's; else the declared namespaces', and vocabulary terms by
+/// local name, and the prefixes that match, added to `extras`. `None` after
+/// `prefix:` where nothing is offered.
+pub(super) fn terms(
+    k: &Knowledge,
+    typed: &str,
+    iris: &Iris,
+    prefixes: &PrefixMap,
+    extras: &mut Vec<Candidate>,
+) -> Option<Vec<Candidate>> {
+    let slot = slot_of(iris);
+    let fits = |iri: &str, vocab: Option<TermKind>| fits(k, iris, iri, vocab);
+    let promoted = |_: Iri| false;
+    let best = Best {
+        typed,
+        promoted: &promoted,
+    };
+    if let Some((pfx, local)) = typed.split_once(':') {
+        if *iris == Iris::None {
+            return None;
+        }
+        return prefixed_terms_where(k, pfx, local, slot, prefixes, Some(best), &fits);
+    }
+    let mut cands = Vec::new();
+    if *iris != Iris::None {
+        // The well-known prefixes once something is typed, as in Turtle.
+        prefix_candidates(extras, typed, prefixes, DIRECTIVE, false);
+        let mut seen = FxHashSet::default();
+        for (p, ns) in prefixes.iter() {
+            if seen.insert(ns.as_str()) {
+                let label = |l: &str| format!("{p}:{l}");
+                let terms =
+                    namespace_terms_best(k, ns, typed, slot, &label, None, Some(best), &fits);
+                cands.extend(terms);
+            }
+        }
+        local_name_candidates_where(&mut cands, typed, slot, prefixes, &fits);
+        // A term of a namespace in scope is found twice: keep the first.
+        let mut labels = FxHashSet::default();
+        cands.retain(|c| labels.insert(c.label.clone()));
+    }
+    Some(cands)
+}
+
+/// The terms `cands` and the other candidates `extras` (keywords,
+/// prefixes) ranked where `iris` are expected, the terms cut so that the
+/// others keep their places under the cap, merged in that order; and
+/// whether some were left out.
+pub(super) fn listed(
+    mut cands: Vec<Candidate>,
+    mut extras: Vec<Candidate>,
+    typed: &str,
+    iris: &Iris,
+    k: &Knowledge,
+    prefixes: &PrefixMap,
+) -> (Vec<Candidate>, bool) {
+    let slot = slot_of(iris);
+    let ranked = ranking::Ranking::default;
+    let mut incomplete = finish(&mut cands, ranked(), slot, typed, k, prefixes);
+    incomplete |= finish(&mut extras, ranked(), slot, typed, k, prefixes);
+    let room = LIMIT.saturating_sub(extras.len());
+    if cands.len() > room {
+        cands.truncate(room);
+        incomplete = true;
+    }
+    (merged(cands, extras, typed), incomplete)
+}
+
 /// Two lists in [`finish`]'s order, merged in that order.
 fn merged(a: Vec<Candidate>, b: Vec<Candidate>, typed: &str) -> Vec<Candidate> {
     let lower = typed.rsplit(':').next().unwrap_or("").to_lowercase();
@@ -168,7 +200,7 @@ fn merged(a: Vec<Candidate>, b: Vec<Candidate>, typed: &str) -> Vec<Candidate> {
 }
 
 /// `kw` written with its operands, each written by `operand(number, name)`.
-fn written(kw: Keyword, operand: &dyn Fn(usize, &str) -> String) -> String {
+pub(super) fn written(kw: Keyword, operand: &dyn Fn(usize, &str) -> String) -> String {
     let ops: Vec<String> = match kw {
         Keyword::Prefix => {
             return format!(
@@ -202,7 +234,7 @@ fn snippet(item: &mut CompletionItem) {
 }
 
 /// The Turtle slot whose ranking fits what is expected.
-fn slot_of(iris: &Iris) -> Slot {
+pub(super) fn slot_of(iris: &Iris) -> Slot {
     match iris {
         Iris::Of(kinds) => match kinds.first() {
             Some(Entity::Class) => Slot::Class,
@@ -218,7 +250,7 @@ fn slot_of(iris: &Iris) -> Slot {
 
 /// Whether the term `iri` (of kind `vocab` in the bundled vocabulary) may
 /// be offered where `iris` are expected: whether one of its kinds is.
-fn fits(k: &Knowledge, iris: &Iris, iri: &str, vocab: Option<TermKind>) -> bool {
+pub(super) fn fits(k: &Knowledge, iris: &Iris, iri: &str, vocab: Option<TermKind>) -> bool {
     match iris {
         Iris::None => false,
         Iris::Any => true,

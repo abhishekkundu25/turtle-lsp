@@ -329,8 +329,8 @@ struct Prefix {
 }
 
 /// An element of the Recommendation's schema that is no keyword.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Leaf {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Leaf {
     Iri,
     AbbreviatedIri,
     AnonymousIndividual,
@@ -338,28 +338,45 @@ enum Leaf {
     FacetRestriction,
 }
 
-#[derive(Clone, Copy)]
-enum Element {
+impl Leaf {
+    pub(super) const ALL: [Leaf; 5] = [
+        Leaf::Iri,
+        Leaf::AbbreviatedIri,
+        Leaf::AnonymousIndividual,
+        Leaf::Literal,
+        Leaf::FacetRestriction,
+    ];
+
+    /// Its element's local name.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Leaf::Iri => "IRI",
+            Leaf::AbbreviatedIri => "AbbreviatedIRI",
+            Leaf::AnonymousIndividual => "AnonymousIndividual",
+            Leaf::Literal => "Literal",
+            Leaf::FacetRestriction => "FacetRestriction",
+        }
+    }
+}
+
+/// An element of OWL/XML: a keyword's, or a leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Element {
     Keyword(Keyword),
     Leaf(Leaf),
 }
 
 /// The element named `local` in the OWL namespace: a keyword, the SWRL
 /// ones among them, or a leaf.
-fn element(local: &str) -> Option<Element> {
-    let leaf = match local {
-        "IRI" => Leaf::Iri,
-        "AbbreviatedIRI" => Leaf::AbbreviatedIri,
-        "AnonymousIndividual" => Leaf::AnonymousIndividual,
-        "Literal" => Leaf::Literal,
-        "FacetRestriction" => Leaf::FacetRestriction,
-        _ => return Keyword::of(local).map(Element::Keyword),
-    };
-    Some(Element::Leaf(leaf))
+pub(super) fn element(local: &str) -> Option<Element> {
+    match Leaf::ALL.into_iter().find(|l| l.name() == local) {
+        Some(leaf) => Some(Element::Leaf(leaf)),
+        None => Keyword::of(local).map(Element::Keyword),
+    }
 }
 
 /// Whether a slot of `cat` takes the element `leaf`.
-fn takes(cat: Cat, leaf: Leaf) -> bool {
+pub(super) fn takes(cat: Cat, leaf: Leaf) -> bool {
     match leaf {
         Leaf::Literal => matches!(cat, Cat::Literal | Cat::AnnotationValue | Cat::DArg),
         Leaf::AnonymousIndividual => matches!(
@@ -440,12 +457,26 @@ struct Before {
 }
 
 /// Where the children of `Ontology` are, in the schema's order.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Phase {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Phase {
     Prefixes,
     Imports,
     Annotations,
     Axioms,
+}
+
+impl Phase {
+    /// The phase a child of `Ontology` is of; `None` for an element that is
+    /// none.
+    pub(super) fn of(el: Element) -> Option<Phase> {
+        match el {
+            Element::Keyword(Keyword::Prefix) => Some(Phase::Prefixes),
+            Element::Keyword(Keyword::Import) => Some(Phase::Imports),
+            Element::Keyword(Keyword::Annotation) => Some(Phase::Annotations),
+            Element::Keyword(k) if is_axiom(k) => Some(Phase::Axioms),
+            Element::Keyword(_) | Element::Leaf(_) => None,
+        }
+    }
 }
 
 /// An IRI as written: its span, its value, and whether the text at the
@@ -1777,12 +1808,9 @@ impl<'a> Reader<'a> {
                 return;
             }
         };
-        let (k, here) = match el {
-            Element::Keyword(Keyword::Prefix) => (Keyword::Prefix, Phase::Prefixes),
-            Element::Keyword(Keyword::Import) => (Keyword::Import, Phase::Imports),
-            Element::Keyword(Keyword::Annotation) => (Keyword::Annotation, Phase::Annotations),
-            Element::Keyword(k) if is_axiom(k) => (k, Phase::Axioms),
-            Element::Keyword(_) | Element::Leaf(_) => {
+        let (k, here) = match (el, Phase::of(el)) {
+            (Element::Keyword(k), Some(here)) => (k, here),
+            _ => {
                 let message = format!(
                     "Expected <Prefix>, <Import>, <Annotation> or an axiom, found <{}>",
                     shown(tag.name.raw)

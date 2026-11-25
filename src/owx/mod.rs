@@ -1,7 +1,7 @@
 //! The OWL 2 XML Serialization (OWL/XML, W3C Recommendation 11 December
 //! 2012): the frontend of [`Syntax::OwlXml`], a notational variant of OWL
 //! Functional syntax that every feature treats as it treats Functional
-//! syntax, read-only.
+//! syntax, read-only but for completion.
 //!
 //! A `.owx` name leads here, and so does a `.owl` or `.rdf` text that
 //! sniffs as OWL/XML ([`Syntax::of`]), and an import in OWL/XML. The stages:
@@ -14,7 +14,12 @@
 //!   reference form, its literal), answered from the text and the reader's
 //!   terms;
 //! - the mapping of Functional syntax ([`crate::ofn::rdf::map_with`]), into
-//!   the shared [`Parsed`], so no feature has OWL/XML-specific code.
+//!   the shared [`Parsed`], so no feature but completion has OWL/XML-specific
+//!   code;
+//! - [`expected`], for completion (`features::completion::owx`): what may
+//!   come at an offset, read with the XML cursor and the slot machine of
+//!   Functional syntax ([`crate::ofn::expected`]), and where a `<Prefix>`
+//!   goes.
 //!
 //! It names only `syntax`, `ofn` and `rdfxml::xml` (the `boundaries` test
 //! in `src/lib.rs`). [`CODE`] is the code of every error but the scanner's
@@ -54,6 +59,7 @@
 mod annotation_tests;
 #[cfg(test)]
 mod axiom_tests;
+pub(crate) mod expected;
 #[cfg(test)]
 mod printer;
 mod reader;
@@ -80,9 +86,9 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     crate::ofn::rdf::map_with(&source::OwlXml::new(text, &terms), doc, base)
 }
 
-/// What the editor features see of an OWL/XML document: its errors and
-/// its prefixes, and nothing to complete, format, colour, splice or rename,
-/// as in OWL Functional syntax.
+/// What the editor features see of an OWL/XML document: its errors, its
+/// prefixes and its completion, and nothing to format, colour, splice or
+/// rename, as in OWL Functional syntax.
 #[cfg(test)]
 mod gates {
     use super::*;
@@ -173,19 +179,16 @@ mod gates {
             .map(|f| (f.start_line, f.end_line))
             .collect();
         assert_eq!(folds, [(2, 3)]);
-        // Nothing is offered, formatted, coloured, spliced or renamed.
+        // Completion is the one edit (`completion::owx`); nothing is
+        // formatted, coloured, spliced or renamed.
         assert!(!crate::features::writes(Syntax::OwlXml));
         assert!(!crate::features::renames(Syntax::OwlXml));
-        for line in 0..8 {
-            for character in [0, 1, 10, 30, 60] {
-                let pos = Position::new(line, character);
-                let got = completion::complete(&a, &k, Encoding::Utf8, pos);
-                assert!(
-                    matches!(&got, CompletionResponse::Array(v) if v.is_empty()),
-                    "{pos:?} {got:?}"
-                );
-            }
-        }
+        assert!(crate::features::completes(Syntax::OwlXml));
+        let got = completion::complete(&a, &k, Encoding::Utf8, Position::new(4, 39));
+        let CompletionResponse::List(list) = got else {
+            panic!("{got:?}")
+        };
+        assert!(list.items.iter().any(|i| i.label == ":A"), "{list:?}");
         assert_eq!(
             format::formatting(&a, Encoding::Utf8, &format::Options::default()),
             []

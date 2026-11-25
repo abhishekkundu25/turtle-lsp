@@ -47,7 +47,7 @@ pub(crate) fn completes(syntax: Syntax) -> bool {
         Syntax::NTriples | Syntax::NQuads => false,
         Syntax::RdfXml => false,
         // RdfXml above offers through `completion::rdfxml`, OwlXml below through `completion::owx`.
-        Syntax::OwlXml => false,
+        Syntax::OwlXml => true,
     }
 }
 
@@ -296,7 +296,7 @@ mod syntax_table {
             jsonld              no        no        no        yes       yes       yes       no        yes       no        Syntax\n\
             rdfxml              no        no        no        no        no        yes       no        no        no        Syntax\n\
             ofn                 no        no        yes       no        yes       no        no        no        no        Syntax\n\
-            owx                 no        no        yes       no        no        no        no        no        no        Syntax\n\
+            owx                 no        no        yes       no        yes       no        no        no        no        Syntax\n\
             runs_on             turtle    trig      ntriples  nquads    jsonld    rdfxml    ofn       owx\n\
             Syntax              yes       yes       yes       yes       yes       yes       yes       yes\n\
             UndeclaredPrefix    yes       yes       yes       yes       yes       no        no        no\n\
