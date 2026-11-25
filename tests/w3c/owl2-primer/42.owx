@@ -1,0 +1,4 @@
+ <HasKey>
+   <Class IRI="Person"/>
+   <DataProperty IRI="hasSSN"/>
+ </HasKey>

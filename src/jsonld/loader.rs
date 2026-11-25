@@ -531,7 +531,7 @@ mod desktop {
     fn fetch_queue(inner: Weak<Inner>, queue: Receiver<String>) {
         while let Ok(url) = queue.recv() {
             let Some(inner) = inner.upgrade() else { break };
-            let ended = crate::server::worker::catch("fetching a JSON-LD context", || {
+            let ended = crate::worker::catch("fetching a JSON-LD context", || {
                 let _ = inner.fetch(&url);
             });
             inner.fetched(&url, ended.err());
@@ -558,7 +558,7 @@ mod desktop {
                     let (tx, rx) = unbounded();
                     let weak = Arc::downgrade(self);
                     bg.started.fetch_add(1, Ordering::SeqCst);
-                    let started = crate::server::worker::spawn_guarded(
+                    let started = crate::worker::spawn_guarded(
                         "jsonld-context",
                         4 << 20,
                         move || fetch_queue(weak, rx),

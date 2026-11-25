@@ -1,0 +1,7 @@
+ <EquivalentClasses>
+   <Class IRI="JohnsChildren"/>
+   <ObjectHasValue>
+     <ObjectProperty IRI="hasParent"/>
+     <NamedIndividual IRI="John"/>
+   </ObjectHasValue>
+ </EquivalentClasses>

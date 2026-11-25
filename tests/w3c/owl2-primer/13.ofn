@@ -1,0 +1,1 @@
+ DataPropertyAssertion( :hasAge :John "51"^^xsd:integer )

@@ -1,0 +1,13 @@
+ <EquivalentClasses>
+   <Class IRI="HappyPerson"/>
+   <ObjectIntersectionOf>
+     <ObjectAllValuesFrom>
+       <ObjectProperty IRI="hasChild"/>
+       <Class IRI="HappyPerson"/>
+     </ObjectAllValuesFrom>
+     <ObjectSomeValuesFrom>
+       <ObjectProperty IRI="hasChild"/>
+       <Class IRI="HappyPerson"/>
+     </ObjectSomeValuesFrom>
+   </ObjectIntersectionOf>
+ </EquivalentClasses>

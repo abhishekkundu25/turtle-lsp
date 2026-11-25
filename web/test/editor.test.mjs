@@ -201,6 +201,47 @@ test("an .ofn file opens as OWL Functional syntax, coloured, with the server's e
   }
 })
 
+test("an .owx file opens as OWL/XML, coloured as XML, with the server's errors as markers, its hover and no formatter", async () => {
+  const { page, errors, close } = await open()
+  try {
+    const owx = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
+    <Prefix name="" IRI="http://example.org/o#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>Apple</Literal></AnnotationAssertion>
+</Ontology>
+`
+    await page.locator("#files-input").setInputFiles([{ name: "onto.owx", mimeType: "application/owl+xml", buffer: Buffer.from(owx) }])
+    await item(page, "onto.owx").waitFor()
+    assert.equal(await item(page, "onto.owx").locator(".fi").textContent(), "XML")
+    await openFile(page, "onto.owx")
+    const uri = "file:///work/onto.owx"
+    const language = await page.evaluate((u) => window.monaco.editor.getModel(window.monaco.Uri.parse(u)).getLanguageId(), uri)
+    assert.equal(language, "xml")
+    assert.equal(await page.locator("#status-lang").textContent(), "OWL/XML")
+    await page.waitForFunction(() => window.monaco.editor.tokenize("<a b='c'/>", "xml")[0].some((t) => t.type.endsWith(".xml")), null, { timeout: 10_000 })
+    // The server's error, at its span: line 6, the value "nope:B".
+    await page.waitForFunction(
+      (u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).some((m) => m.code === "owx-syntax"),
+      uri,
+      { timeout: 10_000 }
+    )
+    const markers = await page.evaluate((u) => window.monaco.editor.getModelMarkers({ resource: window.monaco.Uri.parse(u) }).map((m) => [m.code, m.startLineNumber, m.startColumn, m.endColumn]), uri)
+    assert.deepEqual(markers, [["owx-syntax", 6, 68, 74]])
+    // The server's hover on the declared class: its label, read from the axioms.
+    await at(page, 'abbreviatedIRI=":A"', 17, "editor.action.showHover")
+    await page.locator(".monaco-hover", { hasText: "Apple" }).waitFor()
+    const formats = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction("editor.action.formatDocument").isSupported())
+    assert.equal(formats, false)
+    await settled(page)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("a .jsonld file opens with JSON colouring, and the language server checks and explains it", async () => {
   const { page, errors, close } = await open()
   try {

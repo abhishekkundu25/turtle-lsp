@@ -1,7 +1,7 @@
 //! Background threads and the channels that bring their answers back.
 //!
-//! One execution mode for the server's jobs ([`Spawn`]): on threads of their
-//! own, or inline when the server is embedded in a host without threads. One
+//! One execution mode for background jobs ([`Spawn`]): on threads of their
+//! own, or inline in a host without threads. One
 //! way to start a thread ([`spawn_guarded`]): a panic in it is caught and
 //! handed back as a message instead of ending the thread silently. One way to
 //! read a channel ([`Feed`]): when the thread behind it is gone, the feed
@@ -50,12 +50,13 @@ where
         .map(|_| ())
 }
 
-/// How the server's jobs run. The server holds one and hands it to each job.
-/// Each job decides what running inline means for it: imports resolve
-/// without loading, SHACL validation runs with a time limit of its own,
-/// workspace diagnostics are off, a query run shows its summary as a
-/// message, reindexing parses at once, and JSON-LD contexts get no
-/// background loader.
+/// How a background job runs: on a thread of its own, or inline. The server
+/// holds one, chosen by its host, and hands it to each job it starts; the
+/// SHACL worker and `Imports::new` always use [`Spawn::Thread`]. Each job
+/// decides what running inline means for it: imports resolve without loading,
+/// SHACL validation runs with a time limit of its own, workspace diagnostics
+/// are off, a query run shows its summary as a message, reindexing parses at
+/// once, and JSON-LD contexts get no background loader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Spawn {
     /// On threads of their own (the stdio server).

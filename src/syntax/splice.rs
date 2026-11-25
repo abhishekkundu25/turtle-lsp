@@ -137,7 +137,8 @@ pub(crate) struct Change<'t> {
 /// Why a splice gave up; the caller parses the new text in full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallback {
-    /// JSON-LD or RDF/XML, which have their own frontends.
+    /// A syntax outside the Turtle family: JSON-LD, or a read-only one
+    /// (RDF/XML, OWL Functional, OWL/XML). Each has its own frontend.
     Syntax,
     /// The edit does not fit the two texts.
     Edit,
@@ -197,9 +198,11 @@ pub(crate) fn applies(
     external: &PrefixMap,
     base: Option<&str>,
 ) -> Result<(), Fallback> {
-    match old.syntax {
-        Syntax::JsonLd | Syntax::RdfXml | Syntax::OwlFunctional => return Err(Fallback::Syntax),
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {}
+    match old.syntax.family() {
+        Family::JsonLd | Family::ReadOnly => {
+            return Err(Fallback::Syntax);
+        }
+        Family::Turtle => {}
     }
     if old_external != external || old.document_base.as_deref() != base {
         return Err(Fallback::Context);

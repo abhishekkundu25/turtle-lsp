@@ -79,7 +79,7 @@ pub(super) fn worker(jobs: Receiver<Job>, out: Sender<Done>) {
         // A bug on one pass must not leave the main loop waiting for its
         // answer: that pass is unresolved, with the reason, and the thread
         // goes on with a memo that starts over.
-        let attempt = crate::server::worker::catch("resolving imports", || {
+        let attempt = crate::worker::catch("resolving imports", || {
             #[cfg(test)]
             if job.req.imports.iter().any(|i| i.contains(PANIC_IMPORT)) {
                 panic!("injected resolver panic");
@@ -341,6 +341,89 @@ mod tests {
         // The part read whole of the broken one.
         assert!(
             loaded("v/broken.ofn")
+                .defs
+                .contains_key("http://ex.com/x#X")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An OWL/XML ontology is read as an import, through a catalog (`.owx`)
+    /// and by its file IRI (an OWL/XML `.owl`, which the first imports): its
+    /// axioms are its triples, its `<Import>`s are followed, and one with an
+    /// error loads in part.
+    #[test]
+    fn owl_xml_imports_load_through_a_catalog_and_a_file_iri() {
+        const OWL: &str = "xmlns=\"http://www.w3.org/2002/07/owl#\"";
+        let root = tmp("owlxml");
+        let ws = root.join("ws");
+        fs::create_dir_all(ws.join("v")).unwrap();
+        fs::write(
+            ws.join(CATALOG_FILE),
+            r#"<catalog><uri name="http://ex.com/f" uri="v/f.owx"/><uri name="http://ex.com/broken" uri="v/broken.owx"/></catalog>"#,
+        )
+        .unwrap();
+        let g = ws.join("v").join("g.owl");
+        let g_iri = url::Url::from_file_path(&g).unwrap().to_string();
+        fs::write(
+            ws.join("v").join("f.owx"),
+            format!(
+                "<?xml version=\"1.0\"?>\n<Ontology {OWL} ontologyIRI=\"http://ex.com/f\">\n<Prefix name=\"\" IRI=\"http://ex.com/f#\"/>\n<Import>{g_iri}</Import>\n<Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n<SubClassOf><Class abbreviatedIRI=\":A\"/><Class IRI=\"http://ex.com/g#B\"/></SubClassOf>\n</Ontology>\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &g,
+            format!(
+                "<Ontology {OWL} ontologyIRI=\"http://ex.com/g\">\n<Declaration><Class IRI=\"http://ex.com/g#B\"/></Declaration>\n</Ontology>\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            ws.join("v").join("broken.owx"),
+            format!(
+                "<Ontology {OWL} ontologyIRI=\"http://ex.com/broken\">\n<Prefix name=\"\" IRI=\"http://ex.com/x#\"/>\n<Declaration><Class abbreviatedIRI=\":X\"/></Declaration>\n<SubClassOf><Class abbreviatedIRI=\":X\"/><Class abbreviatedIRI=\"nope:Y\"/></SubClassOf>\n</Ontology>\n"
+            ),
+        )
+        .unwrap();
+        let j = job(
+            &["http://ex.com/f", "http://ex.com/broken"],
+            &[],
+            vec![ws.clone()],
+            None,
+        );
+        let done = resolve(&j, &mut Memo::default(), &|| false).unwrap();
+        let st: FxHashMap<_, _> = done.status.iter().cloned().collect();
+        assert!(matches!(st["http://ex.com/f"], Status::Loaded(_)), "{st:?}");
+        assert!(matches!(st[g_iri.as_str()], Status::Loaded(_)), "{st:?}");
+        assert!(
+            matches!(&st["http://ex.com/broken"], Status::Truncated(_, m) if m.contains("Undeclared prefix 'nope:'")),
+            "{st:?}"
+        );
+        let loaded = |end: &str| {
+            done.loaded
+                .iter()
+                .find(|l| l.analysis.uri.ends_with(end))
+                .unwrap_or_else(|| panic!("{end}"))
+                .analysis
+                .clone()
+        };
+        let f = loaded("v/f.owx");
+        assert_eq!(f.parsed.syntax, crate::syntax::Syntax::OwlXml);
+        let supers: Vec<&str> = f
+            .supers
+            .get("http://ex.com/f#A")
+            .unwrap()
+            .iter()
+            .map(|i| i.as_str())
+            .collect();
+        assert_eq!(supers, ["http://ex.com/g#B"]);
+        assert!(f.defs.contains_key("http://ex.com/f#A"));
+        let g = loaded("v/g.owl");
+        assert_eq!(g.parsed.syntax, crate::syntax::Syntax::OwlXml);
+        assert!(g.defs.contains_key("http://ex.com/g#B"));
+        // The part read whole of the broken one.
+        assert!(
+            loaded("v/broken.owx")
                 .defs
                 .contains_key("http://ex.com/x#X")
         );

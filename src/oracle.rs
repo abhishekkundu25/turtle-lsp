@@ -23,13 +23,14 @@
 //! analysis was parsed. The chaos tests run it on every iteration of their
 //! edit mode.
 
-use crate::analysis::{Analysis, Encoding, LineIndex, ParsePath, offset_in, position_in};
+use crate::analysis::{
+    Analysis, Encoding, LineIndex, ParsePath, offset_in, position_in, same_analysis, same_list,
+};
 use crate::diagnose::{self, DiagnosticInputs};
 use crate::settings::Settings;
-use crate::syntax::{Iri, IriMap, Node, Parsed, PrefixMap, Syntax};
+use crate::syntax::{Node, PrefixMap, Syntax};
 use crate::workspace::Workspace;
-use lsp_types::{Diagnostic, Position, Range, TextDocumentContentChangeEvent};
-use std::fmt::Debug;
+use lsp_types::{Diagnostic, Range, TextDocumentContentChangeEvent};
 
 /// The changes a client sends in one `didChange`, each in the text the ones
 /// before it left.
@@ -290,154 +291,8 @@ fn extension(syntax: Syntax) -> &'static str {
         Syntax::JsonLd => "jsonld",
         Syntax::RdfXml => "owl",
         Syntax::OwlFunctional => "ofn",
+        Syntax::OwlXml => "owx",
     }
-}
-
-fn same<T: PartialEq + Debug>(field: &str, got: &T, want: &T) -> Result<(), String> {
-    if got == want {
-        return Ok(());
-    }
-    Err(format!("{field}: edited {got:?}, fresh {want:?}"))
-}
-
-fn same_list<T: PartialEq + Debug>(field: &str, got: &[T], want: &[T]) -> Result<(), String> {
-    if let Some(i) = (0..got.len().min(want.len())).find(|&i| got[i] != want[i]) {
-        return Err(format!(
-            "{field}[{i}]: edited {:?}, fresh {:?}",
-            got[i], want[i]
-        ));
-    }
-    if got.len() != want.len() {
-        let n = got.len().min(want.len());
-        return Err(format!(
-            "{field}: edited has {}, fresh has {}; first extra {:?}",
-            got.len(),
-            want.len(),
-            got.get(n)
-                .map_or_else(|| format!("{:?}", want[n]), |g| format!("{g:?}"))
-        ));
-    }
-    Ok(())
-}
-
-/// The first key, in IRI order, whose values differ.
-fn same_map<V: PartialEq + Debug>(
-    field: &str,
-    got: &IriMap<V>,
-    want: &IriMap<V>,
-) -> Result<(), String> {
-    if **got == **want {
-        return Ok(());
-    }
-    let mut keys: Vec<Iri> = got.keys().chain(want.keys()).copied().collect();
-    keys.sort();
-    let k = keys
-        .into_iter()
-        .find(|k| got.get(k) != want.get(k))
-        .expect("unequal maps differ at a key");
-    Err(format!(
-        "{field}[{k}]: edited {:?}, fresh {:?}",
-        got.get(&k),
-        want.get(&k)
-    ))
-}
-
-/// The first field of two parses that differs.
-pub(crate) fn same_parse(got: &Parsed, want: &Parsed) -> Result<(), String> {
-    // Every field, named: a field added to `Parsed` fails to compile here.
-    let Parsed {
-        syntax,
-        prefixes,
-        base,
-        document_base,
-        statements,
-        graphs,
-        refs,
-        prefix_uses,
-        triples,
-        errors,
-        comments,
-        tokens,
-    } = got;
-    same("parsed.syntax", syntax, &want.syntax)?;
-    same_list("parsed.prefixes", prefixes, &want.prefixes)?;
-    same("parsed.base", base, &want.base)?;
-    same("parsed.document_base", document_base, &want.document_base)?;
-    same_list("parsed.statements", statements, &want.statements)?;
-    same_list("parsed.graphs", graphs, &want.graphs)?;
-    same_list("parsed.refs", refs, &want.refs)?;
-    same_list("parsed.prefix_uses", prefix_uses, &want.prefix_uses)?;
-    same_list("parsed.triples", triples, &want.triples)?;
-    same_list("parsed.errors", errors, &want.errors)?;
-    same_list("parsed.comments", comments, &want.comments)?;
-    same_list("parsed.tokens", tokens, &want.tokens)
-}
-
-/// The first field of two analyses that differs: the parse, the maps,
-/// line conversions, then the text.
-pub(crate) fn same_analysis(got: &Analysis, want: &Analysis) -> Result<(), String> {
-    same_parse(&got.parsed, &want.parsed)?;
-    same_list("tokens", got.tokens(), want.tokens())?;
-    same_list("dropped", &got.dropped, &want.dropped)?;
-    same_list("used_terms", &got.used_terms, &want.used_terms)?;
-    same("external", &*got.external, &*want.external)?;
-    same_map("defs", &got.defs, &want.defs)?;
-    same_map("refs_by_iri", &got.refs_by_iri, &want.refs_by_iri)?;
-    same_map("types", &got.types, &want.types)?;
-    same_map("supers", &got.supers, &want.supers)?;
-    // The label and comment indexes are private to the analysis: read them
-    // for every IRI that can be a key (a subject is a ref, but read the
-    // triples too).
-    let mut keys: Vec<Iri> = got.refs_by_iri.keys().copied().collect();
-    keys.extend(got.parsed.triples.iter().filter_map(|t| match t.s {
-        Node::Iri(s) => Some(s),
-        _ => None,
-    }));
-    keys.extend(want.refs_by_iri.keys());
-    keys.sort();
-    keys.dedup();
-    for k in keys {
-        same(
-            &format!("labels[{k}]"),
-            &got.label_en(&k),
-            &want.label_en(&k),
-        )?;
-        same(
-            &format!("descriptions[{k}]"),
-            &got.comment_en(&k),
-            &want.comment_en(&k),
-        )?;
-    }
-    same_lines(got, want)?;
-    // Last: a stale analysis is better named by the first field it gets wrong.
-    same("text", &got.text, &want.text)
-}
-
-/// Offset to position and back, in both encodings, at about 256 offsets
-/// spread over the text and at its end; each position also one column past
-/// itself, which clamps at a line's end.
-fn same_lines(got: &Analysis, want: &Analysis) -> Result<(), String> {
-    let len = want.text.len();
-    let step = (len / 256).max(1);
-    for x in (0..len).step_by(step).chain([len]) {
-        for enc in [Encoding::Utf8, Encoding::Utf16] {
-            let x = x as u32;
-            let pos = want.position(enc, x);
-            same(
-                &format!("position({enc:?}, {x})"),
-                &got.position(enc, x),
-                &pos,
-            )?;
-            for p in [pos, Position::new(pos.line, pos.character + 1)] {
-                same(
-                    &format!("offset({enc:?}, {}:{})", p.line, p.character),
-                    &got.offset(enc, p),
-                    &want.offset(enc, p),
-                )?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,1 @@
+ NegativeDataPropertyAssertion( :hasAge :Jack "53"^^xsd:integer )

@@ -1,0 +1,4 @@
+ SubObjectPropertyOf( 
+   ObjectPropertyChain( :hasParent :hasParent ) 
+   :hasGrandparent 
+ )

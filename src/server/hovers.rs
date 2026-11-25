@@ -19,7 +19,7 @@
 //! the search runs within the hover, which never waits.
 
 use crate::clock::Instant;
-use crate::server::worker::Spawn;
+use crate::worker::Spawn;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use lsp_server::RequestId;
 use lsp_types::Position;
@@ -160,7 +160,7 @@ mod tests {
         let (_end, ended) = crossbeam_channel::bounded::<()>(0);
         assert!(!h.hold(1.into(), held(Instant::now()), ended.clone()));
         let later = Hovers::deadline(Duration::from_secs(5));
-        assert!(!crate::server::worker::failing_starts(|| h.hold(
+        assert!(!crate::worker::failing_starts(|| h.hold(
             2.into(),
             held(later),
             ended

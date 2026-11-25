@@ -16,7 +16,7 @@ use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Token;
 use crate::syntax::names::newline;
-use crate::syntax::{Iri, Node, Span, Syntax};
+use crate::syntax::{Family, Iri, Node, Span, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::*;
 use rustc_hash::FxHashMap;
@@ -401,17 +401,15 @@ impl<'a> Fixer<'a> {
                     return Vec::new();
                 };
                 let span = Span::new(start, end);
-                let edits = match a.parsed.syntax {
-                    Syntax::JsonLd => vec![TextEdit {
+                let edits = match a.parsed.syntax.family() {
+                    Family::JsonLd => vec![TextEdit {
                         range: a.range(enc, span),
                         new_text: replace,
                     }],
-                    Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
-                        self.text_edits(vec![(span, replace)])
-                    }
+                    Family::Turtle => self.text_edits(vec![(span, replace)]),
                     // The span is the triple's, not a string written there;
-                    // nothing writes OWL Functional syntax.
-                    Syntax::RdfXml | Syntax::OwlFunctional => return Vec::new(),
+                    // nothing writes OWL Functional syntax or OWL/XML.
+                    Family::ReadOnly => return Vec::new(),
                 };
                 vec![self.quick("Trim the label's whitespace".to_string(), d, edits, true)]
             }
@@ -422,8 +420,8 @@ impl<'a> Fixer<'a> {
     /// "Add all missing prefixes (n)" when the file has more than one
     /// undeclared prefix with a namespace to add; none for N-Triples and
     /// N-Quads, which have no prefixes to add, and none for JSON-LD, whose
-    /// prefixes are its context's, and RDF/XML and OWL Functional syntax,
-    /// which are not edited. It reads
+    /// prefixes are its context's, and RDF/XML, OWL Functional syntax and
+    /// OWL/XML, which are not edited. It reads
     /// the whole file, so it is made once per request, not once per
     /// diagnostic.
     pub(crate) fn add_all_missing(&self) -> Option<CodeAction> {
@@ -434,7 +432,8 @@ impl<'a> Fixer<'a> {
             | Syntax::NQuads
             | Syntax::JsonLd
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => return None,
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => return None,
         }
         let mut all: Vec<(String, String)> = Vec::new();
         for u in a.parsed.prefix_uses.iter().filter(|u| !u.resolved) {

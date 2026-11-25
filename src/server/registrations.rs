@@ -1,24 +1,26 @@
 //! The features that write a document or offer text to type: formatting,
 //! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
 //! their editor's own XML language, and of these only rename edits them
-//! (`features::writes`), so the editor should not offer the other three
-//! there. OWL Functional files (`.ofn`, the `ofn` language of VS Code and
-//! Neovim) are read-only for all four: [`LANGUAGES`] leaves `ofn` out, and
-//! rename refuses a term a Functional document uses (one under a `.owl` or
-//! `.rdf` name is in [`rename_selector`]'s pattern, and is refused there).
+//! (`features::renames`), so the editor should not offer the other three
+//! there. Nor in OWL/XML files (`.owx`), which editors keep in their XML
+//! language too, nor in OWL Functional files (`.ofn`, the `ofn` language of
+//! VS Code and Neovim): both are read-only for all four. [`LANGUAGES`]
+//! leaves `xml` and `ofn` out, and rename refuses a term a Functional or
+//! OWL/XML document uses (one under a `.owl` or `.rdf` name is in
+//! [`rename_selector`]'s pattern, and is refused there).
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document, and the server answers nothing that writes an RDF/XML
 //! document but a rename (no formatting edits, no completions, no code
-//! actions), and nothing that writes an OWL Functional document. A client
-//! opts in to more with `"registerOutsideRdfXml": true` at the top level of
-//! its `initializationOptions` ([`OPT_IN`]): each of the four features that
-//! the client can register dynamically (`dynamicRegistration`) is then left
-//! out of the result and registered once the client is initialized, for
-//! [`selector`], which leaves RDF/XML and OWL Functional files out, and
-//! rename for [`rename_selector`], which takes RDF/XML files in. VS Code
-//! opts in, so that it lists no turtle-lsp formatter for XML files.
-//! The option is read once, at
+//! actions), and nothing that writes an OWL Functional or OWL/XML document.
+//! A client opts in to more with `"registerOutsideRdfXml": true` at the top
+//! level of its `initializationOptions` ([`OPT_IN`]): each of the four
+//! features that the client can register dynamically (`dynamicRegistration`)
+//! is then left out of the result and registered once the client is
+//! initialized, for [`selector`], which leaves RDF/XML, OWL/XML and OWL
+//! Functional files out, and rename for [`rename_selector`], which takes
+//! RDF/XML files in. VS Code opts in, so that it lists no turtle-lsp
+//! formatter for XML files. The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does
 //! not change it.

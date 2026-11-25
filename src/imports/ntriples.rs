@@ -1,9 +1,9 @@
-//! RDF/XML and OWL Functional syntax as N-Triples text, for the cache of a
-//! fetched import (a cache file holds Turtle). The RDF/XML frontend
-//! ([`crate::rdfxml`]) reads RDF/XML, with its limits on what the XML may
-//! ask for, and the Functional frontend ([`crate::ofn`]) maps Functional
-//! syntax to RDF; a local import is analysed by its frontend directly, over
-//! the file's own text.
+//! RDF/XML, OWL Functional syntax and OWL/XML as N-Triples text, for the
+//! cache of a fetched import (a cache file holds Turtle). The RDF/XML
+//! frontend ([`crate::rdfxml`]) reads RDF/XML, with its limits on what the
+//! XML may ask for, and the Functional and OWL/XML frontends
+//! ([`crate::ofn`], [`crate::owx`]) map their axioms to RDF; a local import
+//! is analysed by its frontend directly, over the file's own text.
 
 use crate::rdf::dataset::node_term;
 use crate::syntax::{Iri, Node, Parsed, SyntaxError};
@@ -31,10 +31,21 @@ pub fn functional_to_ntriples(
     ntriples(text, crate::ofn::parse(text, Some(base)))
 }
 
+/// [`rdf_xml_to_ntriples`] for OWL/XML: the triples of the axioms read
+/// whole (an axiom with an error gives none), and the first error.
+pub fn owl_xml_to_ntriples(bytes: &[u8], base: &str) -> Result<(String, Option<String>), String> {
+    let text = super::load::utf8(bytes)?;
+    ntriples(text, crate::owx::parse(text, Some(base)))
+}
+
 /// The triples of `parsed`, the parse of `text`, as N-Triples text, and its
-/// first error.
+/// first error (a warning is none).
 fn ntriples(text: &str, parsed: Parsed) -> Result<(String, Option<String>), String> {
-    let stop = parsed.errors.first().map(|e| stopped_at(text, e));
+    let first_error = parsed
+        .errors
+        .iter()
+        .find(|e| e.severity == crate::syntax::Severity::Error);
+    let stop = first_error.map(|e| stopped_at(text, e));
     if parsed.triples.is_empty()
         && let Some(stop) = stop
     {
@@ -42,7 +53,7 @@ fn ntriples(text: &str, parsed: Parsed) -> Result<(String, Option<String>), Stri
     }
     let mut out = String::new();
     // Only an error can leave a term that does not parse.
-    let check = !parsed.errors.is_empty();
+    let check = first_error.is_some();
     for t in &parsed.triples {
         use std::fmt::Write;
         if check && !(is_iri(t.p) && writable(&t.s) && writable(&t.o)) {
@@ -71,7 +82,7 @@ fn is_iri(i: Iri) -> bool {
     oxiri::Iri::parse(i.as_str()).is_ok()
 }
 
-/// Where and why an RDF/XML or Functional text has an error: "line L, column C: why", at
+/// Where and why an RDF/XML, Functional or OWL/XML text has an error: "line L, column C: why", at
 /// the end of the error's span.
 pub(super) fn stopped_at(text: &str, e: &SyntaxError) -> String {
     let (line, column) = line_column(text.as_bytes(), u64::from(e.span.end));
@@ -251,6 +262,148 @@ mod tests {
             nt.len()
         );
         assert!(out.is_err() || truncated.is_some(), "{out:?}");
+    }
+
+    const OWL: &str = "xmlns=\"http://www.w3.org/2002/07/owl#\"";
+
+    /// An OWL/XML ontology with the prefixes `:` and `rdfs:`, holding `body`.
+    fn owl_xml(body: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\n<Ontology {OWL} ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n{body}</Ontology>\n"
+        )
+    }
+
+    /// The N-Triples of an OWL/XML document are those of its Functional
+    /// form: the same axioms, mapped by the same rules.
+    #[test]
+    fn owl_xml_becomes_the_ntriples_of_its_functional_form() {
+        let xml = owl_xml(
+            r#"  <Import>http://example.org/b</Import>
+  <Annotation><AnnotationProperty abbreviatedIRI="rdfs:comment"/><Literal xml:lang="en">An "ontology"</Literal></Annotation>
+  <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+  <Declaration><DataProperty IRI="http://example.org/o#size"/></Declaration>
+  <SubClassOf><Class abbreviatedIRI=":A"/><Class IRI="http://example.org/o#B"/></SubClassOf>
+  <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><IRI>http://example.org/o#A</IRI><Literal>A \ thing</Literal></AnnotationAssertion>
+  <DataPropertyAssertion><DataProperty abbreviatedIRI=":size"/><NamedIndividual abbreviatedIRI=":a"/><Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">3</Literal></DataPropertyAssertion>
+"#,
+        );
+        let functional = r#"Prefix(:=<http://example.org/o#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Ontology(<http://example.org/o>
+Import(<http://example.org/b>)
+Annotation(rdfs:comment "An \"ontology\""@en)
+Declaration(Class(:A))
+Declaration(DataProperty(<http://example.org/o#size>))
+SubClassOf(:A <http://example.org/o#B>)
+AnnotationAssertion(rdfs:label <http://example.org/o#A> "A \\ thing")
+DataPropertyAssertion(:size :a "3"^^<http://www.w3.org/2001/XMLSchema#integer>)
+)
+"#;
+        let base = "http://example.org/x";
+        let (nt, truncated) = owl_xml_to_ntriples(xml.as_bytes(), base).unwrap();
+        assert_eq!(truncated, None, "{nt}");
+        let lines = |nt: &str| {
+            let mut v: Vec<String> = nt.lines().map(str::to_string).collect();
+            v.sort();
+            v
+        };
+        let (from_functional, _) = functional_to_ntriples(functional.as_bytes(), base).unwrap();
+        assert_eq!(lines(&nt), lines(&from_functional));
+        assert_eq!(nt.lines().count(), 8, "{nt}");
+        // The cached text reads back as the same graph, with its import.
+        let o = parse(nt.as_bytes(), Format::Turtle, base, false).unwrap();
+        assert!(o.analysis.parsed.errors.is_empty(), "{nt}");
+        assert_eq!(o.analysis.parsed.triples.len(), 8);
+        assert_eq!(o.imports, ["http://example.org/b"]);
+        assert_eq!(
+            o.analysis.label("http://example.org/o#A"),
+            Some("A \\ thing")
+        );
+    }
+
+    /// A broken axiom gives nothing; the others are kept, and the first
+    /// error says where it is. An error and no triple fails, and so do
+    /// bytes that are not UTF-8.
+    #[test]
+    fn an_owl_xml_error_keeps_the_other_axioms_and_says_where() {
+        let base = "http://example.org/x";
+        let xml = owl_xml(
+            r#"  <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+  <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>
+  <Declaration><Class abbreviatedIRI=":C"/></Declaration>
+"#,
+        );
+        let (nt, truncated) = owl_xml_to_ntriples(xml.as_bytes(), base).unwrap();
+        assert!(nt.contains("<http://example.org/o#A>"), "{nt}");
+        assert!(nt.contains("<http://example.org/o#C>"), "{nt}");
+        assert!(!nt.contains("subClassOf"), "{nt}");
+        // The ontology and the two declarations.
+        assert_eq!(nt.lines().count(), 3, "{nt}");
+        assert_eq!(
+            truncated.as_deref(),
+            Some(
+                "line 6, column 72: Undeclared prefix 'nope:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"nope\" IRI=\"…\"/>"
+            )
+        );
+        // An error before any triple is a failure, with its place.
+        // (a version IRI without an ontology IRI breaks the header).
+        let header = format!("<Ontology {OWL} versionIRI=\"http://example.org/v\"/>");
+        let e = owl_xml_to_ntriples(header.as_bytes(), base).unwrap_err();
+        assert!(e.starts_with("line 1, column "), "{e}");
+        // So is a document whose root is not OWL/XML's.
+        let e = owl_xml_to_ntriples(b"<rdf:RDF xmlns:rdf=\"x\"/>", base).unwrap_err();
+        assert!(e.starts_with("line 1, column "), "{e}");
+        // Bytes that are not UTF-8 are a failure, never replaced.
+        let mut bytes = format!("<Ontology {OWL}><!-- a").into_bytes();
+        let at = bytes.len();
+        bytes.extend(b"\xFF -->");
+        let e = owl_xml_to_ntriples(&bytes, base).unwrap_err();
+        assert_eq!(
+            e,
+            format!("not valid UTF-8 (first bad byte at offset {at})")
+        );
+    }
+
+    /// Entities that refer to entities expand within the scanner's budget:
+    /// a billion laughs in a literal neither runs away nor grows the text.
+    #[test]
+    fn an_owl_xml_entity_bomb_stays_within_the_scanner_limits() {
+        let mut decls = String::from("<!ENTITY l0 \"lol\">");
+        for i in 1..10 {
+            let p = i - 1;
+            decls.push_str(&format!(
+                "\n<!ENTITY l{i} \"{}\">",
+                format!("&l{p};").repeat(10)
+            ));
+        }
+        let body = owl_xml(
+            r#"  <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+  <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><IRI>http://example.org/o#A</IRI><Literal>&l9;</Literal></AnnotationAssertion>
+"#,
+        );
+        let bomb = body.replacen(
+            "<Ontology",
+            &format!("<!DOCTYPE Ontology [\n{decls}\n]>\n<Ontology"),
+            1,
+        );
+        let out = owl_xml_to_ntriples(bomb.as_bytes(), "http://example.org/x");
+        let (nt, truncated) = out.clone().unwrap_or_default();
+        assert!(
+            nt.len() < 64 * 16 * 1024 + 64 * 1024 + bomb.len() * 16,
+            "{}",
+            nt.len()
+        );
+        assert!(out.is_err() || truncated.is_some(), "{out:?}");
+        // A small one expands.
+        let laughs = body.replacen(
+            "<Ontology",
+            "<!DOCTYPE Ontology [\n<!ENTITY a \"x\">\n<!ENTITY l9 \"&a;&a;\">\n]>\n<Ontology",
+            1,
+        );
+        let (nt, truncated) =
+            owl_xml_to_ntriples(laughs.as_bytes(), "http://example.org/x").unwrap();
+        assert_eq!(truncated, None, "{nt}");
+        assert!(nt.contains("\"xx\""), "{nt}");
     }
 
     /// A triple with an IRI that does not parse is dropped by the frontend,

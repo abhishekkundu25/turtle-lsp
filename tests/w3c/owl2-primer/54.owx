@@ -1,0 +1,12 @@
+ <Declaration>
+     <NamedIndividual IRI="John"/>
+ </Declaration>
+ <Declaration>
+     <Class IRI="Person"/>
+ </Declaration>
+ <Declaration>
+     <ObjectProperty IRI="hasWife"/>
+ </Declaration>
+ <Declaration>
+     <DataProperty IRI="hasAge"/>
+ </Declaration>

@@ -13,7 +13,7 @@ use crate::jsonld::json;
 use crate::knowledge::{Description, Knowledge, Source};
 use crate::syntax::lexer::{self, Kind};
 use crate::syntax::names::shorten;
-use crate::syntax::{Iri, Node, PrefixMap, Span, Syntax, Triple};
+use crate::syntax::{Family, Iri, Node, PrefixMap, Span, Syntax, Triple};
 use lsp_types::{Diagnostic, DiagnosticSeverity};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::OnceLock;
@@ -145,7 +145,8 @@ impl<'a> Checks<'a> {
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => a.prefix_map(),
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => a.prefix_map(),
         });
         shorten(iri, prefixes).unwrap_or_else(|| format!("<{iri}>"))
     }
@@ -656,7 +657,8 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
             | Syntax::NTriples
             | Syntax::NQuads
             | Syntax::RdfXml
-            | Syntax::OwlFunctional => false,
+            | Syntax::OwlFunctional
+            | Syntax::OwlXml => false,
         };
         if let Some(s) = string
             && let Some(replace) = trimmed(&a.text[s.start as usize..s.end as usize], json)
@@ -672,19 +674,19 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
 /// `value`: the literal's first token in the Turtle family, the JSON string
 /// itself or a value object's string whose value is `value` in JSON-LD.
 /// `None` for a malformed string or one not found, in RDF/XML, whose text
-/// is XML, not a quoted string, and in OWL Functional syntax, which
-/// turtle-lsp reads but never edits.
+/// is XML, not a quoted string, and in OWL Functional syntax and OWL/XML,
+/// which turtle-lsp reads but never edits.
 fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
     let text = a.text.get(o_span.start as usize..o_span.end as usize)?;
     let at = |s: Span| Span::new(o_span.start + s.start, o_span.start + s.end);
-    match a.parsed.syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+    match a.parsed.syntax.family() {
+        Family::Turtle => {
             let t = *lexer::tokenize(text).first()?;
             return (t.kind == Kind::String && t.error().is_none())
                 .then(|| at(Span::new(t.start, t.end)));
         }
-        Syntax::RdfXml | Syntax::OwlFunctional => return None,
-        Syntax::JsonLd => {}
+        Family::ReadOnly => return None,
+        Family::JsonLd => {}
     }
     if text.starts_with('"') {
         return Some(o_span);

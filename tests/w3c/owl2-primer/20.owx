@@ -1,0 +1,9 @@
+ <ClassAssertion>
+   <ObjectIntersectionOf>
+    <Class IRI="Person"/>
+    <ObjectComplementOf>
+      <Class IRI="Parent"/>
+    </ObjectComplementOf>
+   </ObjectIntersectionOf>
+   <NamedIndividual IRI="Jack"/>
+ </ClassAssertion>

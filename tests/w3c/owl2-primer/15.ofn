@@ -1,0 +1,2 @@
+ DataPropertyDomain( :hasAge :Person ) 
+ DataPropertyRange( :hasAge xsd:nonNegativeInteger ) 

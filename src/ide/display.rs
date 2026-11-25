@@ -280,9 +280,7 @@ mod tests {
         .to_string();
         assert!(!today.contains("Inferred"), "{today}");
 
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let hover = |ws: &mut Workspace| hover_at(ws, &settings, &shared, &uris[0], pos);
         // No run has finished: today's hover.
         assert_eq!(hover(&mut ws), today);
@@ -342,9 +340,7 @@ mod tests {
         );
         let (mut ws, uris) = workspace(&dir, &[("data.ttl", &ttl)]);
         let settings = Settings::default();
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let docs = vec![(
             crate::knowledge::Source::Open,
             ws.analysis(&uris[0]).unwrap(),
@@ -427,9 +423,7 @@ mod tests {
                 docs.push(("prefixes.ttl", "@prefix ex: <http://example.org/> .\n"));
             }
             let (mut ws, uris) = workspace(&dir, &docs);
-            let shared = Arc::new(crate::reasoning::Shared::new(
-                crate::server::worker::Spawn::Thread,
-            ));
+            let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
             let docs = ws
                 .knowledge()
                 .docs()
@@ -513,8 +507,54 @@ mod tests {
     /// reads its axioms (the superclass of a `SubClassOf`).
     #[test]
     fn a_functional_ontology_serves_the_turtle_files_that_use_it() {
-        let dir = Dir::new("functional");
         let onto = "Prefix(ex:=<http://example.org/>)\nPrefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\nOntology(<http://example.org/onto>\nDeclaration(Class(ex:Widget))\nDeclaration(Class(ex:Gadget))\nDeclaration(Class(ex:Part))\nDeclaration(ObjectProperty(ex:hasPart))\nAnnotationAssertion(rdfs:label ex:Widget \"Widget\"@en)\nSubClassOf(ex:Gadget ex:Widget)\nSubClassOf(ex:Widget ObjectSomeValuesFrom(ex:hasPart ex:Part))\n)\n";
+        an_ontology_serves_the_turtle_files_that_use_it(
+            "functional",
+            onto,
+            "Widget \"",
+            "ex:Gadget))",
+            "ex:Gadget ex:Widget",
+        );
+    }
+
+    /// The same, with the same ontology written as OWL/XML in a `.owl`
+    /// file.
+    #[test]
+    fn an_owl_xml_ontology_serves_the_turtle_files_that_use_it() {
+        let onto = r#"<?xml version="1.0"?>
+            <Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/onto">
+            <Prefix name="ex" IRI="http://example.org/"/>
+            <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+            <Declaration><Class abbreviatedIRI="ex:Widget"/></Declaration>
+            <Declaration><Class abbreviatedIRI="ex:Gadget"/></Declaration>
+            <Declaration><Class abbreviatedIRI="ex:Part"/></Declaration>
+            <Declaration><ObjectProperty abbreviatedIRI="ex:hasPart"/></Declaration>
+            <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>ex:Widget</AbbreviatedIRI><Literal xml:lang="en">Widget</Literal></AnnotationAssertion>
+            <SubClassOf><Class abbreviatedIRI="ex:Gadget"/><Class abbreviatedIRI="ex:Widget"/></SubClassOf>
+            <SubClassOf><Class abbreviatedIRI="ex:Widget"/><ObjectSomeValuesFrom><ObjectProperty abbreviatedIRI="ex:hasPart"/><Class abbreviatedIRI="ex:Part"/></ObjectSomeValuesFrom></SubClassOf>
+            </Ontology>
+        "#;
+        an_ontology_serves_the_turtle_files_that_use_it(
+            "owl-xml",
+            onto,
+            "Widget</AbbreviatedIRI>",
+            r#"ex:Gadget"/></Declaration>"#,
+            r#"ex:Gadget"/><Class abbreviatedIRI="ex:Widget"/></SubClassOf>"#,
+        );
+    }
+
+    /// The checks of the two tests above, over `onto` in `onto.owl` of the
+    /// folder `name`: the label of `ex:Widget` is hovered at the last
+    /// `label_subject`, `ex:Gadget` is declared at the last `declaration`
+    /// and used at the last `use_` (each needle starts with the term).
+    fn an_ontology_serves_the_turtle_files_that_use_it(
+        name: &str,
+        onto: &str,
+        label_subject: &str,
+        declaration: &str,
+        use_: &str,
+    ) {
+        let dir = Dir::new(name);
         let data = format!(
             "{PREFIXES}ex:w1 a ex:Gadget ;\n  ex:hasPart ex:p1 .\nex:p1 a ex:Part .\nex:w2 a ex:Gizmo .\n"
         );
@@ -536,7 +576,7 @@ mod tests {
         // The label, from the Functional file.
         let h = s.hover(ttl, at(&data, "Gadget", 0)).unwrap();
         assert!(markdown(&h).contains("Gadget"), "{}", markdown(&h));
-        let h = s.hover(owl, at(onto, "Widget \"", 0)).unwrap();
+        let h = s.hover(owl, at(onto, label_subject, 0)).unwrap();
         assert!(markdown(&h).contains("Widget"), "{}", markdown(&h));
         // Definition: the declaration in the Functional file.
         let defs = s.definition(ttl, at(&data, "Gadget", 0)).unwrap();
@@ -544,7 +584,7 @@ mod tests {
             .iter()
             .map(|l| (l.uri.as_str(), l.range.start))
             .collect();
-        assert_eq!(shown, [(owl.as_str(), at(onto, "ex:Gadget))", 0))]);
+        assert_eq!(shown, [(owl.as_str(), at(onto, declaration, 0))]);
         // References: the Turtle use and the Functional ones.
         let refs = s.references(ttl, at(&data, "Gadget", 0), false).unwrap();
         let mut shown: Vec<_> = refs
@@ -554,7 +594,7 @@ mod tests {
         shown.sort();
         let mut want = vec![
             (ttl.as_str(), at(&data, "ex:Gadget", 0)),
-            (owl.as_str(), at(onto, "ex:Gadget ex:Widget", 0)),
+            (owl.as_str(), at(onto, use_, 0)),
         ];
         want.sort();
         assert_eq!(shown, want);
@@ -577,9 +617,7 @@ mod tests {
             ]
         );
         // Reasoning: ex:w1 is a Widget by the Functional SubClassOf.
-        let shared = Arc::new(crate::reasoning::Shared::new(
-            crate::server::worker::Spawn::Thread,
-        ));
+        let shared = Arc::new(crate::reasoning::Shared::new(crate::worker::Spawn::Thread));
         let docs = ws
             .knowledge()
             .docs()

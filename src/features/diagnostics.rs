@@ -10,7 +10,7 @@ use crate::analysis::{Analysis, Encoding};
 use crate::jsonld;
 use crate::knowledge::Knowledge;
 use crate::syntax::lexer::Kind;
-use crate::syntax::{Form, Iri, Ref, Role, Severity, Span, Syntax, SyntaxError};
+use crate::syntax::{Family, Form, Iri, Ref, Role, Severity, Span, Syntax, SyntaxError};
 use crate::vocab::VOCABS;
 use crate::workspace::{PREFIX_FILE, file_uri_name};
 use lsp_types::*;
@@ -346,18 +346,16 @@ impl Check {
 
     /// Whether the check runs on a document of `syntax`.
     pub(crate) fn runs_on(self, syntax: Syntax) -> bool {
-        match syntax {
-            Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
-                true
-            }
+        match syntax.family() {
+            Family::Turtle | Family::JsonLd => true,
             // Read-only, as RDF/XML: the same checks.
-            Syntax::RdfXml | Syntax::OwlFunctional => self.runs_read_only(),
+            Family::ReadOnly => self.runs_read_only(),
         }
     }
 
-    /// Whether the check runs on an RDF/XML or OWL Functional document,
-    /// which nothing edits. Its syntax errors do (`xml-syntax`,
-    /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`); SHACL results
+    /// Whether the check runs on an RDF/XML, OWL Functional or OWL/XML
+    /// document, which nothing edits. Its syntax errors do (`xml-syntax`,
+    /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`, `owx-syntax`); SHACL results
     /// and reasoning findings come from outside these checks. Of the lints,
     /// those that need no edit (decision 8 of the RDF/XML plan), at the
     /// exact spans of its references; none offers a fix.
@@ -500,7 +498,8 @@ pub(crate) fn diagnostics_kept(
                 | Syntax::NTriples
                 | Syntax::NQuads
                 | Syntax::RdfXml
-                | Syntax::OwlFunctional => {}
+                | Syntax::OwlFunctional
+                | Syntax::OwlXml => {}
             },
             Check::ShaclLint => {
                 for f in crate::features::shacl_lint::lint(a, k) {
@@ -547,7 +546,8 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
         | Syntax::NTriples
         | Syntax::NQuads
         | Syntax::RdfXml
-        | Syntax::OwlFunctional => true,
+        | Syntax::OwlFunctional
+        | Syntax::OwlXml => true,
     };
     let cap = opts
         .max_syntax_errors
@@ -571,6 +571,7 @@ fn syntax_errors(a: &Analysis, opts: &Options, mk: &Mk, out: &mut Vec<Diagnostic
         // this one too.
         let code = match a.parsed.syntax {
             Syntax::OwlFunctional => crate::ofn::CODE,
+            Syntax::OwlXml => crate::owx::CODE,
             Syntax::Turtle
             | Syntax::TriG
             | Syntax::NTriples
@@ -1355,6 +1356,7 @@ mod tests {
             );
             assert_eq!(check.runs_on(Syntax::RdfXml), on, "{check:?}");
             assert_eq!(check.runs_on(Syntax::OwlFunctional), on, "{check:?}");
+            assert_eq!(check.runs_on(Syntax::OwlXml), on, "{check:?}");
             assert!(check.runs_on(Syntax::Turtle), "{check:?}");
         }
 

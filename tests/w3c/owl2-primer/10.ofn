@@ -1,0 +1,2 @@
+ ObjectPropertyDomain( :hasWife :Man ) 
+ ObjectPropertyRange( :hasWife :Woman ) 

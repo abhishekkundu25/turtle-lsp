@@ -1,0 +1,22 @@
+ SubClassOf(
+   ObjectIntersectionOf(
+     ObjectOneOf( :Mary :Bill :Meg )
+     :Female
+   )
+   ObjectIntersectionOf(
+     :Parent
+     ObjectMaxCardinality( 1 :hasChild )
+     ObjectAllValuesFrom( :hasChild :Female )
+   )
+ )
+ 
+ DisjointClasses( 
+   :Mother 
+   :Father 
+   :YoungChild 
+ )
+ 
+ SubObjectPropertyOf( 
+   ObjectPropertyChain( :hasFather :hasBrother ) 
+   :hasUncle 
+ )

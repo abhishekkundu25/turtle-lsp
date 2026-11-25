@@ -246,6 +246,79 @@ ${classes.join("\n")})
   assert.ok(median < 250, `median ${median.toFixed(0)} ms: ${took.map((x) => x.toFixed(0)).join(", ")}`)
 })
 
+test("a keystroke in an OWL/XML document of 1 MB is diagnosed within 250 ms", async (t) => {
+  // The classes of the Functional test above, as OWL API writes them in
+  // OWL/XML, as many as make 1 MB.
+  const classes = []
+  for (let i = 0, size = 0; size < 1_000_000; size += classes.at(-1).length, i++) {
+    const c = `obo:EX_${String(i).padStart(7, "0")}`
+    const p = `obo:EX_${String(i >> 1).padStart(7, "0")}`
+    const cls = (iri) => `<Class abbreviatedIRI="${iri}"/>`
+    const assertion = (property, value, annotation = "") => `    <AnnotationAssertion>
+${annotation}        <AnnotationProperty abbreviatedIRI="${property}"/>
+        <AbbreviatedIRI>${c}</AbbreviatedIRI>
+        ${value}
+    </AnnotationAssertion>
+`
+    classes.push(`    <!-- ${c} (Class ${i}) -->
+
+    <Declaration>
+        ${cls(c)}
+    </Declaration>
+${assertion("obo:IAO_0000115", `<Literal>A class numbered ${i}.</Literal>`, `        <Annotation>
+            <AnnotationProperty abbreviatedIRI="oboInOwl:hasDbXref"/>
+            <Literal>PMID:${i}</Literal>
+        </Annotation>
+`)}${assertion("oboInOwl:hasExactSynonym", `<Literal xml:lang="en">Synonym ${i}</Literal>`)}${assertion("rdfs:label", `<Literal xml:lang="en">Class ${i}</Literal>`)}    <SubClassOf>
+        ${cls(c)}
+        ${cls(p)}
+    </SubClassOf>
+${i % 4 === 0 ? `    <EquivalentClasses>
+        ${cls(c)}
+        <ObjectIntersectionOf>
+            ${cls(p)}
+            <ObjectSomeValuesFrom>
+                <ObjectProperty abbreviatedIRI="obo:BFO_0000050"/>
+                ${cls(p)}
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+` : ""}`)
+  }
+  let text = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://example.org/o"
+     ontologyIRI="http://example.org/o">
+    <Prefix name="obo" IRI="http://purl.obolibrary.org/obo/"/>
+    <Prefix name="oboInOwl" IRI="http://www.geneontology.org/formats/oboInOwl#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+
+${classes.join("\n")}</Ontology>
+`
+  assert.ok(text.length > 1_000_000, `${text.length} bytes`)
+  const { s, at } = await session(t)
+  const uri = at("onto.owx")
+  s.open(uri, text, "xml")
+  assert.deepEqual((await s.diagnosticsFor(uri, 30_000)).filter((x) => x.severity === 1), [])
+  const took = []
+  for (let i = 0; i < 10; i++) {
+    const from = `>Class ${i}<`
+    const k = text.indexOf(from)
+    const line = text.slice(0, k).split("\n").length - 1
+    const character = k - (text.lastIndexOf("\n", k - 1) + 1)
+    const t0 = performance.now()
+    s.edit(uri, { start: { line, character }, end: { line, character: character + from.length } }, `>Class ${i}x<`)
+    text = text.slice(0, k) + `>Class ${i}x<` + text.slice(k + from.length)
+    const d = await s.diagnosticsFor(uri, 30_000)
+    took.push(ms(t0))
+    assert.deepEqual(d.filter((x) => x.severity === 1), [])
+  }
+  took.sort((a, b) => a - b)
+  const median = took[took.length >> 1]
+  t.diagnostic(`OWL/XML, ${classes.length} classes, ${(text.length / 1e6).toFixed(2)} MB: keystroke -> diagnostics, median ${median.toFixed(0)} ms, max ${took.at(-1).toFixed(0)} ms`)
+  assert.ok(median < 250, `median ${median.toFixed(0)} ms: ${took.map((x) => x.toFixed(0)).join(", ")}`)
+})
+
 test("a 2,000-pattern query is formatted within 2 s", async (t) => {
   const body = Array.from({ length: 2000 }, (_, i) => `?s${i} <https://e.org/p> ?o${i} .`).join(" ")
   const text = `SELECT * WHERE { ${body} }\n`

@@ -517,6 +517,16 @@ const W3C_EXPECTED: &[(&str, usize, &str)] = &[
         1,
         "SPARQL 1.1 qname-escape-02: a percent escape in a local name stays in the IRI, so the term is og:audio%3Atitle, not og:audio:title",
     ),
+    (
+        "owl:DataProperty",
+        1,
+        "the OWL 2 Primer's appendix ontology in Turtle (owl2-primer/59.ttl) types :hasSSN owl:DataProperty; the class is owl:DatatypeProperty (the RDF/XML text has the same fault, but RDF/XML gets no unknown-term)",
+    ),
+    (
+        "owl:subClassOf",
+        1,
+        "owl2-primer/59.ttl: :ChildlessPerson owl:subClassOf [ ... ]; the property is rdfs:subClassOf",
+    ),
 ];
 
 /// The files `check --root tests/w3c` reads, as it finds them: RDF in any

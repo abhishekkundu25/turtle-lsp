@@ -1,0 +1,11 @@
+ <!DOCTYPE Ontology [
+    <!ENTITY xsd "http://www.w3.org/2001/XMLSchema#" >
+ ]>
+ <Ontology
+   xml:base="http://example.com/owl/families/"
+   ontologyIRI="http://example.com/owl/families"
+   xmlns="http://www.w3.org/2002/07/owl#">
+   <Prefix name="owl" IRI="http://www.w3.org/2002/07/owl#"/>
+ 
+  ...
+ </Ontology>

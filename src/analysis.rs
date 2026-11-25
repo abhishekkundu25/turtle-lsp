@@ -218,6 +218,10 @@ impl Analysis {
                 parsed: crate::ofn::parse(text, Some(&uri)),
                 ..Default::default()
             },
+            Syntax::OwlXml => crate::jsonld::Document {
+                parsed: crate::owx::parse(text, Some(&uri)),
+                ..Default::default()
+            },
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 crate::jsonld::Document {
                     // Relative IRIs resolve against the document's URL, as in JSON-LD:
@@ -249,13 +253,13 @@ impl Analysis {
         let base = Some(uri);
         splice::applies(&self.parsed, change, &self.external, external, base)?;
         let tokens = self.tokens.get().ok_or(Fallback::NoTokens)?;
-        // The splice works on the parse as the parser made it: with its
-        // tokens and comment spans, which this analysis keeps apart or
-        // drops. It is shared (the knowledge index holds it too), so the
-        // splice works on a copy.
+        // The splice works on the parse with its tokens, which this analysis
+        // keeps apart. The parse is shared (the knowledge index holds it
+        // too), so the splice works on a copy. Its comment spans stay empty:
+        // the analysis reads the comments from the tokens and drops the
+        // list the splice returns.
         let mut old = self.parsed.clone();
         old.tokens = tokens.clone();
-        old.comments = comments_of(tokens).collect();
         splice::splice(old, change, &self.external, external, base)
     }
 
@@ -900,6 +904,159 @@ impl LineStarts {
     }
 }
 
+use std::fmt::Debug;
+
+fn same<T: PartialEq + Debug>(field: &str, got: &T, want: &T) -> Result<(), String> {
+    if got == want {
+        return Ok(());
+    }
+    Err(format!("{field}: edited {got:?}, fresh {want:?}"))
+}
+
+pub(crate) fn same_list<T: PartialEq + Debug>(
+    field: &str,
+    got: &[T],
+    want: &[T],
+) -> Result<(), String> {
+    if let Some(i) = (0..got.len().min(want.len())).find(|&i| got[i] != want[i]) {
+        return Err(format!(
+            "{field}[{i}]: edited {:?}, fresh {:?}",
+            got[i], want[i]
+        ));
+    }
+    if got.len() != want.len() {
+        let n = got.len().min(want.len());
+        return Err(format!(
+            "{field}: edited has {}, fresh has {}; first extra {:?}",
+            got.len(),
+            want.len(),
+            got.get(n)
+                .map_or_else(|| format!("{:?}", want[n]), |g| format!("{g:?}"))
+        ));
+    }
+    Ok(())
+}
+
+/// The first key, in IRI order, whose values differ.
+fn same_map<V: PartialEq + Debug>(
+    field: &str,
+    got: &IriMap<V>,
+    want: &IriMap<V>,
+) -> Result<(), String> {
+    if **got == **want {
+        return Ok(());
+    }
+    let mut keys: Vec<Iri> = got.keys().chain(want.keys()).copied().collect();
+    keys.sort();
+    let k = keys
+        .into_iter()
+        .find(|k| got.get(k) != want.get(k))
+        .expect("unequal maps differ at a key");
+    Err(format!(
+        "{field}[{k}]: edited {:?}, fresh {:?}",
+        got.get(&k),
+        want.get(&k)
+    ))
+}
+
+/// The first field of two parses that differs.
+fn same_parse(got: &Parsed, want: &Parsed) -> Result<(), String> {
+    // Every field, named: a field added to `Parsed` fails to compile here.
+    let Parsed {
+        syntax,
+        prefixes,
+        base,
+        document_base,
+        statements,
+        graphs,
+        refs,
+        prefix_uses,
+        triples,
+        errors,
+        comments,
+        tokens,
+    } = got;
+    same("parsed.syntax", syntax, &want.syntax)?;
+    same_list("parsed.prefixes", prefixes, &want.prefixes)?;
+    same("parsed.base", base, &want.base)?;
+    same("parsed.document_base", document_base, &want.document_base)?;
+    same_list("parsed.statements", statements, &want.statements)?;
+    same_list("parsed.graphs", graphs, &want.graphs)?;
+    same_list("parsed.refs", refs, &want.refs)?;
+    same_list("parsed.prefix_uses", prefix_uses, &want.prefix_uses)?;
+    same_list("parsed.triples", triples, &want.triples)?;
+    same_list("parsed.errors", errors, &want.errors)?;
+    same_list("parsed.comments", comments, &want.comments)?;
+    same_list("parsed.tokens", tokens, &want.tokens)
+}
+
+/// The first field of two analyses that differs: the parse, the maps,
+/// line conversions, then the text.
+pub(crate) fn same_analysis(got: &Analysis, want: &Analysis) -> Result<(), String> {
+    same_parse(&got.parsed, &want.parsed)?;
+    same_list("tokens", got.tokens(), want.tokens())?;
+    same_list("dropped", &got.dropped, &want.dropped)?;
+    same_list("used_terms", &got.used_terms, &want.used_terms)?;
+    same("external", &*got.external, &*want.external)?;
+    same_map("defs", &got.defs, &want.defs)?;
+    same_map("refs_by_iri", &got.refs_by_iri, &want.refs_by_iri)?;
+    same_map("types", &got.types, &want.types)?;
+    same_map("supers", &got.supers, &want.supers)?;
+    // The label and comment indexes are private to the analysis: read them
+    // for every IRI that can be a key (a subject is a ref, but read the
+    // triples too).
+    let mut keys: Vec<Iri> = got.refs_by_iri.keys().copied().collect();
+    keys.extend(got.parsed.triples.iter().filter_map(|t| match t.s {
+        Node::Iri(s) => Some(s),
+        _ => None,
+    }));
+    keys.extend(want.refs_by_iri.keys());
+    keys.sort();
+    keys.dedup();
+    for k in keys {
+        same(
+            &format!("labels[{k}]"),
+            &got.label_en(&k),
+            &want.label_en(&k),
+        )?;
+        same(
+            &format!("descriptions[{k}]"),
+            &got.comment_en(&k),
+            &want.comment_en(&k),
+        )?;
+    }
+    same_lines(got, want)?;
+    // Last: a stale analysis is better named by the first field it gets wrong.
+    same("text", &got.text, &want.text)
+}
+
+/// Offset to position and back, in both encodings, at about 256 offsets
+/// spread over the text and at its end; each position also one column past
+/// itself, which clamps at a line's end.
+fn same_lines(got: &Analysis, want: &Analysis) -> Result<(), String> {
+    let len = want.text.len();
+    let step = (len / 256).max(1);
+    for x in (0..len).step_by(step).chain([len]) {
+        for enc in [Encoding::Utf8, Encoding::Utf16] {
+            let x = x as u32;
+            let pos = want.position(enc, x);
+            same(
+                &format!("position({enc:?}, {x})"),
+                &got.position(enc, x),
+                &pos,
+            )?;
+            for p in [pos, Position::new(pos.line, pos.character + 1)] {
+                same(
+                    &format!("offset({enc:?}, {}:{})", p.line, p.character),
+                    &got.offset(enc, p),
+                    &want.offset(enc, p),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,6 +1151,24 @@ mod tests {
         let c = doc("untitled:Untitled-1", "<#me> <p> <o> .\n");
         assert!(c.parsed.errors.is_empty(), "{:?}", c.parsed.errors);
         assert_eq!(iris(&c)[0], "untitled:Untitled-1#me");
+    }
+
+    /// A `.owx` name, in any letter case, and a `.owl` name whose text is
+    /// OWL/XML are read by the OWL/XML frontend: its errors, its triples.
+    #[test]
+    fn an_analysis_of_an_owl_xml_document_comes_from_its_frontend() {
+        let text = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n  <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n  <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>Apple</Literal></AnnotationAssertion>\n</Ontology>\n";
+        for uri in ["file:///w/o.owx", "file:///w/o.owl", "file:///w/O.OWX"] {
+            let a = doc(uri, text);
+            assert_eq!(a.parsed.syntax, Syntax::OwlXml, "{uri}");
+            assert_eq!(a.parsed, crate::owx::parse(text, Some(uri)), "{uri}");
+            let codes: Vec<_> = a.parsed.errors.iter().map(|e| e.code).collect();
+            assert_eq!(codes, [crate::owx::CODE], "{uri}");
+            let at = |s: Span| &text[s.start as usize..s.end as usize];
+            assert_eq!(at(a.parsed.errors[0].span), "nope:B", "{uri}");
+            assert!(a.defs.contains_key("http://example.org/o#A"), "{uri}");
+            assert_eq!(a.label("http://example.org/o#A"), Some("Apple"), "{uri}");
+        }
     }
 
     #[test]
@@ -1513,6 +1688,57 @@ mod tests {
                 lines = lines.edited(&text, &edit.unwrap(), &starts);
                 assert_eq!(lines, LineIndex::new(&text), "round {round}: {text:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_spliced_analysis_has_the_comments_of_a_fresh_one() {
+        let uri = "file:///w/a.ttl";
+        let mut text = String::from(
+            "# at the start\n\
+             @prefix ex: <http://example.org/> .\n\
+             ex:a ex:p 1 . # after a triple\n\
+             # between statements\n\
+             ex:b ex:p ex:c ;\n\
+             \x20   # inside a statement\n\
+             \x20   ex:q 2 , # after a triple too\n\
+             \x20       3 .\n\
+             ex:d ex:p ex:e .\n\
+             # at the end\n",
+        );
+        let mut a = Arc::new(Analysis::new(uri.into(), &text, Arc::default(), true));
+        let edits = [
+            ("ex:d ex:p", "# inserted\nex:d ex:p"),
+            ("    # inside a statement\n", ""),
+            ("ex:b ex:p ex:c", "ex:b ex:p ex:longer"),
+        ];
+        for (old, new) in edits {
+            let at = text.find(old).unwrap();
+            let range = at..at + old.len();
+            let parsed = a.parsed.clone();
+            let tokens = a.tokens().to_vec();
+            let next = text.replacen(old, new, 1);
+            let edit = Edit::new(range, new.len());
+            let (p, _) = a.splice(uri, &next, edit, &a.external).expect(old);
+            let lines = LineIndex::new(&next);
+            let spliced = Analysis::with_parse(uri.into(), &next, Arc::default(), true, p, lines);
+            let fresh = Analysis::new(uri.into(), &next, Arc::default(), true);
+            assert!(fresh.comments().count() > 0);
+            assert_eq!(
+                spliced.comments().collect::<Vec<_>>(),
+                fresh.comments().collect::<Vec<_>>(),
+                "{old:?}"
+            );
+            assert_eq!(spliced.tokens(), fresh.tokens(), "{old:?}");
+            assert_eq!(
+                crate::features::symbols::folding_ranges(&spliced),
+                crate::features::symbols::folding_ranges(&fresh),
+                "{old:?}"
+            );
+            // The splice works on a copy: the old analysis is as it was.
+            assert_eq!(a.parsed, parsed, "{old:?}");
+            assert_eq!(a.tokens(), tokens, "{old:?}");
+            (text, a) = (next, Arc::new(spliced));
         }
     }
 }

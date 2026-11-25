@@ -10,8 +10,9 @@ pub(crate) mod query;
 pub(crate) mod run_query;
 
 use crate::ide::Session;
+use crate::server::WORKER_STACK;
 use crate::server::wire::Out;
-use crate::server::{WORKER_STACK, worker::Spawn};
+use crate::worker::Spawn;
 use crossbeam_channel::Sender;
 use lsp_server::{ErrorCode, Request, RequestId, Response};
 

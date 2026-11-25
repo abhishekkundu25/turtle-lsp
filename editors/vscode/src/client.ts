@@ -11,10 +11,11 @@
  * The workspace's RDF and SPARQL files: the `workspaceContains` activation
  * glob (test/manifest.test.mjs checks they are the same) and the extensions
  * of src/workspace/kinds.rs. `.owl` and `.rdf` (RDF/XML, or whatever syntax
- * their content has) are read and watched as workspace files, and so is
- * `.ofn` (OWL Functional syntax), whose axioms the server reads as RDF.
+ * their content has) are read and watched as workspace files, and so are
+ * `.ofn` (OWL Functional syntax) and `.owx` (OWL/XML), whose axioms the
+ * server reads as RDF.
  */
-export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn}"
+export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf,ofn,owx}"
 
 /** The languages the extension contributes that the server writes; the server handles each. */
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const
@@ -40,6 +41,12 @@ export const JSONLD_PATTERN = "**/*.jsonld"
 // RDFXML_PATTERN in src/server/registrations.rs must equal it).
 export const RDFXML_PATTERN = "**/*.{owl,rdf}"
 
+// OWL/XML files keep VS Code's XML language too (through the manifest's
+// `files.associations` default, as VS Code's XML language does not list
+// `.owx`). The server reads them by their name and content and does not
+// write them: it registers nothing that writes for them, rename included.
+export const OWX_PATTERN = "**/*.owx"
+
 /**
  * The `initializationOptions` key that asks the server for those
  * registrations (src/server/registrations.rs). It is no setting: it goes in
@@ -59,6 +66,7 @@ export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
       .flatMap((scheme) => [
         { scheme, pattern: JSONLD_PATTERN },
         { scheme, pattern: RDFXML_PATTERN },
+        { scheme, pattern: OWX_PATTERN },
       ]),
   ]
 }

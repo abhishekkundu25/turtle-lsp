@@ -20,8 +20,9 @@ them; each file's `//!` doc says what it owns.
 - A workspace change: the `Workspace` method returns `Effects`, and
   `Server::apply` acts on them.
 - Server state: the groups in `src/server/{client,progress,shacl,reasoning,hovers,refresh,layers,index}.rs`;
-  how jobs run (`Spawn::Thread`, `Spawn::Inline`) in `src/server/worker.rs`;
   what goes out on stdio, written as JSON text, in `src/server/wire.rs`.
+  How jobs run (`Spawn::Thread`, `Spawn::Inline`): `src/worker.rs`, which
+  every module that starts a job uses.
 - SHACL shapes and IRIs: `src/shacl/model.rs` and `src/shacl/vocab.rs`,
   read by the shape lint and the validator.
 - A request, command or lens beyond the LSP standard: a file of its own in
@@ -33,8 +34,11 @@ them; each file's `//!` doc says what it owns.
   proposed on its own.
 - The libraries name only libraries: `syntax` and `sparql::lexer` only
   `syntax`; `rdf`, `shacl` and `sparql::spargebra_input` only `syntax`,
-  `rdf`, `shacl` and those two `sparql` files. The test `boundaries` in
-  `src/lib.rs` fails on a line that breaks either rule.
+  `rdf`, `shacl` and those two `sparql` files. The libraries name no LSP or
+  JSON crate (`lsp_types`, `lsp_server`, `serde_json`). Nothing below
+  `server` names `crate::server` (only `server` and `extensions` do).
+  Product code never names `crate::oracle`. The test `boundaries` in
+  `src/lib.rs` fails on a line that breaks any of these rules.
 
 Make a new item `pub(crate)`. Make it `pub` only when a consumer uses it
 (`web/engine`, `examples/`, `tests/` or `src/main.rs`), and add its path to

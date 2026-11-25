@@ -1,0 +1,4 @@
+ <EquivalentClasses>
+   <Class IRI="Person"/>
+   <Class IRI="Human"/>
+ </EquivalentClasses>

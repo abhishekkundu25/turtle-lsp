@@ -1,0 +1,170 @@
+<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://example.org/forms"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     ontologyIRI="http://example.org/forms"
+     versionIRI="http://example.org/forms/1.0">
+    <Prefix name="ex" IRI="http://example.org/"/>
+    <Prefix name="owl" IRI="http://www.w3.org/2002/07/owl#"/>
+    <Prefix name="rdf" IRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>
+    <Prefix name="xml" IRI="http://www.w3.org/XML/1998/namespace"/>
+    <Prefix name="xsd" IRI="http://www.w3.org/2001/XMLSchema#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Prefix name="swrlb" IRI="http://www.w3.org/2003/11/swrlb#"/>
+    <Import>http://example.org/imported</Import>
+    <Annotation>
+        <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+        <Literal>Each form whose OWL/XML spelling ROBOT shows.</Literal>
+    </Annotation>
+    <Declaration>
+        <Class abbreviatedIRI="ex:A"/>
+    </Declaration>
+    <Declaration>
+        <Class abbreviatedIRI="ex:B"/>
+    </Declaration>
+    <Declaration>
+        <Class abbreviatedIRI="ex:C"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="#Local"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty abbreviatedIRI="ex:p"/>
+    </Declaration>
+    <Declaration>
+        <DataProperty abbreviatedIRI="ex:d"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual abbreviatedIRI="ex:i"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual abbreviatedIRI="ex:j"/>
+    </Declaration>
+    <Declaration>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+    </Declaration>
+    <Declaration>
+        <Class abbreviatedIRI="ex:Undeclared"/>
+    </Declaration>
+    <SubClassOf>
+        <Annotation>
+            <Annotation>
+                <AnnotationProperty abbreviatedIRI="ex:note"/>
+                <Literal>on the annotation</Literal>
+            </Annotation>
+            <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+            <Literal>on the axiom</Literal>
+        </Annotation>
+        <Class abbreviatedIRI="ex:A"/>
+        <Class abbreviatedIRI="ex:B"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class abbreviatedIRI="ex:Undeclared"/>
+        <Class abbreviatedIRI="ex:A"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="#Local"/>
+        <Class abbreviatedIRI="ex:B"/>
+    </SubClassOf>
+    <DisjointClasses>
+        <Class abbreviatedIRI="ex:A"/>
+        <Class abbreviatedIRI="ex:B"/>
+        <Class abbreviatedIRI="ex:C"/>
+    </DisjointClasses>
+    <ClassAssertion>
+        <Class abbreviatedIRI="ex:A"/>
+        <AnonymousIndividual nodeID="_:genid2147483648"/>
+    </ClassAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty abbreviatedIRI="ex:p"/>
+        <NamedIndividual abbreviatedIRI="ex:i"/>
+        <AnonymousIndividual nodeID="_:genid2147483648"/>
+    </ObjectPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty abbreviatedIRI="ex:d"/>
+        <NamedIndividual abbreviatedIRI="ex:j"/>
+        <Literal xml:lang="de">tagged data</Literal>
+    </DataPropertyAssertion>
+    <DLSafeRule>
+        <Annotation>
+            <AnnotationProperty abbreviatedIRI="rdfs:comment"/>
+            <Literal>each atom kind</Literal>
+        </Annotation>
+        <Body>
+            <ClassAtom>
+                <Class abbreviatedIRI="ex:A"/>
+                <Variable IRI="http://example.org/var#x"/>
+            </ClassAtom>
+            <ObjectPropertyAtom>
+                <ObjectProperty abbreviatedIRI="ex:p"/>
+                <Variable IRI="http://example.org/var#x"/>
+                <Variable IRI="http://example.org/var#y"/>
+            </ObjectPropertyAtom>
+            <DataPropertyAtom>
+                <DataProperty abbreviatedIRI="ex:d"/>
+                <Variable IRI="http://example.org/var#x"/>
+                <Variable IRI="http://example.org/var#v"/>
+            </DataPropertyAtom>
+            <DataRangeAtom>
+                <Datatype abbreviatedIRI="xsd:integer"/>
+                <Variable IRI="http://example.org/var#v"/>
+            </DataRangeAtom>
+            <BuiltInAtom abbreviatedIRI="swrlb:greaterThan">
+                <Variable IRI="http://example.org/var#v"/>
+                <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">18</Literal>
+            </BuiltInAtom>
+            <SameIndividualAtom>
+                <Variable IRI="http://example.org/var#y"/>
+                <NamedIndividual abbreviatedIRI="ex:i"/>
+            </SameIndividualAtom>
+            <DifferentIndividualsAtom>
+                <Variable IRI="http://example.org/var#x"/>
+                <NamedIndividual abbreviatedIRI="ex:j"/>
+            </DifferentIndividualsAtom>
+        </Body>
+        <Head>
+            <ClassAtom>
+                <Class abbreviatedIRI="ex:C"/>
+                <Variable IRI="http://example.org/var#x"/>
+            </ClassAtom>
+        </Head>
+    </DLSafeRule>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal>plain</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal xml:lang="en">tagged</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal xml:lang="fr">written out</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal>written out, no language</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">42</Literal>
+    </AnnotationAssertion>
+    <AnnotationAssertion>
+        <AnnotationProperty abbreviatedIRI="ex:note"/>
+        <AbbreviatedIRI>ex:i</AbbreviatedIRI>
+        <Literal>typed</Literal>
+    </AnnotationAssertion>
+</Ontology>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29) https://github.com/owlcs/owlapi -->
+

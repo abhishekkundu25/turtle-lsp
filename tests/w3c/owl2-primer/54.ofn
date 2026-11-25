@@ -1,0 +1,4 @@
+ Declaration( NamedIndividual( :John ) )
+ Declaration( Class( :Person ) )
+ Declaration( ObjectProperty( :hasWife ) )
+ Declaration( DataProperty( :hasAge ) )

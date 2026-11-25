@@ -50,10 +50,11 @@ const VALUE_CODES: [&str; 1] = [curation::LABEL_WHITESPACE];
 
 /// Why a file in a syntax no formatter writes ([`features::writes`]) is
 /// not formatted: the syntax's name. Only a rename writes RDF/XML, and
-/// nothing writes OWL Functional syntax.
+/// nothing writes OWL Functional syntax or OWL/XML.
 fn not_formatted(syntax: Syntax) -> &'static str {
     match syntax {
         Syntax::OwlFunctional => "OWL Functional syntax",
+        Syntax::OwlXml => "OWL/XML",
         Syntax::Turtle
         | Syntax::TriG
         | Syntax::NTriples
@@ -458,9 +459,9 @@ fn fix_all_in(
         // (file index, start, end, new text) of the edits taken this round.
         let mut taken: Vec<(usize, usize, usize, String)> = Vec::new();
         let lines = LineIndexes::new(&files);
-        // No fix writes RDF/XML (only an editor's rename does) or OWL
-        // Functional syntax (nothing does): such a file is neither fixed nor
-        // edited by another file's fix.
+        // No fix writes RDF/XML (only an editor's rename does), OWL
+        // Functional syntax or OWL/XML (nothing does): such a file is neither
+        // fixed nor edited by another file's fix.
         let read_only: Vec<bool> = files.iter().map(|f| input.is_read_only(&f.uri)).collect();
         for (f, _) in files
             .iter()
@@ -811,8 +812,8 @@ impl<'a> Input<'a> {
         }
         let a = self.ws.analysis(uri)?;
         if !features::writes(a.parsed.syntax) {
-            // No formatter writes RDF/XML or OWL Functional syntax, whatever
-            // it holds.
+            // No formatter writes RDF/XML, OWL Functional syntax or OWL/XML,
+            // whatever it holds.
             return Some(Formatted {
                 guarantee: "same graph",
                 outcome: FormatOutcome::Refused(not_formatted(a.parsed.syntax).to_string()),
@@ -871,8 +872,8 @@ impl<'a> Input<'a> {
 
     /// Whether the file at `uri` is in a syntax nothing writes
     /// ([`features::writes`]): RDF/XML (an `.owl` or `.rdf` file whose text
-    /// is not Turtle, JSON-LD or OWL Functional syntax) or OWL Functional
-    /// syntax.
+    /// is not Turtle, JSON-LD, OWL Functional syntax or OWL/XML), OWL
+    /// Functional syntax or OWL/XML.
     fn is_read_only(&self, uri: &str) -> bool {
         matches!(self.ws.doc_kind(uri), Some(DocKind::Rdf(s)) if !features::writes(s))
     }
@@ -886,7 +887,8 @@ impl<'a> Input<'a> {
             Some(DocKind::Rdf(Syntax::JsonLd)) => "jsonld",
             Some(DocKind::Rdf(Syntax::RdfXml)) => "rdfxml",
             Some(DocKind::Rdf(Syntax::OwlFunctional)) => "ofn",
-            _ => "turtle",
+            Some(DocKind::Rdf(Syntax::OwlXml)) => "owx",
+            Some(DocKind::Rdf(Syntax::Turtle)) | None => "turtle",
         }
     }
 }

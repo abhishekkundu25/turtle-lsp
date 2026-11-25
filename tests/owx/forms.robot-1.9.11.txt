@@ -1,0 +1,29 @@
+forms.robot-1.9.11.owx is ROBOT's OWL/XML of forms.ofn, byte for byte, kept
+as the evidence of how OWL API writes what the OWL/XML Recommendation does not
+settle (literals, SWRL rules). Do not edit or reformat it; make it again with
+the commands below. Two runs give the same bytes.
+
+Versions: ROBOT 1.9.11 (robot.jar, sha256
+53cd275c8e4c0dad1fc2c1c34174876795cd7d6b6926e1444adcbb0cb3c7ab26), OWL API
+4.5.29 (as the file's last line says), Java: OpenJDK 21.0.13
+(Temurin-21.0.13+9), on macOS (arm64).
+
+sha256 of the inputs and the output:
+  forms.ofn                6203ed8e000dc36d6e4479a8285fdb8c138e15fdb7e7fc33b0dcb893ba2708ef
+  forms.robot-1.9.11.owx   9a27b56a3d1c3e5c86ea57ef88ab2afb936b7a47ee6ce18234ad82173c166881
+
+The import of forms.ofn resolves, through a catalog, to an empty ontology of
+that IRI (as tools/corpus/robot-ofn.sh and robot-owx.sh do). From the
+repository root, with JAVA and ROBOT set:
+
+  tmp=$(mktemp -d)
+  printf 'Ontology(<http://example.org/imported>)\n' > "$tmp/imported.ofn"
+  cat > "$tmp/catalog.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://example.org/imported" uri="imported.ofn"/>
+</catalog>
+EOF
+  "$JAVA" -jar "$ROBOT" convert --catalog "$tmp/catalog.xml" \
+    -i tests/owx/forms.ofn --format owx -o tests/owx/forms.robot-1.9.11.owx
+  rm -r "$tmp"

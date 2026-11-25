@@ -28,9 +28,9 @@
 
 use super::base::{Base, Origin};
 use super::turtle::Items;
-use crate::server::worker::Spawn;
 use crate::settings::{Reasoning, Settings};
 use crate::syntax::RDF_TYPE;
+use crate::worker::Spawn;
 use rustc_hash::FxHashMap;
 use spargebra::term::{NamedNode, Triple};
 use std::sync::atomic::{AtomicBool, Ordering};

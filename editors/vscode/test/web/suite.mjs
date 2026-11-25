@@ -157,6 +157,57 @@ check("a .ofn file is OWL Functional syntax: its errors are listed before and af
   await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 })
 
+check("a .owx file is OWL/XML: its errors are listed before and after it is opened, its terms hover, lead to their declaration and are outlined, and nothing writes it", async () => {
+  ok(!vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith("/onto.owx")), "onto.owx was opened")
+  const errors = (d) => d.some((x) => codeOf(x) === "owx-syntax")
+  await until("onto.owx's error, unopened", () => vscode.languages.getDiagnostics(uri("onto.owx")), errors, 10_000)
+  const doc = await open("onto.owx")
+  // VS Code's XML language, through the extension's files.associations
+  // default: the fixture has no XML declaration, which alone would make it XML.
+  ok(doc.languageId === "xml", `language ${doc.languageId}`)
+  const diags = await until("onto.owx's error", () => vscode.languages.getDiagnostics(doc.uri), errors, 10_000)
+  ok(
+    fmt(diags) === `9:27 [owx-syntax] Undeclared prefix 'nope:': an OWL/XML document declares each prefix it uses, as <Prefix name="nope" IRI="…"/>`,
+    fmt(diags),
+  )
+  const at = posOf(doc, ':P"/>\n  </Declaration>', 1)
+  const text = await until("hover in onto.owx", async () => hoverText(await vscode.commands.executeCommand("vscode.executeHoverProvider", doc.uri, at)), (t) => t.includes("Pear"), 10_000)
+  ok(text.includes("Pear"), `hover: ${JSON.stringify(text)}`)
+  const defs = locations(await vscode.commands.executeCommand("vscode.executeDefinitionProvider", doc.uri, posOf(doc, ":P</AbbreviatedIRI>", 1)))
+  ok(defs.length === 1 && defs[0].endsWith("/onto.owx"), `definition: ${JSON.stringify(defs)}`)
+  const symbols = await vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri)
+  ok(JSON.stringify(symbols.map((x) => x.name)) === JSON.stringify(["http://example.org/x", "prefixes", ":P"]), `symbols: ${JSON.stringify(symbols.map((x) => x.name))}`)
+  for (const method of ["textDocument/formatting", "textDocument/rename", "textDocument/completion", "textDocument/codeAction"]) {
+    const feature = api.client().getFeature(method)
+    ok(feature.getProvider(doc) === undefined, `${method}: a provider for onto.owx`)
+  }
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
+check("a user's own files.associations applies beside the extension's default for .owx, and wins over it", async () => {
+  const files = () => vscode.workspace.getConfiguration("files")
+  const languageOf = (name) => vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri(name).toString())?.languageId
+  ok(files().inspect("associations").defaultValue?.["*.owx"] === "xml", `default: ${JSON.stringify(files().inspect("associations").defaultValue)}`)
+  await open("onto.owx")
+  await open("q.rq")
+  try {
+    // Another entry of the user's: both apply.
+    await files().update("associations", { "*.rq": "plaintext" }, vscode.ConfigurationTarget.Global)
+    const both = files().get("associations")
+    ok(both["*.owx"] === "xml" && both["*.rq"] === "plaintext", `associations: ${JSON.stringify(both)}`)
+    await until("q.rq as plain text", () => languageOf("q.rq"), (l) => l === "plaintext", 10_000)
+    ok(languageOf("onto.owx") === "xml", `onto.owx: ${languageOf("onto.owx")}`)
+    // The user's entry for .owx wins over the default.
+    await files().update("associations", { "*.owx": "plaintext" }, vscode.ConfigurationTarget.Global)
+    await until("onto.owx as plain text", () => languageOf("onto.owx"), (l) => l === "plaintext", 10_000)
+  } finally {
+    await files().update("associations", undefined, vscode.ConfigurationTarget.Global)
+  }
+  await until("onto.owx as XML again", () => languageOf("onto.owx"), (l) => l === "xml", 10_000)
+  await until("q.rq as SPARQL again", () => languageOf("q.rq"), (l) => l === "sparql", 10_000)
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+})
+
 check("turtle/query, as another extension sends it, uses the root's prefixes.ttl", async () => {
   const api = vscode.extensions.getExtension(EXTENSION).exports
   const r = await api.client().sendRequest("turtle/query", { query: "SELECT ?c WHERE { ?c a owl:Class }" })

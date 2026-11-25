@@ -1,14 +1,17 @@
-//! What the grammar builds: the parse of one document, its constructs as a
-//! flat tree in text order, each with its exact span.
+//! What the grammar builds, and the OWL/XML reader (`owx`) builds the same:
+//! the parse of one document, its constructs as a flat tree in text order,
+//! each with its exact span. The notes on spans below are Functional
+//! syntax's; in OWL/XML a construct is its element, from `<` to `>`, and a
+//! term its attribute value or trimmed content.
 //!
 //! [`Document::nodes`] is the tree in preorder: a node's children follow
 //! it, and [`Node::next`] is the index past its last descendant, so the
 //! next sibling. The top-level nodes are, in text order, the ontology IRI
 //! and version IRI ([`Document::ontology_iri`], [`Document::version_iri`]),
 //! then each `Import`, ontology annotation and axiom. An IRI is kept as
-//! written (its span); an abbreviated one is expanded with
-//! [`Document::prefixes`]. Nothing but the prefix IRIs is interned or
-//! copied out of the text.
+//! written (its span); the mapping asks the producer for its value
+//! ([`super::rdf::Source`]). The Functional grammar interns or copies
+//! nothing out of the text but the prefix IRIs.
 
 use crate::syntax::{PrefixDecl, Span, SyntaxError};
 
@@ -57,12 +60,15 @@ pub(crate) enum NodeKind {
     /// A full IRI `<…>` (`prefix_len` is `None`) or an abbreviated one,
     /// whose prefix name is the first `prefix_len` bytes (before the `:`).
     Iri { prefix_len: Option<u32> },
-    /// An anonymous individual, `_:label`.
+    /// An anonymous individual, `_:label` (OWL/XML: an
+    /// `AnonymousIndividual` at its `nodeID`).
     NodeId,
-    /// `"…"`, `"…"@tag` or `"…"^^datatype`; the quoted string ends at
+    /// `"…"`, `"…"@tag` or `"…"^^datatype` (OWL/XML: a `Literal`
+    /// element); the quoted string (the element's content) ends at
     /// `string_end`, and a datatype is the one child.
     Literal { string_end: u32 },
-    /// A non-negative integer (a cardinality).
+    /// A non-negative integer (a cardinality; in OWL/XML, the
+    /// `cardinality` attribute's value, which may have a sign).
     Integer,
 }
 
@@ -103,6 +109,10 @@ macro_rules! keywords {
         }
 
         impl Keyword {
+            /// Every keyword, in the order above.
+            #[cfg(test)]
+            pub(crate) const ALL: &[Keyword] = &[$(Keyword::$name),*];
+
             pub(crate) fn of(word: &str) -> Option<Keyword> {
                 match word {
                     $(stringify!($name) => Some(Keyword::$name),)*

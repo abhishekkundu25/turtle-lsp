@@ -1,0 +1,30 @@
+ <SubClassOf>
+   <Class IRI="ChildlessPerson"/>
+   <ObjectIntersectionOf>
+     <Class IRI="Person"/>
+     <ObjectComplementOf>
+       <ObjectSomeValuesFrom>
+         <ObjectInverseOf>
+           <ObjectProperty IRI="hasParent"/>
+         </ObjectInverseOf>
+         <Class abbreviatedIRI="owl:Thing"/>
+       </ObjectSomeValuesFrom>
+     </ObjectComplementOf>
+   </ObjectIntersectionOf>
+ </SubClassOf>
+ 
+ <DisjointClasses>
+     <Class IRI="Father"/>
+     <Class IRI="Mother"/>
+     <Class IRI="YoungChild"/>
+ </DisjointClasses>
+ 
+ <DisjointObjectProperties>
+   <ObjectProperty IRI="hasSon"/>
+   <ObjectProperty IRI="hasDaughter"/>
+ </DisjointObjectProperties>
+ 
+ <SubObjectPropertyOf>
+   <ObjectProperty IRI="hasFather"/>
+   <ObjectProperty IRI="hasParent"/>
+ </SubObjectPropertyOf>

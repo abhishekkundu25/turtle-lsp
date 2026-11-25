@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :MyBirthdayGuests
+   ObjectOneOf( :Bill :John :Mary)
+ )

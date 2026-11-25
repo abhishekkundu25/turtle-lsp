@@ -12,11 +12,11 @@ ignore = [
     # quick-xml < 0.41 (0.37.5 in the lock file): quadratic attribute-duplicate check
     # and namespace allocation, both proportional to the size of one start tag. It is
     # reached through two crates:
-    #   - oxrdfxml 0.2.4 (the latest release), which parses RDF/XML owl:imports.
-    #     src/imports/rdfxml.rs refuses any start tag over 64 KiB before parsing, on
-    #     inputs of at most 20 MB (network) / 50 MB (files). The language server runs
-    #     it on a background thread; `turtle-lsp check` runs it inline, where the
-    #     scan costs about 0.3 s per MB (audit measurement, 2026-10).
+    #   - oxrdfxml 0.2.4 (the latest release), a dev-dependency only: an oracle in
+    #     tests and an example (src/rdfxml/grammar/tests.rs, tests/owx_oracle.rs,
+    #     examples/corpus.rs). The built crate does not link it. RDF/XML and OWL/XML
+    #     documents and owl:imports (src/imports/ntriples.rs) go through our own XML
+    #     scanner (src/rdfxml/xml.rs).
     #   - sparesults 0.3.4, through spareval. Its XML reader runs only for the
     #     results of a SERVICE call, and turtle-lsp registers no service handler
     #     (src/ has none), so it never parses a document.

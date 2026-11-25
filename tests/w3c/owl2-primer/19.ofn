@@ -1,0 +1,4 @@
+ SubClassOf( 
+   :Grandfather 
+   ObjectIntersectionOf( :Man :Parent )
+ )

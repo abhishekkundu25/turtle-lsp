@@ -25,8 +25,10 @@
   absolute, a language tag that is not BCP 47, too few operands
   (`ObjectIntersectionOf` with one, an empty `ObjectOneOf`), a cardinality
   that is not a non-negative integer, a `HasKey` with no property, an
-  `rdf:PlainLiteral` that is not `"text@tag"` or `"text@"`, and `Import` or
-  an ontology annotation after the axioms. The parse goes on at the next
+  `rdf:PlainLiteral` whose tag after the last `@` is not BCP 47, and
+  `Import` or an ontology annotation after the axioms. An
+  `rdf:PlainLiteral` with no `@` is read as OWL API reads it, a plain
+  string (`xsd:string`), with an `ofn-syntax` warning. The parse goes on at the next
   axiom after an error, and an axiom with an error gives no triples. The
   mapping stops, with an error, past 16 bytes of IRIs, 2 triples or 16
   bytes of literals per byte of text, so an annotated n-ary axiom, whose
@@ -45,6 +47,59 @@
   formatting, rename, completion or code actions that edit the file there
   (an editor with static capabilities, as Neovim, gets the "Fetch and
   cache" quick fix on an unresolved web import).
+
+- **OWL/XML (`.owx`, and a `.owl` or `.rdf` whose text is OWL/XML) is
+  read**, read-only, as OWL Functional syntax is. turtle-lsp's own reader
+  checks the text against the OWL 2 XML Serialization (its schema and
+  prose) and builds the tree the Functional parser builds, so the axioms
+  become the triples of the same W3C mapping and every feature that reads
+  Functional syntax reads OWL/XML: hover, definition, references,
+  highlights, the outline, workspace symbols, folding, the lints that need
+  no edit, `check`, `query`, SHACL validation and reasoning. Relative IRIs
+  resolve against `xml:base` and the file's URL, as XML Base says; where
+  OWL API, which joins a relative IRI to the `xml:base` as strings, reads
+  another IRI (ROBOT writes `IRI="/Book"` under
+  `xml:base="http://example.org/lib"`), an `owx-syntax` warning names
+  both. IRIs written through
+  DOCTYPE entities, as Protégé writes them, are read. Errors are at their
+  exact spans: `xml-syntax` for the XML, `owx-syntax` for the rest (an
+  unknown or misplaced element, a missing or unknown attribute, both or
+  neither of `IRI` and `abbreviatedIRI`, an undeclared prefix, an IRI that
+  is not absolute, too few or too many operands, an entity of the wrong
+  kind, a bad cardinality, `nodeID` or language tag), each message in the
+  words of the Functional errors. An axiom with an error gives no triples,
+  and the rest is read; an error in `ontologyIRI` or `versionIRI` stops
+  only the header, the imports and the ontology annotations. A `.owx` that
+  holds RDF/XML or other XML gets one `owx-syntax` error at its root;
+  `.xml` files are not read. Imports of OWL/XML load (workspace, catalog,
+  `file:` IRI, cache or web; `application/owl+xml`, the type the
+  Recommendation names, is asked for last), a local one in place and a
+  fetched one cached as N-Triples, and an OWL/XML file's own `Import`s are
+  followed; between RDF/XML and OWL/XML the text decides, whatever the name
+  or content type says. SWRL rules, `nodeID`s and literals are read as
+  OWL API writes them, as ROBOT 1.9.11's output of a neutral fixture shows
+  (`tests/owx/`); an `rdf:PlainLiteral` with neither an `@` nor an
+  `xml:lang` is read as OWL API reads it, a plain string (`xsd:string`),
+  with an `owx-syntax` warning, as in Functional syntax. With `OWX_ROBOT=1`
+  (after `tools/corpus/robot-owx.sh`), ROBOT's OWL/XML of the six OBO
+  Functional files gives the graph of their source, their 46 SWRL rules
+  included, but for the declarations OWL API adds and the SWRL variables
+  it moves to `urn:swrl:var#`. The W3C OWL 2 test cases have no OWL/XML
+  texts; their 78 Functional texts, written as OWL/XML by a test-only
+  printer, read back to the same tree and graph (78 of 78; not an
+  independent check, as one hand wrote both). ROBOT's OWL/XML of
+  `hp-edit.owl` (52.6 MB, 438,110 triples) reads and maps in about 152 ms
+  (its Functional form, 31 MB, in about 65 ms: the difference is the XML
+  scanner's cost per byte); at over 50 MB it is left out as a workspace
+  file. A generated 33.7 MB document takes about 110 ms
+  against a budget of 1,100 ms, reading is linear in the text however
+  long a base or a prefix IRI, and a keystroke in a 1.1 MB OWL/XML file
+  takes about 5 ms. `format` passes over OWL/XML in a folder and says
+  "not formatted: OWL/XML" for a named file; a rename of a term an OWL/XML
+  file uses is refused. VS Code (desktop and web), Neovim and the browser
+  editor serve `.owx` files read-only in their XML language; the VS Code
+  extension maps `*.owx` to XML by default (`files.associations`, which a
+  user's own entry overrides).
 
 - **RDF/XML files (`.owl`, `.rdf`) are workspace files**; only a rename
   edits them. Their
@@ -95,13 +150,13 @@
   and a namespace declaration Namespaces in XML reserves (`xml` or `xmlns`).
   An import with one of these keeps every triple read around it and gets an
   `import-truncated` warning that names the first.
-- **Imports name what they cannot read.** An import in OWL/XML or
-  Manchester syntax fails with a message naming the format and how to save it
-  as RDF/XML or Turtle in Protégé. A workspace file in OWL/XML or Manchester
-  syntax gets `unsupported-syntax`: an error when an import is read from
-  it, else a warning. An RDF/XML or Functional import with an error part
-  way through keeps what it could read and gets an `import-truncated`
-  warning with the line and column.
+- **Imports name what they cannot read.** An import in Manchester syntax
+  fails with a message naming the format and how to save it as RDF/XML or
+  Turtle in Protégé. A workspace file in Manchester syntax gets
+  `unsupported-syntax`: an error when an import is read from it, else a
+  warning. An RDF/XML, Functional or OWL/XML import with an error part way
+  through keeps what it could read and gets an `import-truncated` warning
+  with the line and column.
 
 ### Changed
 
@@ -110,9 +165,10 @@
   different exit code from them. Exit 1 where it was 0: an XML or RDF/XML
   error (`xml-syntax`, `rdfxml-syntax`; an empty `.owl` or `.rdf` has no root
   element), a `.owl` holding broken Turtle or
-  JSON-LD, an OWL/XML or Manchester file that an import is read
+  JSON-LD, a Manchester file that an import is read
   from, and with `--max-warnings 0` one that nothing imports. A `.ofn`, or a
-  Functional `.owl`, with an `ofn-syntax` error. Exit 2 where it
+  Functional `.owl`, with an `ofn-syntax` error. A `.owx`, or an OWL/XML
+  `.owl` or `.rdf`, with an `xml-syntax` or `owx-syntax` error. Exit 2 where it
   was 0: a `.owl` or `.rdf` over 50 MB or not in UTF-8. Leave the exit 1
   codes out with `--ignore` or `lint.ignore` in `turtle-lsp.json`. Exit 2 has
   no opt-out: keep such files in a hidden folder or in `build/`, `dist/` or
@@ -121,25 +177,33 @@
   local); its `unresolved-import` says where the first bad byte is. It was
   read with the bad bytes replaced.
 - **Nothing but rename writes RDF/XML, and nothing writes OWL Functional
-  syntax**: formatting, completion, quick fixes and `check --fix` leave
-  them alone; `format .` passes over them, and a named `format onto.owl`
-  says "not formatted: RDF/XML" (or "not formatted: OWL Functional
-  syntax"). A rename of a term that an OWL Functional workspace file uses
-  is refused and names the file. A `.owl` or `.rdf` that holds Turtle or
-  JSON-LD is read, formatted and fixed as that syntax by the command line
-  and by editors other than VS Code.
+  syntax or OWL/XML**: formatting, completion, quick fixes and `check --fix`
+  leave them alone; `format .` passes over them, and a named `format
+  onto.owl` says "not formatted: RDF/XML" (or "not formatted: OWL
+  Functional syntax", "not formatted: OWL/XML"). A rename of a term that an
+  OWL Functional or OWL/XML workspace file uses is refused and names the
+  file. A `.owl` or `.rdf` that holds Turtle or JSON-LD is read, formatted
+  and fixed as that syntax by the command line and by editors other than
+  VS Code.
 - **VS Code registers formatting, rename, completion and code actions
   dynamically**: formatting, completion and code actions for every file but
-  `.owl`, `.rdf` and `.ofn`, so it lists no turtle-lsp formatter for XML or
-  OWL Functional syntax, and rename for `.owl` and `.rdf` files too. Other
-  editors get the same static capabilities as before. The RDF Editor and
-  Neovim offer rename in `.owl` and `.rdf` files too, not in `.ofn` files.
+  `.owl`, `.rdf`, `.owx` and `.ofn`, so it lists no turtle-lsp formatter for
+  XML or OWL Functional syntax, and rename for `.owl` and `.rdf` files too
+  (not `.owx` or `.ofn`). Other editors get the same static capabilities as
+  before. The RDF Editor and Neovim offer rename in `.owl` and `.rdf` files
+  too, not in `.ofn` files; in an `.owx` file the server refuses it.
 - oxrdfxml is now only a test dependency.
 - **A new name reads the same in every file.** `<iri>` is that IRI; a bare
   name with `://`, or whose part before `:` is no declared prefix but could
   be a scheme (`urn:ex:a`), is an absolute IRI; else a prefixed or a local
   name. An empty name is refused. From Turtle, `nope:x` with no `nope:`
   prefix was refused as an undeclared prefix; it is now the IRI `nope:x`.
+- **An edit costs less in a workspace whose JSON-LD files name `file:`
+  contexts.** The server stores each such context URL in one spelling when
+  it reads the document, so an edit compares strings instead of
+  normalising every stored URL. In the benchmark with 200 such documents, a
+  Turtle keystroke takes 0.1 ms instead of 0.2 ms (the figures are rounded
+  to 0.1 ms).
 
 ### Fixed
 
@@ -151,7 +215,30 @@
   its uses out.
 - An RDF/XML import with an error part way through lost everything after it
   without a word; a Manchester `.owl` loaded as empty Turtle; an OWL/XML one
-  failed with an RDF/XML error; a single-quoted `<!ENTITY>` value failed.
+  failed with an RDF/XML error (it is now read as OWL/XML); a single-quoted
+  `<!ENTITY>` value failed.
+- **A JSON-LD document follows each change of the context it names, also
+  when it was opened or changed during the workspace index.** A JSON-LD
+  document opened while the server indexed the workspace, a file changed on
+  disk during the index, or a file opened or edited while the server parsed
+  files again after a prefix change could keep the context its discarded
+  parse had asked for. Then an edit, save or close of its real context file,
+  or the arrival of a fetched context, did not reach it, and its triples and
+  diagnostics stayed stale until the document itself changed. The server now
+  records the contexts of a parse only when it keeps the parse, and forgets
+  those of a closed document that the index does not hold (an `untitled:`
+  one).
+
+### Internal
+
+- **The largest files are split into parts, with no behaviour change but
+  the fix above.** The knowledge index (`src/knowledge/`), the workspace
+  (`src/workspace/`) and the server (`server::Embedded`) hold one part per
+  file, the job runner is `src/worker.rs`, and the unit tests of the largest
+  modules are in files of their own. The `boundaries` test reads Rust tokens
+  instead of line shapes, and it also checks that nothing below the server
+  names it, that product code never names the test oracle, and that the
+  libraries name no LSP or JSON crate.
 
 ## 0.19.0 — 2026-11-17
 

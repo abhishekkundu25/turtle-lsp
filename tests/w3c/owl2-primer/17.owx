@@ -1,0 +1,7 @@
+ <EquivalentClasses>
+   <Class IRI="Parent"/>
+   <ObjectUnionOf>
+     <Class IRI="Mother"/>
+     <Class IRI="Father"/>
+   </ObjectUnionOf>
+ </EquivalentClasses>

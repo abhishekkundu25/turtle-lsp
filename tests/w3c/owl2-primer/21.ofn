@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :Parent 
+   ObjectSomeValuesFrom( :hasChild :Person )
+ )

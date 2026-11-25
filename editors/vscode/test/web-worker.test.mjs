@@ -89,7 +89,7 @@ test("a client that can register features but does not opt in gets them in the i
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
 })
 
-test("the features the server writes with are registered after the initialize answer, once, and leave .owl and .rdf out but for rename", { skip }, async () => {
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf and .owx out but for rename, which leaves .owx out", { skip }, async () => {
   const real = await createEngine(bytes)
   let crashNext = false
   const engine = {
@@ -119,7 +119,7 @@ test("the features the server writes with are registered after the initialize an
   assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
   for (const x of regs) {
     const selector = x.registerOptions.documentSelector
-    assert.doesNotMatch(JSON.stringify(selector), /ofn/, x.method)
+    assert.doesNotMatch(JSON.stringify(selector), /owx|ofn/, x.method)
     if (x.method !== "textDocument/rename") assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, x.method)
     else assert.deepEqual(selector.filter((f) => /owl|rdf|xml/.test(JSON.stringify(f))), [{ pattern: "**/*.{owl,rdf}" }])
   }

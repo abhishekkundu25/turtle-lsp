@@ -1,0 +1,4 @@
+ EquivalentClasses(
+   :Mother 
+   ObjectIntersectionOf( :Woman :Parent )
+ ) 

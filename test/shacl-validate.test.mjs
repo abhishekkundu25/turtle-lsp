@@ -520,6 +520,34 @@ DataPropertyAssertion(sd:designation <https://data.example.com/plant/obj/pump-08
   }
 })
 
+test("an .owx file's data is validated against the shapes: closed, in workspace diagnostics; open, on save, at its assertion's object", async () => {
+  const owx = (designation) => `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#">
+<Prefix name="sd" IRI="https://ontology.example.com/plant/core/"/>
+<Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+<ClassAssertion><Class abbreviatedIRI="sd:Asset"/><NamedIndividual IRI="https://data.example.com/plant/obj/pump-08"/></ClassAssertion>
+<AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><IRI>https://data.example.com/plant/obj/pump-08</IRI><Literal>Pump 08</Literal></AnnotationAssertion>
+<DataPropertyAssertion><DataProperty abbreviatedIRI="sd:designation"/><NamedIndividual IRI="https://data.example.com/plant/obj/pump-08"/><Literal>${designation}</Literal></DataPropertyAssertion>
+</Ontology>
+`
+  const w = await session({ initializationOptions: { diagnostics: { workspace: true } } }, { "data/pump-08.owx": owx("P08") })
+  const file = path.join(w.dir, "data", "pump-08.owx")
+  const uri = uriOf(file)
+  try {
+    const closed = shacl(await until(w.s, uri, (d) => shacl(d).length > 0, 10000))
+    assert.deepEqual(closed.map((d) => [d.code, d.message]), [["shacl-violation", MESSAGE]])
+    // On the assertion's object, the Literal element of line 7.
+    assert.deepEqual(closed[0].range, rangeOf(owx("P08"), "<Literal>P08</Literal>"), JSON.stringify(closed))
+    // Open with XML's language id; a fix on disk clears it.
+    w.s.open(uri, owx("P08"), "xml")
+    w.s.change(uri, owx("=P08"))
+    save(w.s, uri, file, owx("=P08"))
+    await until(w.s, uri, (d) => shacl(d).length === 0, 10000)
+  } finally {
+    await w.end()
+  }
+})
+
 test("an .owl file's data is validated against the shapes: closed, in workspace diagnostics; open as XML, on save, at its element's line", async () => {
   const owl = (designation) => `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"

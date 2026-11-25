@@ -134,6 +134,45 @@ test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), ne
   assert.deepEqual(q.rows, [["<http://example.org/o#A>", "\" a \""]])
 })
 
+test("an .owx file, or an OWL/XML .owl, is checked for errors (owx-syntax), never formatted or fixed, and its axioms are data", () => {
+  const broken = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
+    <Prefix name="" IRI="http://example.org/o#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration><Class abbreviatedIRI=":A"/></Declaration>
+    <SubClassOf><Class abbreviatedIRI=":A"/><Class abbreviatedIRI="nope:B"/></SubClassOf>
+    <AnnotationAssertion><AnnotationProperty abbreviatedIRI="rdfs:label"/><AbbreviatedIRI>:A</AbbreviatedIRI><Literal>Apple</Literal></AnnotationAssertion>
+</Ontology>
+`
+  const files = [
+    { name: "onto.owx", text: broken },
+    { name: "owlxml.owl", text: broken },
+    { name: "CLEAN.OWX", text: '<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o"/>\n' },
+  ]
+  const res = engine.call("analyse", { files })
+  assert.deepEqual(res.files.map((f) => f.kind), ["owx", "owx", "owx"])
+  for (const name of ["onto.owx", "owlxml.owl"]) {
+    const f = fileOf(res, name)
+    assert.deepEqual(f.format, { status: "refused", guarantee: "same graph", reason: "OWL/XML" })
+    assert.deepEqual(f.diagnostics.map((d) => [d.code, d.range.start.line, d.range.start.character, d.message]), [
+      ["owx-syntax", 5, 67, "Undeclared prefix 'nope:': an OWL/XML document declares each prefix it uses, as <Prefix name=\"nope\" IRI=\"…\"/>"],
+    ])
+    assert.equal(covered(broken, f.diagnostics[0].range), "nope:B")
+  }
+  assert.deepEqual(fileOf(res, "CLEAN.OWX").diagnostics, [])
+  const fixed = engine.call("fix_all", { files })
+  for (const f of files) assert.equal(fixed.files.find((x) => x.name === f.name).text, f.text)
+  // The header and the axioms read whole are triples; the one with the error is not.
+  for (const name of ["onto.owx", "owlxml.owl"]) {
+    const q = engine.call("query", { files: [{ name, text: broken }, { name: "q.rq", text: "SELECT ?s ?p ?o WHERE { ?s ?p ?o } ORDER BY ?s ?p ?o" }], query: "q.rq" })
+    assert.deepEqual(q.rows, [
+      ["<http://example.org/o>", "rdf:type", "owl:Ontology"],
+      ["<http://example.org/o#A>", "rdf:type", "owl:Class"],
+      ["<http://example.org/o#A>", "rdfs:label", "\"Apple\""],
+    ], name)
+  }
+})
+
 // --- query ---------------------------------------------------------------------
 
 // The sample workspace with `text` as q.rq, asked to run q.rq.

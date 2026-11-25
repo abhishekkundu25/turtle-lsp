@@ -1,0 +1,48 @@
+Prefix(:=<http://example.org/forms#>)
+Prefix(ex:=<http://example.org/>)
+Prefix(swrlb:=<http://www.w3.org/2003/11/swrlb#>)
+
+Ontology(<http://example.org/forms>
+<http://example.org/forms/1.0>
+Import(<http://example.org/imported>)
+Annotation(rdfs:comment "Each form whose OWL/XML spelling ROBOT shows.")
+
+Declaration(Class(ex:A))
+Declaration(Class(ex:B))
+Declaration(Class(ex:C))
+Declaration(ObjectProperty(ex:p))
+Declaration(DataProperty(ex:d))
+Declaration(AnnotationProperty(ex:note))
+Declaration(NamedIndividual(ex:i))
+Declaration(NamedIndividual(ex:j))
+Declaration(Class(:Local))
+
+AnnotationAssertion(ex:note ex:i "plain")
+AnnotationAssertion(ex:note ex:i "tagged"@en)
+AnnotationAssertion(ex:note ex:i "typed"^^xsd:string)
+AnnotationAssertion(ex:note ex:i "42"^^xsd:integer)
+AnnotationAssertion(ex:note ex:i "written out@fr"^^rdf:PlainLiteral)
+AnnotationAssertion(ex:note ex:i "written out, no language@"^^rdf:PlainLiteral)
+DataPropertyAssertion(ex:d ex:j "tagged data"@de)
+
+ClassAssertion(ex:A _:x)
+ObjectPropertyAssertion(ex:p ex:i _:x)
+
+SubClassOf(Annotation(Annotation(ex:note "on the annotation") rdfs:comment "on the axiom") ex:A ex:B)
+DisjointClasses(ex:C ex:B ex:A)
+SubClassOf(ex:Undeclared ex:A)
+SubClassOf(:Local ex:B)
+
+DLSafeRule(Annotation(rdfs:comment "each atom kind")
+  Body(
+    ClassAtom(ex:A Variable(<http://example.org/var#x>))
+    ObjectPropertyAtom(ex:p Variable(<http://example.org/var#x>) Variable(<http://example.org/var#y>))
+    DataPropertyAtom(ex:d Variable(<http://example.org/var#x>) Variable(<http://example.org/var#v>))
+    DataRangeAtom(xsd:integer Variable(<http://example.org/var#v>))
+    BuiltInAtom(swrlb:greaterThan Variable(<http://example.org/var#v>) "18"^^xsd:integer)
+    SameIndividualAtom(Variable(<http://example.org/var#y>) ex:i)
+    DifferentIndividualsAtom(Variable(<http://example.org/var#x>) ex:j)
+  )
+  Head(ClassAtom(ex:C Variable(<http://example.org/var#x>)))
+)
+)

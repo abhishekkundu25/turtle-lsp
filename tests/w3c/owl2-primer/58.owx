@@ -1,0 +1,34 @@
+ <SubClassOf>
+   <ObjectIntersectionOf>
+     <ObjectOneOf>
+       <NamedIndividual IRI="Mary"/>
+       <NamedIndividual IRI="Bill"/>
+       <NamedIndividual IRI="Meg"/>
+     </ObjectOneOf>
+     <Class IRI="Female"/>
+   </ObjectIntersectionOf>
+   <ObjectIntersectionOf>
+     <Class IRI="Parent"/>
+     <ObjectMaxCardinality cardinality="1">
+       <ObjectProperty IRI="hasChild"/>
+     </ObjectMaxCardinality>
+     <ObjectAllValuesFrom>
+       <ObjectProperty IRI="hasChild"/>
+       <Class IRI="Female"/>
+     </ObjectAllValuesFrom>
+   </ObjectIntersectionOf>
+ </SubClassOf>
+ 
+ <DisjointClasses>
+     <Class IRI="Father"/>
+     <Class IRI="Mother"/>
+     <Class IRI="YoungChild"/>
+ </DisjointClasses>
+ 
+ <SubObjectPropertyOf>
+   <ObjectPropertyChain>
+     <ObjectProperty IRI="hasFather"/>
+     <ObjectProperty IRI="hasBrother"/>
+   </ObjectPropertyChain>
+   <ObjectProperty IRI="hasUncle"/>
+ </SubObjectPropertyOf>

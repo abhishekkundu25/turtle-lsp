@@ -79,8 +79,8 @@ fn an_open_document_has_the_diagnostics_check_reports() {
     }
 }
 
-/// An `.owl` or `.rdf` file's syntax is its content's, and a `.ofn` file's
-/// its name's, the same for the server, whatever language id the client
+/// An `.owl` or `.rdf` file's syntax is its content's, and a `.ofn` or
+/// `.owx` file's its name's, the same for the server, whatever language id the client
 /// sends (none, VS Code for the Web; `xml`, the web editor; `turtle`), and
 /// for `check`.
 #[test]
@@ -96,6 +96,12 @@ fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
     let broken = xml.replace("</rdf:Description>\n</rdf:RDF>", "</rdf:Descr>\n</rdf:RDF>");
     let functional = "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>)\n";
     let broken_functional = "Prefix(:=<http://example.org/>)\nOntology(SubClassOf(:A nope:B))\n";
+    let owl_xml = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Prefix name=\"\" IRI=\"http://example.org/\"/>\n  <Declaration><Class abbreviatedIRI=\":A\"/></Declaration>\n</Ontology>\n";
+    let broken_owx = owl_xml.replace(
+        "</Ontology>",
+        "  <SubClassOf><Class abbreviatedIRI=\":A\"/><Class abbreviatedIRI=\"nope:B\"/></SubClassOf>\n</Ontology>",
+    );
+    let bad_xml = owl_xml.replace("</Declaration>", "</Declaratio>");
     let manchester = "Prefix: : <http://example.org/>\nOntology: <http://example.org/o>\n";
     let turtle = "@prefix ex: <http://example.org/> .\nex:a ex:b ex:c ; ex:d \"1\"^^<http://www.w3.org/2001/XMLSchema#integer> , \"x\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n";
     for (name, text, code) in [
@@ -104,6 +110,11 @@ fn an_owl_file_has_the_diagnostics_check_reports_whatever_its_content() {
         ("functional.owl", functional, None),
         ("broken.owl", broken_functional, Some("ofn-syntax")),
         ("broken.ofn", broken_functional, Some("ofn-syntax")),
+        ("owlxml.owl", owl_xml, None),
+        ("broken-owlxml.owl", broken_owx.as_str(), Some("owx-syntax")),
+        ("onto.owx", owl_xml, None),
+        ("Broken.OWX", broken_owx.as_str(), Some("owx-syntax")),
+        ("xml-error.owx", bad_xml.as_str(), Some("xml-syntax")),
         ("manchester.owl", manchester, Some("unsupported-syntax")),
         ("turtle.owl", turtle, Some("invalid-literal")),
     ] {

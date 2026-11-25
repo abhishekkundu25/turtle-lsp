@@ -9,13 +9,14 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 
 // The language of a path, as the server and Monaco know it. JSON-LD is
 // Monaco's own JSON (its highlighting); the server knows a `.jsonld` name
-// is JSON-LD. `.owl` and `.rdf` are Monaco's own XML, with the server's
-// providers that read (connect): the server reads them as workspace RDF,
-// its syntax from the content. `.ofn` is OWL Functional syntax (`ofn`,
+// is JSON-LD. `.owl`, `.rdf` and `.owx` are Monaco's own XML, with the
+// server's providers that read (connect): the server reads them as
+// workspace RDF, its syntax (RDF/XML, OWL Functional or OWL/XML) from the
+// name and the content. `.ofn` is OWL Functional syntax (`ofn`,
 // registerSyntax), which the server reads as RDF and never writes.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
-  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml", ofn: "ofn" }[ext] ?? "turtle"
+  return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml", ofn: "ofn", owx: "xml" }[ext] ?? "turtle"
 }
 
 // The languages whose documents the server reads and never writes.
@@ -232,11 +233,12 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   const legend = capabilities.semanticTokensProvider?.legend ?? { tokenTypes: [], tokenModifiers: [] }
 
   // The server's features also serve JSON-LD files (Monaco's json language;
-  // only `.jsonld` files are ever opened in it), RDF/XML files (Monaco's
-  // xml language; only `.owl` and `.rdf` files) and OWL Functional files
-  // (`ofn`). Only rename writes RDF/XML, and nothing writes OWL Functional
-  // syntax: such a model gets the features that read (and an xml model
-  // rename), without completion, formatting, code actions, semantic tokens
+  // only `.jsonld` files are ever opened in it), RDF/XML and OWL/XML files
+  // (Monaco's xml language; only `.owl`, `.rdf` and `.owx` files) and OWL
+  // Functional files (`ofn`). Only rename writes RDF/XML, and nothing writes
+  // OWL/XML or OWL Functional syntax: such a model gets the features that
+  // read (and an xml model rename, which the server refuses in an OWL/XML
+  // one), without completion, formatting, code actions, semantic tokens
   // (Monaco's colours stay) and inlay hints.
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)

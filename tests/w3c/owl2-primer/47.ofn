@@ -1,0 +1,9 @@
+ SubClassOf(
+   :Teenager
+   DataSomeValuesFrom( :hasAge
+     DatatypeRestriction( xsd:integer
+       xsd:minExclusive "12"^^xsd:integer
+       xsd:maxInclusive "19"^^xsd:integer
+     )
+   )
+ )

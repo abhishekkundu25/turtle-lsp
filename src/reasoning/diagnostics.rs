@@ -404,8 +404,8 @@ mod tests {
     use super::super::{Job, Shared, run_inline};
     use super::*;
     use crate::analysis::Encoding;
-    use crate::server::worker::Spawn;
     use crate::settings::Reasoning;
+    use crate::worker::Spawn;
 
     const URI: &str = "file:///w/a.ttl";
 
