@@ -5,8 +5,9 @@
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust. It also
-reads TriG, N-Triples, N-Quads, JSON-LD and RDF/XML (Protégé's `.owl`), and
-SPARQL queries and updates.
+reads TriG, N-Triples, N-Quads, JSON-LD, RDF/XML (Protégé's `.owl`), OWL
+Functional syntax (`.ofn`) and OWL/XML (`.owx`), and SPARQL queries and
+updates.
 
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
@@ -29,6 +30,22 @@ disjoint classes are diagnostics. With `turtle.query.reasoning` set to
 It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
+
+## What each file gets
+
+| | Turtle, TriG | N-Triples, N-Quads | JSON-LD | RDF/XML | OWL Functional | OWL/XML |
+|---|---|---|---|---|---|---|
+| Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Label, house-style, SHACL and prefix checks | ✓ | ✓ | ✓ | | | |
+| Completion | ✓ | | ✓ | ✓ | ✓ | ✓ |
+| Rename | ✓ | ✓ | ✓ | ✓ | | |
+| Formatting, quick fixes | ✓ | ✓ | ✓ | | | |
+| Label hints | ✓ | ✓ | ✓ | | | |
+| Semantic colours | ✓ | ✓ | | | | |
+
+A rename of a term that an OWL Functional or OWL/XML file uses is refused,
+and names the file. SPARQL files (`.rq`, `.sparql`, `.ru`) get their own
+set: see [SPARQL](#sparql).
 
 ## Features
 
