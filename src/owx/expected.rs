@@ -216,10 +216,10 @@ fn owl_prefix(typed: &str, prefixes: &BTreeMap<&str, Cow<'_, str>>) -> String {
 
 /// The children of `Ontology` that may come after `children`: from the
 /// part of the schema's order the last of them is in.
-fn ontology(children: &[cursor::Child<'_>]) -> Vec<Element> {
+fn ontology(children: &[Name<'_>]) -> Vec<Element> {
     let phase = children
         .iter()
-        .filter_map(|c| owl(&c.name).and_then(Phase::of))
+        .filter_map(|c| owl(c).and_then(Phase::of))
         .max()
         .unwrap_or(Phase::Prefixes);
     std::iter::once(Keyword::Prefix)
@@ -244,7 +244,7 @@ fn within(e: &cursor::Element<'_>) -> Option<Vec<Element>> {
     if let Some(op) = from_tag(k) {
         c.take(op);
     }
-    let children: Vec<Option<Element>> = e.children.iter().map(|c| owl(&c.name)).collect();
+    let children: Vec<Option<Element>> = e.children.iter().map(owl).collect();
     for &child in &children {
         feed(&mut c, child);
     }

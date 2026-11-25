@@ -19,11 +19,6 @@
 //! before the root, so it is [`At::Elsewhere`]; `<O` there is the root's
 //! name being typed.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "OWL/XML and RDF/XML completion read it")
-)]
-
 use super::{Attr, Event, Name, Prolog, Scanner, Tag};
 use crate::syntax::Span;
 use std::borrow::Cow;
@@ -55,18 +50,9 @@ pub(crate) struct Cursor<'a> {
 #[derive(Debug)]
 pub(crate) struct Element<'a> {
     pub(crate) tag: Tag<'a>,
-    /// Its child elements closed before the offset, in order.
-    pub(crate) children: Vec<Child<'a>>,
-}
-
-/// A child element closed before the offset.
-#[derive(Debug)]
-pub(crate) struct Child<'a> {
-    pub(crate) name: Name<'a>,
-    /// From its start tag's `<` to the end of its end tag (of its start tag
-    /// when empty; where it stops when an error closes it). Read from an
-    /// entity's replacement text, the reference's.
-    pub(crate) span: Span,
+    /// The names of its child elements closed before the offset, in order
+    /// (read from an entity's replacement text, with the reference's span).
+    pub(crate) children: Vec<Name<'a>>,
 }
 
 /// Where the offset is.
@@ -116,16 +102,6 @@ impl<'t> Document<'t> {
             .get(name)
             .filter(|e| !e.refused)
             .map(|e| &*e.text)
-    }
-
-    /// The DOCTYPE's internal entities the scanner expands: name and
-    /// replacement text ([`Document::entity`]), in no order.
-    pub(crate) fn entities(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.prolog
-            .entities
-            .iter()
-            .filter(|(_, e)| !e.refused)
-            .map(|(name, e)| (&**name, &*e.text))
     }
 
     /// What is open and typed at byte `offset`.
@@ -237,24 +213,6 @@ impl<'t> Document<'t> {
     }
 }
 
-impl<'a> Cursor<'a> {
-    /// The root element, when the offset is in its content.
-    pub(crate) fn root(&self) -> Option<&Element<'a>> {
-        self.open.first()
-    }
-}
-
-impl Element<'_> {
-    /// Where a new attribute of its start tag goes: after its last
-    /// attribute, or after its name.
-    pub(crate) fn attrs_end(&self) -> u32 {
-        self.tag
-            .attrs
-            .last()
-            .map_or(self.tag.name.span.end, |a| a.span.end)
-    }
-}
-
 /// One event read before the offset: an element opens, or closes as a
 /// child of the one it is in.
 fn apply<'a>(open: &mut Vec<Element<'a>>, e: Event<'a>) {
@@ -264,14 +222,11 @@ fn apply<'a>(open: &mut Vec<Element<'a>>, e: Event<'a>) {
             tag,
             children: Vec::new(),
         }),
-        Event::End(end) => {
+        Event::End(_) => {
             if let Some(closed) = open.pop()
                 && let Some(parent) = open.last_mut()
             {
-                parent.children.push(Child {
-                    span: Span::new(closed.tag.span.start, end.span.end),
-                    name: closed.tag.name,
-                });
+                parent.children.push(closed.tag.name);
             }
         }
         Event::Text { .. } | Event::Pi(..) | Event::Eof => {}
@@ -382,7 +337,7 @@ mod tests {
     }
 
     fn children<'a>(e: &Element<'a>) -> Vec<&'a str> {
-        e.children.iter().map(|c| c.name.raw).collect()
+        e.children.iter().map(|c| c.raw).collect()
     }
 
     fn elsewhere(marked: &str) {
@@ -493,7 +448,6 @@ mod tests {
         let doc = Document::read(&text);
         assert_eq!(doc.entity("xsd"), Some(XSD));
         assert_eq!(doc.entity("rdf"), None);
-        assert_eq!(doc.entities().collect::<Vec<_>>(), [("xsd", XSD)]);
         let c = doc.at(offset);
         let At::Value(v) = &c.at else {
             panic!("{:?}", c.at)
@@ -584,10 +538,7 @@ mod tests {
                 assert_eq!(slice(text, span), "\n");
                 assert_eq!(open(&c), ["rdf:RDF"]);
                 assert_eq!(children(&c.open[0]), ["owl:Class"]);
-                let child = &c.open[0].children[0];
-                assert!(child.name.is(OWL, "Class"));
-                assert!(slice(text, child.span).starts_with("<owl:Class>"));
-                assert!(slice(text, child.span).ends_with("</owl:Class>"));
+                assert!(c.open[0].children[0].is(OWL, "Class"));
             },
         );
     }
@@ -601,11 +552,7 @@ mod tests {
         let inside = doc.at(marks[0]);
         assert_eq!(inside.prefixes["p"], "http://example.org/b#");
         assert_eq!(open(&inside), ["r", "s"]);
-        assert!(
-            inside.open[1].children[0]
-                .name
-                .is("http://example.org/b#", "x")
-        );
+        assert!(inside.open[1].children[0].is("http://example.org/b#", "x"));
         let after = doc.at(marks[1] - 1);
         assert_eq!(after.prefixes["p"], "http://example.org/a#");
         assert_eq!(children(&after.open[0]), ["s"]);
@@ -666,38 +613,19 @@ mod tests {
         }
     }
 
-    /// Ticket 04 inserts a `<Prefix>` after the last one, ticket 05 an
-    /// `xmlns:p` after the root's last attribute.
+    /// Each open element has the names of its children closed before the
+    /// offset.
     #[test]
-    fn closed_children_and_the_root() {
+    fn closed_children() {
         let marked = format!(
             "{OWX_HEAD}  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n  <SubClassOf><Class IRI=\"http://example.org/A\"/>|"
         );
-        check(&marked, |text, _, c| {
+        check(&marked, |_, _, c| {
             assert_eq!(open(&c), ["Ontology", "SubClassOf"]);
             assert_eq!(children(&c.open[0]), ["Prefix", "Declaration"]);
-            let spans: Vec<&str> = c.open[0]
-                .children
-                .iter()
-                .map(|k| slice(text, k.span))
-                .collect();
-            assert_eq!(
-                spans,
-                [
-                    "<Prefix name=\"ex\" IRI=\"http://example.org/\"/>",
-                    "<Declaration><Class IRI=\"http://example.org/A\"/></Declaration>"
-                ]
-            );
             assert_eq!(children(&c.open[1]), ["Class"]);
-            let root = c.root().unwrap();
-            let at = root.attrs_end() as usize;
-            assert!(text[..at].ends_with("ontologyIRI=\"http://example.org/o\""));
-            assert_eq!(&text[at..at + 1], ">");
         });
-        check("<r|", |_, _, c| assert!(c.root().is_none()));
-        check("<r>|", |text, _, c| {
-            assert_eq!(c.root().unwrap().attrs_end() as usize, text.len() - 1)
-        });
+        check("<r|", |_, _, c| assert!(c.open.is_empty()));
     }
 
     /// A bare `<` before the root is text before it, as the prolog reads
@@ -741,7 +669,7 @@ mod tests {
             |text, o, c| {
                 assert!(matches!(c.at, At::Text(s) if s == Span::new(o as u32, o as u32)));
                 let child = &c.open[1].children[0];
-                assert!(child.name.is(OWL, "Class") && child.name.entity);
+                assert!(child.is(OWL, "Class") && child.entity);
                 assert_eq!(slice(text, child.span), "&c;");
             },
         );
@@ -785,7 +713,6 @@ mod tests {
                     tag_ok(&e.tag);
                     for k in &e.children {
                         ok(k.span);
-                        ok(k.name.span);
                     }
                 }
                 let o = offset as u32;
