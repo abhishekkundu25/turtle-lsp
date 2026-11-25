@@ -116,19 +116,30 @@ test("the features the server writes with are registered after the initialize an
   // The client ignores a registration that comes before its initialize answer.
   assert.ok(c.posted.indexOf(registrations()[0]) > c.posted.indexOf(r), "registered before the initialize answer")
   const regs = registrations()[0].params.registrations
-  assert.deepEqual(regs.map((x) => x.method).sort(), ["textDocument/codeAction", "textDocument/completion", "textDocument/formatting", "textDocument/rename"])
+  assert.deepEqual(regs.map((x) => x.method).sort(), [
+    "textDocument/codeAction",
+    "textDocument/completion",
+    "textDocument/completion",
+    "textDocument/formatting",
+    "textDocument/rename",
+  ])
   for (const x of regs) {
     const selector = x.registerOptions.documentSelector
     const text = JSON.stringify(selector)
     const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
-    // Completion is asked in OWL Functional, RDF/XML and OWL/XML files;
-    // rename in RDF/XML ones; nothing else in any of them.
-    if (x.method === "textDocument/completion") {
+    // Non-XML completion includes ofn; XML completion covers .owl, .rdf and
+    // .owx with XML trigger characters; rename takes .owl and .rdf.
+    if (x.id === "turtle-completion") {
       assert.match(text, /"language":"ofn"/)
+      assert.deepEqual(xml, [])
+      assert.deepEqual(x.registerOptions.triggerCharacters, [":", "@", "?", "$"])
+    } else if (x.id === "turtle-xml-completion") {
+      assert.doesNotMatch(text, /ofn/)
       assert.deepEqual(xml, [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }])
+      assert.deepEqual(x.registerOptions.triggerCharacters, [":", "<", "/", "\"", "'", "&"])
     } else {
-      assert.doesNotMatch(text, /ofn/, x.method)
-      assert.deepEqual(xml, x.method === "textDocument/rename" ? [{ pattern: "**/*.{owl,rdf}" }] : [], x.method)
+      assert.doesNotMatch(text, /ofn/, x.id)
+      assert.deepEqual(xml, x.method === "textDocument/rename" ? [{ pattern: "**/*.{owl,rdf}" }] : [], x.id)
     }
   }
   // A crash restarts the server, which registers again: the client accepted
