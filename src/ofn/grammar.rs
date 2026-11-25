@@ -36,20 +36,16 @@
 use super::lexer::{Kind, Lexer, Token};
 use super::signature::{Cat, Rep, is_axiom, keyword_in, signature};
 use super::tree::{Document, Keyword, Node, NodeKind};
-use super::{Errors, shown};
+use super::{Errors, STANDARD, shown};
 use crate::syntax::{Iri, PrefixDecl, Span, has_scheme};
 use rustc_hash::FxHashMap;
 
+/// The error at the keyword of a `Prefix( … )` among the items, which
+/// declares its name all the same.
+pub(super) const STRAY_PREFIX: &str = "A 'Prefix' declaration comes before 'Ontology('";
+
 /// How deep constructs nest before the axiom is an error.
 pub(crate) const MAX_NESTING: u32 = 256;
-
-/// The prefix names of Table 2, which every document has.
-const STANDARD: [(&str, &str); 4] = [
-    ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
-    ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
-    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
-    ("owl", "http://www.w3.org/2002/07/owl#"),
-];
 
 /// Parse `text`.
 pub(crate) fn parse(text: &str) -> Document {
@@ -432,8 +428,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                 }
                 (Kind::Keyword, Some(Keyword::Prefix)) => {
-                    self.errors
-                        .error(at.span(), "A 'Prefix' declaration comes before 'Ontology('");
+                    self.errors.error(at.span(), STRAY_PREFIX);
                     self.prefix_declaration();
                 }
                 (Kind::Keyword, Some(Keyword::Ontology)) => {

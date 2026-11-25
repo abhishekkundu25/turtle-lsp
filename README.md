@@ -5,8 +5,9 @@
 # turtle-lsp
 
 A fast language server for RDF Turtle (`.ttl`), written in Rust. It also
-reads TriG, N-Triples, N-Quads, JSON-LD and RDF/XML (Protégé's `.owl`), and
-SPARQL queries and updates.
+reads TriG, N-Triples, N-Quads, JSON-LD, RDF/XML (Protégé's `.owl`), OWL
+Functional syntax (`.ofn`) and OWL/XML (`.owx`), and SPARQL queries and
+updates.
 
 A keystroke in a 30,000-line file gets fresh diagnostics in about 5 ms, and
 the whole file formats in about 5 ms. The server starts in a few milliseconds.
@@ -30,12 +31,31 @@ It is the only Turtle language server we know of that checks itself against
 the full W3C test suites and real public ontologies; see
 [Tested against the real world](#tested-against-the-real-world).
 
+## What each file gets
+
+| | Turtle, TriG | N-Triples, N-Quads | JSON-LD | RDF/XML | OWL Functional | OWL/XML | SPARQL |
+|---|---|---|---|---|---|---|---|
+| Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Its data read by reasoning, SHACL validation and queries | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| Label, house-style and SHACL checks | ✓ | ✓ | ✓ | | | | |
+| Prefix checks | ✓ | | | | | | ✓ |
+| Completion | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Rename | ✓ | ✓ | ✓ | ✓ | | | ✓ |
+| Formatting, quick fixes | ✓ | ✓ | ✓ | | | | ✓ |
+| Label hints | ✓ | ✓ | ✓ | | | | ✓ |
+| Semantic colours | ✓ | ✓ | ✓ | | | | ✓ |
+| Run the query over the workspace | | | | | | | ✓ |
+
+A rename of a term that an OWL Functional or OWL/XML file uses is refused,
+and names the file. Protégé and ROBOT own the layout of OWL files, so
+nothing reformats them.
+
 ## Features
 
 - **Diagnostics**: syntax errors with recovery (one mistake does not hide the rest of the file; past 1,000 in one file, the editor shows the first 1,000 and one error that says there are more, and `turtle-lsp check` reports them all), undeclared/unused/duplicate prefixes, unknown or deprecated terms of well-known vocabularies (matched by namespace IRI, with "did you mean"), invalid IRIs and language tags, and ill-typed literals (`"twelve"^^xsd:integer`, `"2021-02-29"^^xsd:date`: a value not valid for its XSD datatype or `rdf:JSON`). With `diagnostics.workspace` on, files that are not open are checked too, in the background, as `turtle-lsp check` checks them.
 - **Completion**: after `prefix:`, terms of that namespace from 80+ bundled vocabularies and from your workspace, ranked by position (classes after `a`, properties in predicate position). Properties a SHACL shape requires for the subject's class come first ("required by …"), then properties whose `rdfs:domain` fits; after a property, instances of its range (or `sh:class`) come first and `sh:in` values are offered. Typing a bare local name (`Pers`) finds `foaf:Person`. Completing a well-known prefix that is not declared adds its `@prefix` line.
 - **Hover**: label, comment, types and where a term is described.
-- **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
+- **Navigation**: go to definition (where a resource is the subject), type definition (the resource's class), implementation (a class's instances and subclasses), references, rename across files, document highlight. On the prefix part of `ex:a`, these work on the prefix. A rename's new name reads the same in every file: a local name, `prefix:local`, `<IRI>`, or a bare absolute IRI (with `://`, or a scheme that is no declared prefix, as `urn:ex:a`). "N references" above each subject a file describes (code lenses; `codeLens.references` turns them off).
 - **Semantic highlighting and label hints**: IRIs are coloured by what they denote (class, property, individual, datatype), and an opaque name such as `ex:P0042` can show its label after it.
 - **Outline and search**: document symbols, workspace symbols, folding.
 - **Formatting**: one consistent layout for Turtle, TriG, N-Triples and N-Quads, built from the tokens: comments and statement order are kept, the graph never changes, and formatting twice changes nothing. Files with syntax errors are left alone.
@@ -51,9 +71,9 @@ the full W3C test suites and real public ontologies; see
 - **TriG, N-Triples and N-Quads**: `.trig`, `.nt` and `.nq` files get the same features. See [TriG, N-Triples and N-Quads](#trig-n-triples-and-n-quads).
 - **SPARQL**: `.rq`, `.sparql` and `.ru` files (queries and updates, SPARQL 1.1 and 1.2) get the same knowledge of the workspace and the vocabularies: diagnostics, completion, hover, navigation, rename, formatting and quick fixes. The SPARQL queries of SHACL shapes (`sh:select`, `sh:ask`, `sh:construct`, `sh:update`) get SPARQL highlighting, completion and hover inside the string. See [SPARQL](#sparql).
 - **JSON-LD**: `.jsonld` files (JSON-LD 1.1) join the workspace: their terms count in Turtle and SPARQL files, SHACL shapes validate their data with results on the key or value, and they get JSON syntax, context, undefined-key, IRI and language-tag diagnostics, plus completion, navigation, rename, formatting and semantic tokens inside the file. See [JSON-LD](#json-ld).
-- **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace, read-only: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, outline, folding and diagnostics at the exact attribute or name. Nothing writes RDF/XML: no formatting, rename, completion or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
-- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: the OBO edit files ROBOT and Protégé write are read as RDF/XML files are: their axioms become RDF triples by the W3C mapping, so their terms count in other files, and hover, definition, references, the outline, `query`, SHACL and reasoning see them. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`. Nothing writes Functional syntax. See [OWL Functional syntax](#owl-functional-syntax-ofn).
-- **OWL/XML (`.owx`, or a `.owl` that holds it)**: read as Functional syntax is, by the same W3C mapping, so the same features see it. Errors are at their exact spans (`xml-syntax`, `owx-syntax`), and an axiom with an error is left out. Nothing writes OWL/XML. See [OWL/XML](#owlxml-owx).
+- **RDF/XML (`.owl`, `.rdf`)**: Protégé's files join the workspace: their terms count everywhere, `check`, `query`, reasoning, SHACL and the graph read them, and inside the file you get hover, definition, references, rename, outline, folding and diagnostics at the exact attribute or name. Completion offers the element names and IRIs that fit at the cursor, and a term of a well-known namespace the file does not declare yet adds its `xmlns:p` to the root element. Rename edits each use in its own form, or refuses the whole rename and says where and why. Rename and completion are the only features that write RDF/XML: no formatting or quick fixes in it. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
+- **OWL Functional syntax (`.ofn`, or a `.owl` that holds it)**: the OBO edit files ROBOT and Protégé write are read as RDF/XML files are: their axioms become RDF triples by the W3C mapping, so their terms count in other files, and hover, definition, references, the outline, `query`, SHACL and reasoning see them. Each error is at its exact span (`ofn-syntax`), in the editors and in `check`. Completion offers the keywords and terms the grammar takes at the cursor; nothing else writes Functional syntax, rename included. See [OWL Functional syntax](#owl-functional-syntax-ofn).
+- **OWL/XML (`.owx`, or a `.owl` that holds it)**: read as Functional syntax is, by the same W3C mapping, so the same features see it. Errors are at their exact spans (`xml-syntax`, `owx-syntax`), and an axiom with an error is left out. Completion offers the elements the schema takes at the cursor and the IRIs of the element's kind, and a term of a well-known prefix the file does not declare yet adds its `<Prefix>` element; nothing else writes OWL/XML, rename included. See [OWL/XML](#owlxml-owx).
 - **Conformance**: W3C Turtle, TriG, N-Triples and N-Quads test suites, RDF 1.1 and 1.2: 1137/1137 pass (`tests/w3c_conformance.rs`); W3C SPARQL 1.1 and 1.2 syntax suites: 425/426 (`tests/w3c_sparql.rs`); W3C SPARQL 1.1 query evaluation through the query engine: 176 of the 183 tests in scope (`tests/w3c_sparql_eval.rs`); W3C JSON-LD 1.1 toRdf, expand and remote-doc suites: every test in scope but two (`tests/w3c_jsonld.rs`, see [JSON-LD](#json-ld)); W3C RDF/XML suite: 166/166 (`src/rdfxml/grammar.rs`); the Functional-Syntax inputs of the approved W3C OWL 2 test cases: 78/78 parse with no error (`src/ofn/tests.rs`), and the 57 of them with an RDF/XML text of the same ontology give its graph, but for 6 where the two texts differ (`tests/ofn_oracle.rs`).
 - **SHACL validation**: on save, and about a second after you stop typing, the workspace is validated against its SHACL shapes in the background (Turtle files together; each TriG or N-Triples dataset with them, never merged with another dataset) (SHACL Core and SHACL-SPARQL; W3C suites 98/98 and 23/23, `tests/w3c_shacl.rs`). Results appear on the offending triple, with the shape as related information. Settings `turtle.shacl.enabled`, `turtle.shacl.maxTriples` (default 2,000,000: the most triples one run validates, the shared triples and every dataset together) and `turtle.shacl.onType` (validate while typing; on by default). What validation could not check is reported, not passed over: a failed SHACL-SPARQL query or a check cut short is a `shacl-failure` warning, and a shape whose `sh:path` cannot be read is a `shacl-invalid-path` error.
 - **Reasoning** (on by default, with TurbOWL's default rules; `turtle.reasoning.rules` = `off` turns it off): TurbOWL, an OWL 2 RL reasoner, works out what the workspace and its imports imply, in the background after open, save and a pause in typing. Hover on a resource lists its inferred types under "Inferred", each with its proof: one W3C rule per step, each triple it rests on a link to its line. With `turtle.reasoning.diagnostics` on (off by default, since SHACL shapes often check the same rules), TurbOWL's findings, such as a member of two disjoint classes, are diagnostics on the term at fault, each triple of the proof a link to its line (`turbowl/<rule>`). `default` runs TurbOWL's default rules; `complete` runs every W3C OWL 2 RL rule and is slower. `turtle.reasoning.maxTriples` (default 2,000,000) is the most triples a run reads; past it, reasoning is skipped with a note. It also bounds the inferred triples read for hover: past it, hover says the list may be incomplete. An edit stops the run going on, and a run stops after 10 s; either way hover keeps the last result, and a stop at the time limit is reported (once as a message, then in the log) until a run finishes. Edits to SPARQL files do not rerun reasoning.
@@ -489,7 +509,8 @@ and vocabulary lints listed there, each checked by hand.
 ## RDF/XML and Protégé files (`.owl`, `.rdf`)
 
 Protégé saves ontologies as RDF/XML by default, in `.owl` files. turtle-lsp
-reads `.owl` and `.rdf` files as workspace files, read-only.
+reads `.owl` and `.rdf` files as workspace files. Only a rename and
+completion edit them.
 
 - **Which syntax**: the content decides, not the name. RDF/XML is read as
   RDF/XML; a `.owl` that holds Turtle or JSON-LD is read as that. An empty
@@ -514,11 +535,56 @@ reads `.owl` and `.rdf` files as workspace files, read-only.
   lints of its terms and literals (`invalid-literal`, `undescribed-term`,
   `unknown-term`, `deprecated-term`), each "did you mean" in the message
   only.
-- **Nothing writes RDF/XML**: no formatting, rename, completion, quick fixes
-  or `check --fix` on RDF/XML; `format .` passes over it. A rename of a
-  term an RDF/XML workspace file uses is refused and names the file, so the
-  workspace never disagrees with itself. Edit these files in Protégé. A
-  `.owl` or `.rdf` that holds Turtle or JSON-LD is that syntax: `format`,
+- **Rename edits RDF/XML**: renaming an IRI, from any file, edits the
+  RDF/XML workspace files that use it too, and a rename can start inside
+  one (on an element name in its start or end tag, an attribute name, an
+  `rdf:about`, `rdf:resource` or `rdf:datatype` value, or an `rdf:ID`).
+  References and highlights list end tags too. Each use keeps its form: a
+  relative value stays relative when the new IRI can be reached from the
+  `xml:base` in scope (on the same scheme and host): the shortest relative
+  reference that resolves to it, in the old value's style (`#x`, `x`,
+  `./x`, `../x`, `/x`, `?q`, `""`) when one does; `&ex;local` keeps its
+  entity; a value written with `&amp;` or `&apos;` is written again whole,
+  escaped for its quotes; a name keeps its prefix (or takes another prefix
+  in scope for the new namespace), and an element's start and end tags
+  change together. After the edits, the file must give the same triples
+  with the new IRI, or the rename is refused. A use that cannot be
+  rewritten exactly refuses the whole rename, with the file, the line and
+  the reason: a use read from an entity's replacement text, a value with
+  character references (`&#58;`), an IRI the syntax implies (`rdf:li`,
+  `rdf:first`, `rdf:nil`, `rdf:Statement`; the message gives the line and
+  column of what implies it), and a new namespace with no prefix in scope
+  (a rename adds no `xmlns`). A file with a syntax error, or whose DOCTYPE
+  gives attributes default values (`<!ATTLIST ... "value">`, which the
+  parser does not add), refuses any rename of an IRI its text may spell
+  (the full IRI, or its local name), at its first error: the parser may
+  not read every use in it. Where a rename could never succeed, whatever
+  the new name, prepareRename says so with the same message. Namespace
+  prefixes (`xmlns:p`) are not renamed.
+  An editor that supports change annotations (VS Code) shows the RDF/XML
+  edits for you to confirm first. `rename.rdfXml: false` turns this off: a
+  rename that would edit an RDF/XML file is then refused and names it.
+- **Completion**: Ctrl+Space reads the elements open at the cursor, so it
+  works while the file is half typed. After `<` where a node element goes
+  (inside `rdf:RDF`, or in `rdf:parseType="Collection"`), it offers
+  `rdf:Description` and the classes; where a property element goes, the
+  properties, ranked by the node's types as Turtle ranks predicates. Each
+  name uses a prefix in scope (a name in the default namespace is bare); a
+  local name that is no XML name is left out. In `rdf:about` it offers the
+  subjects the workspace describes, in `rdf:resource` the IRIs the property
+  takes (classes for `rdf:type` and `rdfs:subClassOf`), and in
+  `rdf:datatype` the datatypes, each as a full IRI, or as `&name;local`
+  after a reference to an entity the DOCTYPE declares. Part of an IRI or
+  of a local name narrows the list. A term of a well-known vocabulary
+  (SKOS, Dublin Core, FOAF, …) whose namespace has no prefix in scope adds
+  `xmlns:p="…"` to the root element's start tag on accept. Nothing is
+  offered in a comment, text, `rdf:parseType="Literal"` content, the
+  prolog or an attribute name. In VS Code, press Ctrl+Space inside an
+  attribute value: VS Code's XML language does not suggest inside strings
+  while you type.
+- **Nothing else writes RDF/XML**: no formatting, quick fixes or
+  `check --fix` on RDF/XML; `format .` passes over it. A `.owl` or
+  `.rdf` that holds Turtle or JSON-LD is that syntax: `format`,
   `check --fix` and editors that format it treat it as such (VS Code does
   not offer to format any `.owl` or `.rdf`).
 - **Editors**: VS Code, Neovim and the browser editor attach to `.owl`,
@@ -556,7 +622,7 @@ in attribute values.
 OWL 2 Functional-Style Syntax is what ROBOT and Protégé write for many OBO
 edit files (`cl-edit.owl`, `hp-edit.owl`, `ro-edit.owl`). turtle-lsp reads a
 `.ofn` file, and a `.owl` whose text starts with `Prefix(` or `Ontology(`,
-as Functional syntax, read-only, as it reads RDF/XML.
+as Functional syntax, read-only but for completion: nothing formats, fixes or renames it.
 
 - **Read as RDF**: each axiom becomes the RDF triples the W3C [mapping to
   RDF graphs](https://www.w3.org/TR/owl2-mapping-to-rdf/) gives it (an
@@ -611,8 +677,20 @@ as Functional syntax, read-only, as it reads RDF/XML.
   otherwise (`tests/ofn_oracle.rs`): the parse and mapping of
   `hp-edit.owl` (31 MB, 435,917 triples) take about 60 ms, and
   `turtle-lsp check` on it about 0.1 s and 300 MB.
-- **Nothing writes it**: no formatting, rename, completion, quick fixes
-  that edit the file or `check --fix`. An editor with static capabilities
+- **Completion**: Ctrl+Space offers what the grammar takes at the cursor,
+  read from the tokens before it, so it works while an axiom is half
+  typed: the axiom keywords inside `Ontology( … )`, and inside a construct
+  the expressions its next operand may be with the entities of the slot's
+  kind (classes where a class expression goes, object properties, data
+  properties, datatypes, individuals, annotation properties). After
+  `prefix:`, that namespace's terms, from the bundled vocabularies and the
+  workspace; at a bare position, also the declared prefixes (and the
+  well-known ones once a letter is typed). A term whose prefix the file does not declare adds its
+  `Prefix(p:=<…>)` line after the others. With snippets, a keyword comes
+  with its operands as placeholders. Nothing is offered in a full IRI
+  (`<http://…`), a string or a comment.
+- **Nothing else writes it**: no formatting, rename, quick fixes that edit
+  the file or `check --fix`. An editor with static capabilities
   (Neovim) gets the quick fix "Fetch `<IRI>` and cache it" on an
   unresolved web import, which edits nothing; VS Code asks for no code
   actions in it. `format .` passes over it, and a named `format onto.ofn`
@@ -642,7 +720,7 @@ OWL/XML, the [OWL 2 XML
 Serialization](https://www.w3.org/TR/owl2-xml-serialization/), is one of the
 formats Protégé and ROBOT save in. turtle-lsp reads a `.owx` file, in any
 letter case, and a `.owl` or `.rdf` file whose text is OWL/XML, as OWL/XML,
-read-only, as it reads OWL Functional syntax.
+read-only but for completion, as it reads OWL Functional syntax.
 
 - **Which files**: a `.owl` or `.rdf` text is OWL/XML when its root element
   is `Ontology` in the OWL namespace and has an `ontologyIRI`, or holds an
@@ -762,8 +840,26 @@ read-only, as it reads OWL Functional syntax.
   52.6 MB it is over the 50 MB limit of a workspace file, so `check` and
   the workspace index leave it out. A keystroke in a 1.1 MB OWL/XML file takes
   about 5 ms: each one reads and maps the whole file again.
-- **Nothing writes it**: no formatting, rename, completion, quick fixes
-  that edit the file or `check --fix`. `format .` passes over it, and a
+- **Completion**: Ctrl+Space reads the elements open at the cursor, so it
+  works while an axiom is half typed. After `<` inside `Ontology` it
+  offers the children the schema allows there, in its order (`Prefix` only
+  before the imports, annotations and axioms); inside a construct, the
+  elements its next operand may be (`Class` and the class expressions in
+  `SubClassOf`). In an `IRI` value, or an `IRI` element's text, it offers
+  the terms of the element's kind (classes in `Class`, object properties
+  in `ObjectProperty`) as full IRIs, and in `datatypeIRI` the datatypes;
+  in an `abbreviatedIRI` value, or an `AbbreviatedIRI` element's text,
+  `prefix:local` names over the prefixes the `Prefix` elements declare.
+  Part of an IRI or of a local name narrows the list. A term of a
+  well-known prefix the document does not declare adds its `<Prefix
+  name="…" IRI="…"/>` on accept, after the last `Prefix` element (or first
+  in `Ontology`). With snippets, an entity's element is written whole
+  (`<Class IRI="…"/>`, the cursor in the value) and any other element with
+  its end tag. Nothing is offered in a comment, a `Literal`'s text, the
+  prolog or a `nodeID`. In VS Code, press Ctrl+Space inside an attribute
+  value, as in RDF/XML.
+- **Nothing else writes it**: no formatting, rename, quick fixes that edit
+  the file or `check --fix`. `format .` passes over it, and a
   named `format onto.owx` says "not formatted: OWL/XML". A rename of a
   term an OWL/XML file uses is refused, naming the file.
 - **Editors**: VS Code, Neovim and the browser editor keep `.owx` files in
@@ -891,13 +987,13 @@ To change a setting, extend the config: for example
 before `vim.lsp.enable`.
 
 `.owl` and `.rdf` buffers keep Neovim's `xml` file type; the plugin starts
-the same client for them, so hover, definition, references, outline and
-diagnostics work there; formatting gives no edits and a rename is refused. See
-[RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf). `.owx`
+the same client for them, so hover, definition, references, outline,
+diagnostics and completion work there, and rename edits them; formatting
+gives no edits. See [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf). `.owx`
 buffers get the `xml` file type from the plugin, whatever their first line,
-and the same client and features; see [OWL/XML](#owlxml-owx). `.ofn`
-buffers get the file type `ofn` and the same features; nothing is written
-in them. See [OWL Functional syntax](#owl-functional-syntax-ofn).
+and the same client and features but rename; see [OWL/XML](#owlxml-owx).
+`.ofn` buffers get the file type `ofn` and the same features but rename;
+only completion writes in them. See [OWL Functional syntax](#owl-functional-syntax-ofn).
 
 ### Reasoning, code lenses and queries in Neovim
 
@@ -990,11 +1086,13 @@ with `vim.lsp.config("turtle_lsp", ...)`.
 
 The extension in [`editors/vscode`](editors/vscode) bundles the server and adds
 syntax highlighting for Turtle, TriG, N-Triples, N-Quads, SPARQL and OWL
-Functional syntax (`.ofn`, which gets the features that read and nothing that writes).
+Functional syntax (`.ofn`, which gets the features that read, and completion).
 It also attaches the server to `.jsonld` files, which keep VS Code's JSON
 highlighting, and to `.owl`, `.rdf` and `.owx` files, which keep its XML
 highlighting (`.owx` through a default `files.associations` entry,
-`"*.owx": "xml"`). Build and install it:
+`"*.owx": "xml"`). Completion works in all three; VS Code's XML language
+does not suggest inside attribute values while you type, so press
+Ctrl+Space there. Build and install it:
 
 ```sh
 cd editors/vscode
@@ -1018,7 +1116,8 @@ JSON-LD contexts), `turtle.imports.unresolved` (`soften` or `ignore`),
 `turtle.format.lineWidth`, `turtle.codeLens.references`,
 `turtle.diagnostics.workspace` (check files that are not open; off by
 default), `turtle.parse.incremental` (after an edit, parse only the
-statements around it; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
+statements around it; on by default), `turtle.rename.rdfXml` (a rename edits
+RDF/XML files too; on by default), and `turtle.query.timeoutSeconds`, `turtle.query.maxRows` and
 `turtle.query.maxBufferedRows` (for ▶ Run query), and `turtle.query.reasoning` (`off`, `default` or `complete`; off by default).
 With reasoning on, queries read the queried files plus external imports
 and everything TurbOWL infers, without a filter. Changing `query.*` settings
@@ -1090,7 +1189,8 @@ browser. Files never leave the tab.
   of at most 10 MB, and only Turtle, TriG, N-Triples, N-Quads, JSON-LD,
   RDF/XML (`.owl`, `.rdf`), OWL Functional (`.ofn`), OWL/XML (`.owx`) and
   SPARQL files. `.owl`, `.rdf` and `.owx` files open in the editor's XML
-  colouring, `.ofn` files in their own; each gets the features that read.
+  colouring, `.ofn` files in their own; each gets the features that read,
+  and completion.
 - **Graph**: the Graph button in the activity bar opens the workspace graph
   as an editor tab. Split (Ctrl+\\) moves it beside a file, and Go to
   definition opens the file in the other group, so the graph stays in view.
@@ -1139,6 +1239,9 @@ is also accepted.
 - **`parse.incremental`** (on by default) parses only the statements
   around an edit, in the editor; `false` parses the whole file on every
   edit. The command line always parses whole files.
+- **`rename.rdfXml`** (on by default) lets a rename edit the RDF/XML files
+  that use the IRI; `false` refuses such a rename instead. See
+  [RDF/XML and Protégé files](#rdfxml-and-protégé-files-owl-rdf).
 - **On the command line,** flags win over the file.
 - **In the editor,** the server reads the file in the first workspace folder,
   and again when it changes (if the editor reports file changes to the server).

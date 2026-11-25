@@ -991,6 +991,117 @@ ex:weight a owl:DatatypeProperty ; rdfs:domain ex:Widget ; rdfs:label "weight" .
   })
 })
 
+// The classes of a vocabulary in RDF/XML, as OWL API writes them: per class a
+// label, a comment and a superclass, and for one in four a restriction.
+function rdfXmlDoc(n) {
+  const c = (i) => `http://example.org/o#C${String(i).padStart(7, "0")}`
+  let out = `<?xml version="1.0"?>
+<rdf:RDF xmlns="http://example.org/o#"
+     xml:base="http://example.org/o"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://example.org/o"/>
+    <owl:ObjectProperty rdf:about="http://example.org/o#partOf"/>
+`
+  for (let i = 0; i < n; i++) {
+    const restriction =
+      i % 4 === 0
+        ? `        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://example.org/o#partOf"/>
+                <owl:someValuesFrom rdf:resource="${c(i >> 1)}"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+`
+        : ""
+    out += `
+
+    <!-- ${c(i)} (Class ${i}) -->
+
+    <owl:Class rdf:about="${c(i)}">
+        <rdfs:subClassOf rdf:resource="${c(i >> 1)}"/>
+${restriction}        <rdfs:comment>A class numbered ${i}.</rdfs:comment>
+        <rdfs:label xml:lang="en">Class ${i}</rdfs:label>
+    </owl:Class>
+`
+  }
+  return out + "</rdf:RDF>\n"
+}
+
+// The LSP position of byte `offset` of an ASCII text with \n line ends.
+function positionAt(text, offset) {
+  const before = text.slice(0, offset).split("\n")
+  return { line: before.length - 1, character: before[before.length - 1].length }
+}
+
+// Completion in OWL/XML and RDF/XML documents of the big-file size, beside
+// files that describe many subjects. In OWL/XML at a full IRI value, whose
+// answer walks every described term of the workspace for its namespace; in
+// RDF/XML at an element name where a node element goes, whose answer also
+// scans on to the end tag that closes the element it is in (`</rdf:RDF>`).
+// Each at the end of the document, where the cursor reads all the text before
+// it, and in the middle, where the RDF/XML scan reads the half after it. In the
+// middle of the RDF/XML document the open tag makes the parse read the rest as
+// its content, so fewer classes are described there and fewer items offered.
+scenario("xml-completion", "completion in OWL/XML and RDF/XML documents over 2 MB, at the end and in the middle", async () => {
+  const target = scaled(2_400_000)
+  const subjects = scaled(40000)
+  const perFile = 1000
+  const sized = (make, perClass) => {
+    let n = Math.ceil(target / perClass)
+    let doc = make(n)
+    while (doc.length < target) doc = make((n = Math.ceil(n * 1.05)))
+    return { n, doc }
+  }
+  const owx = sized(owlXmlDoc, 1100)
+  const rdf = sized(rdfXmlDoc, 300)
+  const header2 = `@prefix ex: <http://example.org/> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n`
+  await withDir("turtle-bench-xmlcomp-", async (ws) => {
+    for (let f = 0; f * perFile < subjects; f++) {
+      let out = header2
+      for (let i = f * perFile; i < Math.min(subjects, (f + 1) * perFile); i++)
+        out += `\nex:w${i} a ex:Widget ;\n    rdfs:label "Widget ${i}" .\n`
+      fs.writeFileSync(path.join(ws, `widgets${f}.ttl`), out)
+    }
+    await withServer(ws, async (s) => {
+      // `line` put into `doc` at `at` (the end: before its last line; the
+      // middle: before the class comment there), completed at the end of
+      // `typed` in it.
+      const complete = async (id, name, file, { n, doc }, at, line, typed) => {
+        const where = at === "end" ? doc.lastIndexOf("</") : doc.indexOf(`<!-- `, Math.floor(doc.length / 2))
+        const text = doc.slice(0, where) + line + doc.slice(where)
+        const offset = where + line.indexOf(typed) + typed.length
+        const u = uriOf(path.join(ws, file))
+        s.open(u, text, "xml")
+        await s.diagnosticsFor(u, WAIT)
+        const position = positionAt(text, offset)
+        let items = 0
+        let bytes = 0
+        const samples = await time(20, async () => {
+          const res = await s.request("textDocument/completion", { textDocument: { uri: u }, position })
+          items = (Array.isArray(res) ? res : (res?.items ?? [])).length
+          bytes = JSON.stringify(res).length
+        })
+        const size = `${n} classes, ${(text.length / 1024 / 1024).toFixed(1)} MB`
+        record(id, `${name} (${size})`, samples, {
+          notes: `${items} items, ${(bytes / 1024).toFixed(0)} KB; cursor at byte ${offset} of ${text.length}; ${subjects} described subjects beside`,
+        })
+        expect(items > 0, `${id}: no completion items`)
+        s.close(u)
+      }
+      const owxLine = `    <SubClassOf>\n        <Class abbreviatedIRI="obo:EX_0000001"/>\n        <Class IRI="http://purl.obolibrary.org/obo/EX_00001"/>\n    </SubClassOf>\n`
+      const owxTyped = `IRI="http://purl.obolibrary.org/obo/EX_00001`
+      await complete("owx-completion", "OWL/XML: IRI value completion at the end", "end.owx", owx, "end", owxLine, owxTyped)
+      await complete("owx-completion-middle", "OWL/XML: IRI value completion in the middle", "middle.owx", owx, "middle", owxLine, owxTyped)
+      const rdfLine = `    <C00001\n`
+      await complete("rdfxml-completion", "RDF/XML: element name completion at the end", "end.rdf", rdf, "end", rdfLine, "<C00001")
+      await complete("rdfxml-completion-middle", "RDF/XML: element name completion in the middle", "middle.rdf", rdf, "middle", rdfLine, "<C00001")
+      recordRss("rss-xml-completion", "XML completion: server RSS", rssMb(s.proc.pid))
+    })
+  })
+})
+
 scenario("trig-shacl", "200 TriG datasets and one shape: didSave validation and typing", async () => {
   const datasets = scaled(200)
   const per = 50

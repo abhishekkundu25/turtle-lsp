@@ -126,7 +126,7 @@
 //!   `owx-syntax`).
 
 use super::tree::{Document, Keyword as K, NodeKind};
-use super::{CODE, MAX_ERRORS, MAX_WARNINGS, more_warnings};
+use super::{CODE, MAX_ERRORS, MAX_WARNINGS, STANDARD, more_warnings};
 use crate::syntax::{
     BlankId, Form, Iri, Node, Parsed, PrefixDecl, RDF, Ref, Role, Severity, Span, Statement,
     Syntax, SyntaxError, Triple, XSD,
@@ -418,14 +418,6 @@ fn merge(a: Vec<SyntaxError>, b: Vec<SyntaxError>) -> Vec<SyntaxError> {
 }
 
 // ---- the Functional source ----
-
-/// The prefix names of Table 2, which every document has.
-const STANDARD: [(&str, &str); 4] = [
-    ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
-    ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
-    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
-    ("owl", "http://www.w3.org/2002/07/owl#"),
-];
 
 /// A Functional text, the source of the tree the grammar reads from it:
 /// every term is its text at its node's span.

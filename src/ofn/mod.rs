@@ -63,6 +63,7 @@
 //! most [`MAX_WARNINGS`] warnings, then one more warning. Time is linear
 //! in the text.
 
+pub(crate) mod expected;
 mod grammar;
 mod lexer;
 pub(crate) mod rdf;
@@ -78,6 +79,14 @@ use crate::syntax::Syntax;
 pub(crate) use crate::syntax::shown;
 use crate::syntax::{Parsed, Severity, Span, SyntaxError};
 use std::borrow::Cow;
+
+/// The prefix names of Table 2, which every document has.
+pub(crate) const STANDARD: [(&str, &str); 4] = [
+    ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
+    ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
+    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+    ("owl", "http://www.w3.org/2002/07/owl#"),
+];
 
 /// The diagnostic code of every error in a Functional document.
 pub(crate) const CODE: &str = "ofn-syntax";
@@ -174,8 +183,8 @@ impl Errors {
 }
 
 /// What the editor features see of a Functional document: its errors, its
-/// terms to hover, follow and list, as in RDF/XML, and nothing to complete,
-/// format or colour.
+/// terms to hover, follow and list, as in RDF/XML, its keywords and terms
+/// to complete, and nothing to format or colour.
 #[cfg(test)]
 mod gates {
     use super::*;
@@ -269,18 +278,26 @@ mod gates {
                 .map(|s| s.name)
                 .collect();
             assert_eq!(names, ["prefixes", "ex:o", ":A"]);
-            // Nothing is offered, formatted or coloured.
+            // Completion offers the keywords of the grammar and the terms of
+            // a slot's kind, and nothing in a string; nothing is formatted or
+            // coloured.
             assert!(!crate::features::writes(a.parsed.syntax));
-            for line in 0..8 {
-                for character in [0, 5, 12, 15] {
-                    let pos = Position::new(line, character);
-                    let got = completion::complete(&a, &k, Encoding::Utf8, pos);
-                    assert!(
-                        matches!(&got, CompletionResponse::Array(v) if v.is_empty()),
-                        "{got:?}"
-                    );
+            assert!(crate::features::completes(a.parsed.syntax));
+            let labels = |line, character| -> Vec<String> {
+                let pos = Position::new(line, character);
+                match completion::complete(&a, &k, Encoding::Utf8, pos) {
+                    CompletionResponse::Array(v) => v,
+                    CompletionResponse::List(l) => l.items,
                 }
-            }
+                .into_iter()
+                .map(|i| i.label)
+                .collect()
+            };
+            let at_axiom = labels(3, 0);
+            assert!(at_axiom.iter().any(|l| l == "SubClassOf"), "{at_axiom:?}");
+            let in_class = labels(5, 13);
+            assert!(in_class.iter().any(|l| l == ":A"), "{in_class:?}");
+            assert_eq!(labels(6, 37), Vec::<String>::new());
             assert_eq!(
                 format::formatting(&a, Encoding::Utf8, &format::Options::default()),
                 []

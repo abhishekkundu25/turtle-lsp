@@ -1,16 +1,22 @@
 // An RDF/XML file (.owl, .rdf) open in an editor: the client attaches to it
 // with XML's language id. It reads like any RDF document (hover, definition,
-// references, symbols, diagnostics), and nothing writes it. A client that
-// opts in (`registerOutsideRdfXml` in initializationOptions, as VS Code does)
-// and registers formatting, rename, completion and code actions itself gets
-// them for the documents the server writes only, so the editor offers none
-// of them in these files. Every other client gets the static capabilities,
-// as before, and empty answers here.
+// references, symbols, diagnostics), and only rename and completion write
+// it: a rename of an IRI it uses edits it too, and one can start in it (`rename.rdfXml` off:
+// neither). A client that opts in (`registerOutsideRdfXml` in
+// initializationOptions, as VS Code does) and registers formatting, rename,
+// completion and code actions itself gets formatting and code actions for
+// the other documents only, and rename and completion for these files too
+// (completion offers RDF/XML names and IRIs), so the editor offers no
+// other writer in them. Every other client gets the
+// static capabilities, as before, and empty answers here but for rename. A
+// client that takes change annotations gets the RDF/XML edits marked to be
+// confirmed.
 import { test, describe, before, after } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { startServer, uriOf, positionOf, tempDir } from "./lsp-client.mjs"
+import { applyEdits } from "./jsonld-fixtures.mjs"
 
 const ONTO = `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -42,6 +48,11 @@ const DYNAMIC = {
   workspace: { didChangeWatchedFiles: dynamic },
 }
 const OPT_IN = { registerOutsideRdfXml: true }
+// What VS Code's client declares for workspace edits.
+const ANNOTATIONS = { workspaceEdit: { documentChanges: true, changeAnnotationSupport: { groupsOnLabel: true } } }
+// The two files after renaming ex:Widget to ex:Thing.
+const ONTO_RENAMED = ONTO.replaceAll("http://example.org/Widget", "http://example.org/Thing")
+const DATA_RENAMED = DATA.replace("ex:Widget", "ex:Thing")
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const contents = (h) => JSON.stringify(h?.contents ?? null)
@@ -78,14 +89,15 @@ describe("a client that opts in and registers features dynamically", () => {
   let w, s
   before(async () => {
     w = workspace()
-    s = await startServer({ cwd: w.dir, rootUri: uriOf(w.dir), capabilities: DYNAMIC, initializationOptions: OPT_IN })
+    const capabilities = { ...DYNAMIC, workspace: { ...DYNAMIC.workspace, ...ANNOTATIONS } }
+    s = await startServer({ cwd: w.dir, rootUri: uriOf(w.dir), capabilities, initializationOptions: OPT_IN })
   })
   after(async () => {
     await s.stop()
     fs.rmSync(w.dir, { recursive: true, force: true })
   })
 
-  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced", async () => {
+  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced; rename for RDF/XML too, completion for RDF/XML and OWL/XML", async () => {
     for (const p of PROVIDERS) assert.equal(s.init.capabilities[p], undefined, p)
     // What reads stays static, and applies to .owl too.
     for (const p of ["hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider", "foldingRangeProvider"]) {
@@ -103,12 +115,17 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.deepEqual(features.map((r) => r.method).sort(), [...FEATURES].sort())
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
+      // Completion's also has OWL Functional syntax's language and the
+      // RDF/XML and OWL/XML patterns, rename's the RDF/XML pattern.
+      const completion = r.method === "textDocument/completion"
+      const rename = r.method === "textDocument/rename"
+      const added = completion ? ["ofn", "**/*.{owl,rdf}", "**/*.owx"] : rename ? ["**/*.{owl,rdf}"] : []
       assert.deepEqual(
         selector.map((f) => f.language ?? f.pattern),
-        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld"],
+        ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...added],
         r.method,
       )
-      assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)
+      if (!rename && !completion) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.method)
     }
     const options = Object.fromEntries(features.map((r) => [r.method, r.registerOptions]))
     assert.equal(options["textDocument/rename"].prepareProvider, true)
@@ -149,12 +166,48 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.ok(errors.length > 0, "no error for broken XML")
   })
 
-  test("the server writes nothing in it, asked anyway", async () => {
+  test("the server formats nothing in it, asked anyway, and completes its IRIs; a rename edits it, each RDF/XML edit to be confirmed", async () => {
     const at = { textDocument: { uri: w.onto }, position: positionOf(ONTO, 'about="http://example.org/Widg') }
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.onto }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
-    const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "ex:Thing" })
-    assert.match(renamed.error ?? "", /RDF\/XML document is not edited/, JSON.stringify(renamed))
+    // Completion is registered for it, and offers the subject, replacing the whole value.
+    const completion = await attempt(s, "textDocument/completion", at)
+    const widget = (completion.result?.items ?? []).find((i) => i.label === "http://example.org/Widget")
+    assert.ok(widget, JSON.stringify(completion).slice(0, 300))
+    assert.deepEqual(widget.textEdit.range, {
+      start: positionOf(ONTO, 'about="http://example.org/Widg', 'about="'.length),
+      end: positionOf(ONTO, 'about="http://example.org/Widget'),
+    })
+    // The whole value, from inside the .owl.
+    const prepared = await s.request("textDocument/prepareRename", at)
+    const value = 'about="http://example.org/Widget"'
+    const start = positionOf(ONTO, value, 'about="'.length)
+    const end = positionOf(ONTO, value, value.length - 1)
+    assert.deepEqual(prepared, { start, end })
+    for (const [from, where] of [[w.onto, at], [w.data, { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:Widg") }]]) {
+      const edit = await until(
+        () => attempt(s, "textDocument/rename", { ...where, newName: from === w.onto ? "Thing" : "ex:Thing" }),
+        (r) => r.result?.documentChanges?.length === 2,
+      )
+      const { documentChanges, changeAnnotations, changes } = edit.result ?? {}
+      assert.equal(changes, undefined, JSON.stringify(edit))
+      const [id] = Object.keys(changeAnnotations ?? {})
+      assert.deepEqual(changeAnnotations[id], {
+        label: "Rename in RDF/XML",
+        needsConfirmation: true,
+        description: "Edits RDF/XML documents (.owl, .rdf): check them before they are applied",
+      })
+      const byUri = Object.fromEntries(documentChanges.map((d) => [d.textDocument.uri, d.edits]))
+      assert.ok(byUri[w.onto].every((e) => e.annotationId === id), JSON.stringify(byUri[w.onto]))
+      assert.ok(byUri[w.data].every((e) => e.annotationId === undefined), JSON.stringify(byUri[w.data]))
+      assert.equal(applyEdits(ONTO, byUri[w.onto]), ONTO_RENAMED, from)
+      assert.equal(applyEdits(DATA, byUri[w.data]), DATA_RENAMED, from)
+    }
+    // A broken RDF/XML file that uses the IRI refuses the whole rename,
+    // with its file and line.
+    const broken = { textDocument: { uri: w.broken }, position: positionOf(BROKEN, 'about="http://example.org/') }
+    const refused = await attempt(s, "textDocument/rename", { ...broken, newName: "y" })
+    assert.match(refused.error ?? "", /^can't rename in .*broken\.rdf: line \d+: the document has a syntax error/, JSON.stringify(refused))
   })
 })
 
@@ -199,7 +252,7 @@ describe("a client that does not register features dynamically", () => {
     fs.rmSync(w.dir, { recursive: true, force: true })
   })
 
-  test("gets the static capabilities, no registration, and nothing written in a .owl", async () => {
+  test("gets the static capabilities, no registration, and nothing written in a .owl but by a rename, with plain edits, or a completion", async () => {
     for (const p of PROVIDERS) assert.ok(s.init.capabilities[p], p)
     s.open(w.onto, ONTO, "xml")
     await s.diagnosticsFor(w.onto, 10000)
@@ -210,15 +263,71 @@ describe("a client that does not register features dynamically", () => {
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.onto }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
     const prepared = await attempt(s, "textDocument/prepareRename", at)
-    // Nothing to rename here; rename itself says why.
-    assert.deepEqual(prepared, { result: null })
-    const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "ex:Thing" })
-    assert.match(renamed.error ?? "", /RDF\/XML document is not edited/, JSON.stringify(renamed))
+    assert.ok(prepared.result?.start, JSON.stringify(prepared))
+    // No change annotations without the client's support.
+    const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "<http://example.org/Thing>" })
+    assert.equal(renamed.result?.documentChanges, undefined, JSON.stringify(renamed))
+    assert.equal(renamed.result?.changeAnnotations, undefined, JSON.stringify(renamed))
+    assert.equal(applyEdits(ONTO, renamed.result.changes[w.onto]), ONTO_RENAMED)
     const actions = await attempt(s, "textDocument/codeAction", { ...at, range: { start: at.position, end: at.position }, context: { diagnostics: [] } })
     const edits = (actions.result ?? []).filter((a) => a.edit)
     assert.deepEqual(edits, [], JSON.stringify(actions))
     const completion = await attempt(s, "textDocument/completion", at)
     const items = Array.isArray(completion.result) ? completion.result : (completion.result?.items ?? [])
-    assert.deepEqual(items, [], JSON.stringify(completion).slice(0, 300))
+    assert.ok(items.some((i) => i.label === "http://example.org/Widget"), JSON.stringify(completion).slice(0, 300))
+  })
+})
+
+describe("a .owl that is not open", () => {
+  let w, s
+  before(async () => {
+    w = workspace()
+    s = await startServer({ cwd: w.dir, rootUri: uriOf(w.dir), capabilities: { workspace: ANNOTATIONS } })
+  })
+  after(async () => {
+    await s.stop()
+    fs.rmSync(w.dir, { recursive: true, force: true })
+  })
+
+  test("is edited from the index by a rename in a Turtle file, with its edits to be confirmed", async () => {
+    s.open(w.data, DATA)
+    const inData = { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:Widg") }
+    const edit = await until(
+      () => attempt(s, "textDocument/rename", { ...inData, newName: "ex:Thing" }),
+      (r) => r.result?.documentChanges?.length === 2,
+    )
+    const byUri = Object.fromEntries((edit.result?.documentChanges ?? []).map((d) => [d.textDocument.uri, d.edits]))
+    assert.ok(byUri[w.onto]?.every((e) => e.annotationId), JSON.stringify(edit))
+    assert.equal(applyEdits(ONTO, byUri[w.onto]), ONTO_RENAMED)
+    assert.equal(applyEdits(DATA, byUri[w.data]), DATA_RENAMED)
+  })
+})
+
+describe("with rename.rdfXml off", () => {
+  let w, s
+  before(async () => {
+    w = workspace()
+    s = await startServer({ cwd: w.dir, rootUri: uriOf(w.dir), initializationOptions: { "rename.rdfXml": false } })
+  })
+  after(async () => {
+    await s.stop()
+    fs.rmSync(w.dir, { recursive: true, force: true })
+  })
+
+  test("nothing is renamed in a .owl, nor in a Turtle file that shares the IRI with one", async () => {
+    s.open(w.onto, ONTO, "xml")
+    s.open(w.data, DATA)
+    const at = { textDocument: { uri: w.onto }, position: positionOf(ONTO, 'about="http://example.org/Widg') }
+    await until(() => s.request("textDocument/hover", at), (h) => contents(h).includes("A thing with parts."))
+    // Nothing to rename here; rename itself says why.
+    assert.deepEqual(await attempt(s, "textDocument/prepareRename", at), { result: null })
+    const renamed = await attempt(s, "textDocument/rename", { ...at, newName: "Thing" })
+    assert.match(renamed.error ?? "", /RDF\/XML document is not edited/, JSON.stringify(renamed))
+    const inData = { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:Widg") }
+    const fromData = await until(
+      () => attempt(s, "textDocument/rename", { ...inData, newName: "ex:Thing" }),
+      (r) => Boolean(r.error),
+    )
+    assert.match(fromData.error ?? "", /onto\.owl: an RDF\/XML document is not edited/, JSON.stringify(fromData))
   })
 })

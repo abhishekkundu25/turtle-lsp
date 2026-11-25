@@ -16,8 +16,8 @@ import path from "node:path"
 import zlib from "node:zlib"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-/** The most the engine may weigh gzipped, in bytes (it weighs about 3.45 MB with TurbOWL and queries over inferred triples; the budget leaves about 7%). */
-export const WASM_GZIP_BUDGET = 3_700_000
+/** The most the engine may weigh gzipped, in bytes. It weighs about 3.71 MB with TurbOWL, queries over inferred triples, RDF/XML rename, and completion in OWL Functional syntax, OWL/XML and RDF/XML (3.61 MB before rename and these completions); the budget leaves about 2.4%. */
+export const WASM_GZIP_BUDGET = 3_800_000
 
 /** Monaco's language services the editor never starts: it opens Turtle, TriG, N-Triples, N-Quads, SPARQL and JSON-LD (JSON). Each with the prefix of its chunk files. */
 const UNUSED_LANGUAGES = { typescript: "ts", css: "css", html: "html" }

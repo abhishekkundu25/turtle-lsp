@@ -222,8 +222,8 @@ pub(crate) fn undescribed_terms(a: &Analysis, k: &Knowledge, enc: Encoding) -> V
             }
         },
     );
-    // Nothing edits RDF/XML: the suggestion stays in the message, with no
-    // fix to apply.
+    // No fix edits RDF/XML (only a rename and completion do): the
+    // suggestion stays in the message, with no fix to apply.
     if !super::writes(a.parsed.syntax) {
         for d in &mut found {
             d.data = None;
@@ -457,7 +457,7 @@ mod tests {
     /// `undescribed-term` runs on RDF/XML (decision 8), its suggestion in
     /// the message and spelt as the text spells the term (a qualified name
     /// in the XML namespace in scope, else the IRI as an attribute value
-    /// holds it), with no fix: nothing edits RDF/XML.
+    /// holds it), with no fix: no fix edits RDF/XML.
     #[test]
     fn rdfxml_gets_undescribed_terms_with_no_fix() {
         use crate::features::rdfxml_fixture as fx;

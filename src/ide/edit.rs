@@ -40,7 +40,13 @@ impl Session<'_> {
         {
             return None;
         }
-        Some(completion::complete(&a, k, self.enc, at.position))
+        Some(completion::complete_in(
+            &a,
+            k,
+            self.enc,
+            at.position,
+            self.snippets,
+        ))
     }
 
     /// `completionItem/resolve`: by the SPARQL resolver when the item's data

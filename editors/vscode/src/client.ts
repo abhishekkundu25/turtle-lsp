@@ -24,8 +24,8 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as c
  * The languages the extension contributes that the server reads and never
  * writes: `ofn`, OWL Functional syntax (`.ofn`), which gets what an RDF/XML
  * file gets (diagnostics, hover, definition, references, highlights,
- * symbols, folding). The server registers nothing that writes for them
- * (src/server/registrations.rs).
+ * symbols, folding) and completion. The server registers completion for
+ * them and nothing else that writes (src/server/registrations.rs).
  */
 export const READ_ONLY_LANGUAGES = ["ofn"] as const
 
@@ -33,13 +33,21 @@ export const READ_ONLY_LANGUAGES = ["ofn"] as const
 // server attaches to them by name, and detects JSON-LD from the extension.
 export const JSONLD_PATTERN = "**/*.jsonld"
 
-// RDF/XML and OWL/XML files keep VS Code's XML language too (`.owx` through
-// the manifest's `files.associations` default, as VS Code's XML language does
-// not list it). The server reads them by their name and content and does not
-// write them: asked with OPT_IN, it registers formatting, rename, completion
-// and code actions for the other documents only, so VS Code lists no
-// turtle-lsp formatter for XML files.
-export const RDFXML_PATTERN = "**/*.{owl,rdf,owx}"
+// RDF/XML files keep VS Code's XML language too. The server reads them by
+// their content, and only a rename and completion write them: asked with
+// OPT_IN, it registers formatting and code actions for the other documents
+// only, so VS Code lists no turtle-lsp formatter for XML files, and rename
+// and completion for these files too (their selectors have this pattern; the
+// server's RDFXML_PATTERN in src/server/registrations.rs must equal it).
+export const RDFXML_PATTERN = "**/*.{owl,rdf}"
+
+// OWL/XML files keep VS Code's XML language too (through the manifest's
+// `files.associations` default, as VS Code's XML language does not list
+// `.owx`). The server reads them by their name and content, and only
+// completion writes them: it registers nothing else that writes for them,
+// rename included, and completion for them (its selector has this pattern; the server's
+// OWX_PATTERN in src/server/registrations.rs must equal it).
+export const OWX_PATTERN = "**/*.owx"
 
 /**
  * The `initializationOptions` key that asks the server for those
@@ -60,6 +68,7 @@ export function documentSelector(schemes: readonly string[]): DocumentFilter[] {
       .flatMap((scheme) => [
         { scheme, pattern: JSONLD_PATTERN },
         { scheme, pattern: RDFXML_PATTERN },
+        { scheme, pattern: OWX_PATTERN },
       ]),
   ]
 }

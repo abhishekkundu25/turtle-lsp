@@ -96,6 +96,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Go on lexing from `pos`, a byte where a token may start (after a
+    /// token or a comment that the lexer read before).
+    pub(crate) fn seek(&mut self, pos: usize) {
+        self.pos = pos.max(self.pos).min(self.text.len());
+    }
+
     fn span(&self, start: usize) -> Span {
         Span::new(start as u32, self.pos as u32)
     }

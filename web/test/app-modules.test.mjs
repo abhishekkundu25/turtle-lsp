@@ -13,7 +13,7 @@ import { esc } from "../app/dom.js"
 import { lineStarts, offsetOf, positionAt, lineAt, applyEdits } from "../app/text.js"
 import { dirOf, nameOf, join, under, uriOf, ROOT } from "../app/paths.js"
 import { KNOWN, LIMITS, admit, picked, walkDropped, walkHandle, readTextCapped, limitsNote, readUtf8 } from "../app/files.js"
-import { languageOf, READ_ONLY } from "../app/editor-lsp.js"
+import { languageOf, READ_ONLY, COMPLETED } from "../app/editor-lsp.js"
 import { resolveIn, listen } from "./static-server.mjs"
 import { wanted, checkBudget, copyMonaco, WASM_GZIP_BUDGET } from "../build.mjs"
 
@@ -117,6 +117,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   for (const name of ["onto.owl", "dir/data.RDF", "a.owx", "dir/O.OWX"]) assert.equal(languageOf(name), "xml", name)
   for (const name of ["onto.ofn", "dir/O.OFN"]) assert.equal(languageOf(name), "ofn", name)
   assert.deepEqual(READ_ONLY, ["xml", "ofn"])
+  assert.deepEqual(COMPLETED, ["ofn", "xml"])
   assert.equal(languageOf("carol.jsonld"), "json")
   assert.equal(languageOf("a.ttl"), "turtle")
   // The file tree's badge and the status bar name the language.
@@ -126,17 +127,17 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   // An .owx file is XML to Monaco; the status bar names it OWL/XML.
   assert.match(editor, /\/\\\.owx\$\/i\.test\(file\) \? "OWL\/XML" : \{/)
   // connect() registers the server's features on its languages, JSON, XML
-  // and OWL Functional syntax; on the last two, only those that read.
+  // and OWL Functional syntax; on the last two, only those that read, and
+  // completion, and on XML rename too.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
-  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n/)
+  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n\s*const renames = lang !== "ofn"\n/)
   const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
+  assert.deepEqual(registered("if \\(writable \\|\\| COMPLETED\\.includes\\(lang\\)\\) "), ["registerCompletionItemProvider"])
   assert.deepEqual(registered("if \\(writable\\) "), [
     "registerCodeActionProvider",
-    "registerCompletionItemProvider",
     "registerDocumentFormattingEditProvider",
     "registerDocumentSemanticTokensProvider",
     "registerInlayHintsProvider",
-    "registerRenameProvider",
   ])
   assert.deepEqual(registered(""), [
     "registerCodeLensProvider",
@@ -147,6 +148,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
     "registerHoverProvider",
     "registerReferenceProvider",
   ])
+  assert.deepEqual(registered("if \\(renames\\) "), ["registerRenameProvider"])
 })
 
 test("a local file is read as UTF-8, its byte order mark dropped, and refused with the offset of its first bad byte", async () => {

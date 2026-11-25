@@ -15,9 +15,9 @@ say the rest.
 | `syntax` | Turtle, TriG, N-Triples and N-Quads lexer and parser; `syntax::names`, the rules for writing an IRI in Turtle; `syntax::sniff`, which syntax a text's start is in | most modules: all but `clock`, `commands`, `diagnose`, `fetch`, `server` and `worker` |
 | `sparql` | SPARQL documents: tokens, structure, checks, formatting; the SPARQL language features in `sparql::features` | `analysis`, `batch`, `diagnose`, `features`, `ide`, `layout`, `query`, `shacl` |
 | `jsonld` | JSON-LD 1.1: a fault-tolerant JSON parser, context processing, expansion and conversion to the same parse as Turtle | `analysis`, `features`, `server`, `workspace` |
-| `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner (`rdfxml::xml`), with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term | `analysis`, `imports`; `owx` (the scanner) |
+| `rdfxml` | RDF/XML 1.1: a fault-tolerant XML scanner (`rdfxml::xml`), with its limits on what the XML may ask for, and the RDF/XML grammar over it, into the same parse as Turtle with the exact span of every term; the rename planner (`rdfxml::rename`) over the same grammar; the XML cursor (`rdfxml::xml::cursor`), what is open and typed at an offset, and what may come there in RDF/XML (`rdfxml::expected`), for completion | `analysis`, `features` (rename, completion), `imports`; `owx` (the scanner and the cursor) |
 | `ofn` | OWL 2 Functional-Style Syntax: a lexer, the grammar of the OWL 2 specification into a flat tree with the exact span of every construct, read on past each error to the next axiom, the signature table of the constructs' operands, and the W3C mapping of the tree to RDF, which asks a source for each term, into the same parse as Turtle with the exact span of every IRI | `analysis`, `features`, `imports`, `owx` |
-| `owx` | The OWL 2 XML Serialization (OWL/XML): a reader over the `rdfxml` scanner that checks the Recommendation's schema and prose and builds the `ofn` tree, mapped by the `ofn` mapping through a source of its own | `analysis`, `features`, `imports` |
+| `owx` | The OWL 2 XML Serialization (OWL/XML): a reader over the `rdfxml` scanner that checks the Recommendation's schema and prose and builds the `ofn` tree, mapped by the `ofn` mapping through a source of its own; what may come at an offset (`owx::expected`), for completion | `analysis`, `features`, `imports` |
 | `analysis` | One document's parse, positions and per-IRI indexes | `batch`, `diagnose`, `extensions`, `features`, `ide`, `imports`, `knowledge`, `oracle`, `query`, `reasoning`, `server`, `sparql`, `workspace` |
 | `workspace` | Open documents, indexed files and project prefixes; the file-kind table | `batch`, `cli`, `extensions`, `features`, `ide`, `imports`, `oracle`, `server` |
 | `knowledge` | What the workspace says about each IRI | `batch`, `diagnose`, `extensions`, `features`, `ide`, `imports`, `reasoning`, `server`, `sparql`, `workspace` |
@@ -47,8 +47,8 @@ Run query lens. The libraries `syntax`, `rdf`, `shacl`, `sparql::lexer` and
 the lexer name only `syntax`. The RDF/XML frontend `rdfxml` and the OWL
 Functional frontend `ofn` name only `syntax`, so they can move with the
 parsers. The OWL/XML frontend `owx` names `syntax`, `ofn` (the tree, the
-signature table, the mapping) and `rdfxml::xml` (the scanner), and nothing
-else of `rdfxml`. The libraries and these frontends name no protocol
+signature table, the slot machine, the mapping) and `rdfxml::xml` (the
+scanner and its cursor), and nothing else of `rdfxml`. The libraries and these frontends name no protocol
 crate (`lsp_types`, `lsp_server`, `serde_json`). Nothing below `server`
 names `crate::server`: outside `server` and `extensions`, no file does.
 Product code never names `crate::oracle`, the tests' incremental oracle.
@@ -82,9 +82,13 @@ Inside the larger modules, these files hold one part each:
 | `src/knowledge/{facts,counts,update,read}.rs` | The knowledge index in parts: what one source contributes (`DocFacts`) and its builder; the per-item counts and the sorted walks that diff them; the sources and their update, which records the change set (`Changes`); the read side, what the index says about an IRI |
 | `src/imports/ntriples.rs` | A fetched RDF/XML, OWL Functional or OWL/XML import as N-Triples text, for the import cache |
 | `src/workspace/kinds.rs` | The file-kind table (`ROWS`): which extensions and file names are RDF (`.ofn` among them, OWL Functional syntax, and `.owx`, OWL/XML), RDF whose syntax its content gives (`.owl`, `.rdf`), SPARQL, catalogs or JSON, and in which letter case |
-| `src/ofn/{lexer,grammar,signature,tree,rdf}.rs` | OWL Functional syntax: the tokens and their spans; the productions, the checks the specification states, and recovery at the next axiom; the signature table (each construct's argument slots, the kind of entity an IRI slot names, which keywords are axioms), which the grammar and the OWL/XML reader both read; the flat tree in preorder, each node's span and the index past its subtree, and the items not read whole; the mapping to RDF (the operator T of OWL 2 Mapping to RDF Graphs, section 2), with references, statements and definitions, which asks a `Source` (one per syntax) for each term's value, form and span |
+| `src/ofn/{lexer,grammar,signature,tree,rdf,expected}.rs` | OWL Functional syntax: the tokens and their spans; the productions, the checks the specification states, and recovery at the next axiom; the signature table (each construct's argument slots, the kind of entity an IRI slot names, which keywords are axioms, the kinds the reserved vocabulary and an `rdf:type` give an IRI), which the grammar and the OWL/XML reader both read; the flat tree in preorder, each node's span and the index past its subtree, and the items not read whole; the mapping to RDF (the operator T of OWL 2 Mapping to RDF Graphs, section 2), with references, statements and definitions, which asks a `Source` (one per syntax) for each term's value, form and span; what completion reads at the cursor (the keywords and the kinds of IRI the grammar takes there, from the tokens before it) and where a new `Prefix( … )` declaration goes, and the slot machine behind it, which `owx::expected` drives with child elements |
 | `src/owx/{reader,source}.rs` | OWL/XML: the reader, one walk over the scanner's events that fills each construct's signature from its child elements, resolves `xml:base` and checks the schema, into the `ofn` tree and the terms it does not hold; the source that answers the mapping from the text and those terms |
+| `src/owx/expected.rs` | What may come at an offset of an OWL/XML text: the element names after a `<` (the root's children in the schema's order, a construct's next operand through the slot machine of `ofn::expected`), or the IRIs of an `IRI`, `abbreviatedIRI` or `datatypeIRI` value or an `IRI` element's text; and where a new `<Prefix>` element goes |
 | `src/rdfxml/xml.rs` | The XML scanner: spans, namespaces, entities and their limits, and the count of every fault (`Scanner::faults`: each error, reported or past the cap, each reference left unexpanded, each element skipped for its depth), which the OWL/XML reader reads to know whether an axiom was read whole |
+| `src/rdfxml/xml/cursor.rs` | The XML cursor, the seam of completion in both XML syntaxes: the elements open at an offset (each with its children closed before it), where the offset is (a name, an attribute value, text, a comment) and the namespaces in scope, read with the scanner up to the construct the offset is in |
+| `src/rdfxml/expected.rs` | What may come at an offset of an RDF/XML text: a node or a property element's name, by the striping of RDF/XML from the root (`rdf:parseType` included), or an `rdf:about`, `rdf:resource` or `rdf:datatype` value; the end tags a new element would take; and where a new `xmlns:p` declaration goes |
+| `src/features/completion/{owx,rdfxml}.rs` | Completion in OWL/XML and RDF/XML, over `owx::expected` and `rdfxml::expected`: the element names (in OWL/XML with snippets), the terms of the slot's kind as full IRIs, `prefix:local` names or qualified names, ranked as Turtle ranks them, and the declaration a term of an undeclared well-known namespace adds |
 | `tests.rs` and `review_tests.rs` beside a module | The module's unit tests in a file of their own (`#[cfg(test)] mod tests;`): `src/{knowledge,server,workspace}/tests.rs`, `src/{server,workspace}/review_tests.rs`, `src/syntax/parser/{tests,review_tests}.rs`, `src/jsonld/{context,json}/tests.rs`, `src/rdfxml/grammar/tests.rs`, `src/shacl/validate/tests.rs` |
 | `src/shacl/model.rs` | The shapes in a graph, with their paths, targets and parameters |
 | `src/shacl/vocab.rs` | The SHACL, RDF, RDFS and OWL IRIs the SHACL code compares against, interned once |
@@ -97,7 +101,8 @@ Inside the larger modules, these files hold one part each:
 | `src/server/wire.rs` | The stdio transport and the `initialize` handshake |
 | `src/server/timers.rs` | The server's one-shot timers, keyed by what they are for |
 | `src/server/workspace_diagnostics.rs` | The diagnostics of files that are not open |
-| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl`, `.rdf`, `.owx` (all three in the editor's XML language) and the read-only `ofn` language (`.ofn`) out |
+| `src/server/registrations.rs` | Formatting, rename, completion and code actions: static capabilities, or, for a client that opts in (`registerOutsideRdfXml` in `initializationOptions`, as VS Code does) and registers them itself, registered for a selector that leaves `.owl`, `.rdf`, `.owx` (all three in the editor's XML language) and the read-only `ofn` language (`.ofn`) out; completion's selector takes all four in, rename's `.owl` and `.rdf` |
+| `src/rdfxml/rename.rs` | The edits that rename an IRI in an RDF/XML document, placed at the spans the grammar records for each use (`grammar::uses`), checked by parsing the edited text again, or why the rename is refused (file, line, reason) |
 
 ## One parse per document version
 
@@ -123,9 +128,33 @@ entity reference, `rdf:ID`, `rdf:li`, a name in the default namespace) is
 `Form::Anchor`: features that slice the text at a reference or write there
 (rename, quick fixes, refactorings, hover's quoted name, inlay hints,
 semantic tokens) leave it out. The syntax gates the writing:
-`features::writes` keeps RDF/XML read-only (no rename, quick fix,
-refactoring or formatting), and it gets no completion, splice, semantic
-tokens or inlay hints. OWL Functional syntax (`Syntax::OwlFunctional`: a
+`features::writes` keeps RDF/XML read-only for quick fixes, refactorings,
+formatting and `check --fix`, and it gets no splice, semantic tokens or
+inlay hints. Completion (`features::completes`) writes RDF/XML too:
+`rdfxml::expected` reads what may come at the cursor from the elements
+the XML cursor (`rdfxml::xml::cursor`) finds open there, and
+`features::completion::rdfxml` offers names and IRIs, a term of an
+undeclared well-known namespace adding its `xmlns:p` to the root element.
+Rename is the other writer of RDF/XML (`features::renames`, which
+`Syntax::family()` cannot answer: it groups RDF/XML with the read-only OWL
+syntaxes), and not through those
+references: `navigation::rename_term` asks `rdfxml::rename`
+for each RDF/XML document that names the IRI. The planner parses the text
+again with the grammar recording each use (an IRI attribute value with its
+base and entity, `rdf:ID`, an element name with its end tag, a property
+attribute name, with the namespaces in scope), writes each in its form,
+then parses the edited text and requires the same graph with the new IRI
+and no error. Anything else (a use from an entity, character references,
+an IRI a production implies) refuses the whole rename before anything is
+written. A document with a syntax error or `<!ATTLIST>` defaults is not
+edited at all, and `rdfxml::rename::blocked` makes it refuse any rename
+of an IRI its text may spell: the grammar may not read every use there.
+The grammar records an end tag's name as a reference of its element's IRI
+(`Analysis::is_end_tag`), so navigation and rename find it; the checks of
+a term's uses and the use counts leave it out. `rename.rdfXml` off restores the old
+refusal. `ide::Session` marks the RDF/XML edits with a change annotation
+that needs confirmation, for a client that takes them.
+OWL Functional syntax (`Syntax::OwlFunctional`: a
 `.ofn` name, the `ofn` language id, or a `.owl` text that starts with
 `Prefix(` or `Ontology(`) goes through `ofn` the same way: its grammar
 builds a flat tree with the exact span of every construct (`ofn::tree`),
@@ -139,9 +168,15 @@ use (the use checks skip it as they skip a subject); so the
 knowledge index, SHACL, reasoning, the query graph and the reading features
 need no Functional-specific code. The analysis does not keep the tree.
 It gets the checks and gates of RDF/XML: read-only (`features::writes`),
-no completion, splice, semantic tokens or inlay hints, and the lints of
-its terms and literals, with no fix (`Check::runs_on`). An import of a
-Functional file is read by the same frontend
+no splice, semantic tokens or inlay hints, and the lints of its terms and
+literals, with no fix (`Check::runs_on`); rename neither starts in a
+Functional document nor edits one: a rename of a term one names is
+refused. Completion (`features::completes`) is the one edit it gets:
+`ofn::expected` reads what the grammar takes at the cursor from the tokens
+before it (from the end of the last item mapped whole), and
+`features::completion::ofn` offers the keywords and the terms of the
+slot's kind, a term of an undeclared prefix adding its `Prefix( … )` line.
+An import of a Functional file is read by the same frontend
 (`imports::load::Format::Functional`), and a fetched one is converted to
 N-Triples for the cache. OWL/XML (`Syntax::OwlXml`: a
 `.owx` name, or a `.owl` or `.rdf` text whose root is OWL/XML's `Ontology`;
@@ -150,10 +185,16 @@ the RDF/XML scanner (`rdfxml::xml`), checks it against the Recommendation,
 and builds the same `ofn::tree`, which the same mapping turns into the
 shared `Parsed` (`ofn::rdf::map_with`, through the OWL/XML `Source`). So
 OWL/XML gets what Functional syntax gets, read-only, its imports included
-(`imports::load::Format::OwlXml`). Outside `owx`, the code names OWL/XML
-only where it names each syntax: its `Syntax::OwlXml` arms in the
-per-syntax decisions, its row in the file-kind table, its display name in
-`batch` and its error code in `features::diagnostics`. Its errors are `xml-syntax` (the scanner's) and `owx-syntax`. A
+(`imports::load::Format::OwlXml`). Completion is its one edit too:
+`owx::expected` reads the elements open at the cursor with the XML cursor
+and fills each construct's signature with the slot machine of
+`ofn::expected`, and `features::completion::owx` offers the element names
+and the terms, a term of an undeclared well-known prefix adding its
+`<Prefix>` element. Outside `owx`, the code names OWL/XML only where it
+names each syntax: its `Syntax::OwlXml` arms in the per-syntax decisions,
+its row in the file-kind table, its display name in `batch`, its error
+code in `features::diagnostics` and its completion module
+(`features::completion::owx`). Its errors are `xml-syntax` (the scanner's) and `owx-syntax`. A
 SPARQL document gets a `SparqlAnalysis` instead, with the same position
 helpers; SPARQL documents never feed the knowledge index and RDF
 features never run on them.
@@ -280,7 +321,7 @@ that target classes and builds no graph per edit.
 |---|---|---|
 | Diagnostics and lints | `features::diagnostics`, `features::lint`, `features::literals`, `features::shacl_lint` | `sparql::features::diagnostics` |
 | Quick fixes and refactorings | `features::quickfix`, `features::refactor` | `sparql::features::actions` |
-| Completion | `features::completion` (ranking in `completion/ranking.rs`, JSON-LD in `completion/jsonld.rs`) | `sparql::features::completion` |
+| Completion | `features::completion` (ranking in `completion/ranking.rs`, JSON-LD in `completion/jsonld.rs`, OWL Functional syntax in `completion/ofn.rs` over `ofn::expected`, OWL/XML in `completion/owx.rs` over `owx::expected`, RDF/XML in `completion/rdfxml.rs` over `rdfxml::expected`) | `sparql::features::completion` |
 | Hover, inlay hints | `features::hover`, `features::inlay` | `sparql::features::display` |
 | Navigation, rename | `features::navigation` (JSON-LD in `navigation/jsonld.rs`) | `sparql::features::navigation`, `sparql::features::rename` |
 | Formatting | `features::format` over `layout`, `jsonld::format` | `sparql::format` over `layout` |

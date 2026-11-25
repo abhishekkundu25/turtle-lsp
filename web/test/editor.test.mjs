@@ -167,7 +167,7 @@ test("an .owl or .rdf file opens with Monaco's XML colouring, named RDF/XML, wit
   }
 })
 
-test("an .ofn file opens as OWL Functional syntax, coloured, with the server's errors as markers, its hover and no formatter", async () => {
+test("an .ofn file opens as OWL Functional syntax, coloured, with the server's errors as markers, its hover, completion and no formatter", async () => {
   const { page, errors, close } = await open()
   try {
     const ofn = "Prefix(:=<http://example.org/o#>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\nSubClassOf(:A nope:B)\nAnnotationAssertion(rdfs:label :A \"Apple\")\n)\n"
@@ -192,6 +192,11 @@ test("an .ofn file opens as OWL Functional syntax, coloured, with the server's e
     // The server's hover on the class: its label, read from the axioms.
     await at(page, "Class(:A", 7, "editor.action.showHover")
     await page.locator(".monaco-hover", { hasText: "Apple" }).waitFor()
+    // Completion: the axiom keywords at the start of an axiom.
+    await page.keyboard.press("Escape")
+    await at(page, "SubClassOf(:A nope", 0, "editor.action.triggerSuggest")
+    await page.locator(".suggest-widget", { hasText: "EquivalentClasses" }).waitFor()
+    await page.keyboard.press("Escape")
     const formats = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction("editor.action.formatDocument").isSupported())
     assert.equal(formats, false)
     await settled(page)

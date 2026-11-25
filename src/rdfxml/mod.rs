@@ -7,9 +7,15 @@
 //! The stages, one module each:
 //! - [`xml`]: a fault-tolerant XML scanner that keeps the span of every
 //!   name, attribute value, text and entity reference, with its own limits
-//!   (nesting, DOCTYPE entities, entity expansion, errors);
+//!   (nesting, DOCTYPE entities, entity expansion, errors), and the cursor
+//!   over it that reads what is open at an offset (`xml::cursor`), which
+//!   completion in both XML syntaxes reads;
 //! - [`grammar`]: the RDF/XML productions over [`xml`], into [`Parsed`],
-//!   with the exact span of every term, read on past each error.
+//!   with the exact span of every term, read on past each error;
+//! - [`rename`]: the edits that rename an IRI in a document, placed at the
+//!   spans the grammar reads, or why they cannot be made;
+//! - [`expected`]: what may come at an offset, for completion
+//!   (`features::completion::rdfxml`), and where a new `xmlns:p` goes.
 //!
 //! [`parse`] reads the text with [`grammar`]. A text in an OWL syntax that is
 //! not RDF gives no triples and one `unsupported-syntax` error that names
@@ -20,7 +26,8 @@
 //! holds is in [`grammar`]; beyond it, `syntax` is [`Syntax::RdfXml`],
 //! `document_base` the base passed in, and `prefixes`, `graphs` and
 //! `tokens` stay empty (XML namespaces are scoped, not Turtle prefixes, and
-//! nothing edits RDF/XML). References are exact ([`Form::Iri`],
+//! no formatter edits RDF/XML; [`rename`] parses the text again for the
+//! spans it needs). References are exact ([`Form::Iri`],
 //! [`Form::PName`]) where the text spells the IRI, and
 //! [`Form::Anchor`] where it does not (an entity, `rdf:ID`, `rdf:li`, a
 //! name in the default namespace).
@@ -29,7 +36,9 @@
 //! [`Form::PName`]: crate::syntax::Form::PName
 //! [`Form::Anchor`]: crate::syntax::Form::Anchor
 
+pub(crate) mod expected;
 mod grammar;
+pub(crate) mod rename;
 pub(crate) mod xml;
 
 use crate::syntax::sniff::Sniffed;
@@ -50,14 +59,7 @@ const OWL_XML: &str = "holds OWL/XML, which turtle-lsp reads as such, not as RDF
 /// document's URL, against which relative IRIs resolve until an `xml:base`
 /// replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
-    let unread = match Sniffed::of(text) {
-        // Read by their own frontends, never given here but by a caller
-        // that names the syntax.
-        Sniffed::Functional => Some(FUNCTIONAL.to_string()),
-        Sniffed::OwlXml => Some(OWL_XML.to_string()),
-        other => other.unread(),
-    };
-    let Some(unread) = unread else {
+    let Some(unread) = unread(text) else {
         return grammar::parse(text, base);
     };
     Parsed {
@@ -70,6 +72,20 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
             UNSUPPORTED_SYNTAX,
         )],
         ..Parsed::default()
+    }
+}
+
+/// Why `text` is not read here: an OWL syntax that is not RDF (Manchester,
+/// or Functional syntax or OWL/XML, which their own frontends read). Its
+/// XML may still look like RDF/XML to the grammar, so what reads the text
+/// again ([`rename`]) asks this first.
+fn unread(text: &str) -> Option<String> {
+    match Sniffed::of(text) {
+        // Read by their own frontends, never given here but by a caller
+        // that names the syntax.
+        Sniffed::Functional => Some(FUNCTIONAL.to_string()),
+        Sniffed::OwlXml => Some(OWL_XML.to_string()),
+        other => other.unread(),
     }
 }
 
@@ -304,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn rdfxml_has_no_semantic_tokens_and_no_completion() {
+    fn rdfxml_has_no_semantic_tokens_and_no_completion_on_its_first_line() {
         let a = rdfxml();
         let k = Knowledge::default();
         assert!(semantic::full(&a, &k, Encoding::Utf8).data.is_empty());

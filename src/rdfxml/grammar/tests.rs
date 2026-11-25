@@ -331,8 +331,11 @@ fn a_document_gives_its_triples_refs_and_statements() {
             Form::Iri => assert_eq!(resolve(&base, s).unwrap().as_str(), r.iri.as_str()),
             Form::PName { prefix_len } => {
                 assert_eq!(s.as_bytes()[prefix_len as usize], b':', "{s}");
-                let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
-                assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                // An end tag's prefix is its start tag's use.
+                if !text[..r.span.start as usize].ends_with("</") {
+                    let use_ = p.prefix_uses.iter().find(|u| u.span == r.span).unwrap();
+                    assert_eq!(use_.name.as_str(), &s[..prefix_len as usize]);
+                }
                 assert!(
                     r.iri.as_str().ends_with(&s[prefix_len as usize + 1..]),
                     "{s}"
@@ -373,6 +376,72 @@ fn a_document_gives_its_triples_refs_and_statements() {
     assert_eq!(graph(&q), graph(&p));
     // Blank nodes are numbered in the order they appear: two parses agree.
     assert_eq!(parse(text, None), p);
+}
+
+/// The name in an element's end tag is a reference too, with the start
+/// tag's IRI, role and form: a rename edits it, so Find References and
+/// highlights show it. An empty element, an end implied by an error, a
+/// name from an entity and a name inside an XML literal give none.
+#[test]
+fn an_end_tag_names_its_element_iri() {
+    let text = format!(
+        "<!DOCTYPE r [<!ENTITY m \"<ex:q>1</ex:q>\">]>\n\
+         <rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n\
+         <ex:C rdf:about=\"http://example.org/s\"><ex:p>1</ex:p><ex:e/>&m;\
+         <ex:x rdf:parseType=\"Literal\"><ex:in>t</ex:in></ex:x><ex:li rdf:parseType=\"Collection\"><ex:D/></ex:li></ex:C>\n\
+         </rdf:RDF>\n"
+    );
+    let p = parse(&text, None);
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    spans_hold(&text, &p);
+    let refs = |local: &str| -> Vec<(String, Role, Form)> {
+        p.refs
+            .iter()
+            .filter(|r| r.iri.as_str() == format!("http://example.org/{local}"))
+            .map(|r| (at(&text, r.span).to_string(), r.role, r.form))
+            .collect()
+    };
+    let pname = Form::PName { prefix_len: 2 };
+    assert_eq!(
+        refs("C"),
+        [
+            ("ex:C".into(), Role::Object, pname),
+            ("ex:C".into(), Role::Object, pname)
+        ]
+    );
+    assert_eq!(
+        refs("p"),
+        [
+            ("ex:p".into(), Role::Predicate, pname),
+            ("ex:p".into(), Role::Predicate, pname)
+        ]
+    );
+    assert_eq!(refs("li").len(), 2);
+    assert_eq!(refs("e"), [("ex:e".into(), Role::Predicate, pname)]);
+    assert_eq!(refs("q"), [("&m;".into(), Role::Predicate, Form::Anchor)]);
+    assert_eq!(refs("in"), []);
+    assert_eq!(refs("D"), [("ex:D".into(), Role::Object, pname)]);
+    // The end tag's reference is the second, after its content's.
+    let c: Vec<u32> = p
+        .refs
+        .iter()
+        .filter(|r| r.iri.as_str() == "http://example.org/C")
+        .map(|r| r.span.start)
+        .collect();
+    assert_eq!(c[1] as usize, text.rfind("</ex:C>").unwrap() + 2);
+    // An end that an error implies: no end-tag reference.
+    let broken = format!(
+        "<rdf:RDF xmlns:rdf=\"{RDF}\" xmlns:ex=\"http://example.org/\">\n<ex:C rdf:about=\"http://example.org/s\">\n</rdf:RDF>\n"
+    );
+    let p = parse(&broken, None);
+    assert!(!p.errors.is_empty());
+    assert_eq!(
+        p.refs
+            .iter()
+            .filter(|r| r.iri.as_str() == "http://example.org/C")
+            .count(),
+        1
+    );
 }
 
 /// A nested node element that only names an IRI (a collection item, or

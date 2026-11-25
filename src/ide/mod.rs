@@ -20,14 +20,17 @@ mod navigation;
 
 /// The workspace, as one client sees it: the position encoding it
 /// negotiated, its settings, whether it resolves code actions' edits
-/// lazily (`codeAction/resolve`), and the reasoning state when reasoning is
-/// on.
+/// lazily (`codeAction/resolve`), whether it takes snippets in completion
+/// items, and the reasoning state when reasoning is on.
 pub(crate) struct Session<'w> {
     ws: &'w mut Workspace,
     enc: Encoding,
     settings: &'w Settings,
     resolve_edits: bool,
+    snippets: bool,
     reasoning: Option<&'w Arc<crate::reasoning::Shared>>,
+    /// The client takes change annotations in workspace edits.
+    change_annotations: bool,
 }
 
 /// A document, by kind.
@@ -48,8 +51,26 @@ impl<'w> Session<'w> {
             enc,
             settings,
             resolve_edits,
+            snippets: false,
             reasoning: None,
+            change_annotations: false,
         }
+    }
+
+    /// The session for a client that takes change annotations
+    /// (`workspace.workspaceEdit.changeAnnotationSupport`, with
+    /// `documentChanges`): a rename marks its edits of RDF/XML documents.
+    pub(crate) fn with_change_annotations(self, change_annotations: bool) -> Session<'w> {
+        Session {
+            change_annotations,
+            ..self
+        }
+    }
+
+    /// The session for a client that takes snippets in completion items
+    /// (`snippetSupport`) when `snippets` is set.
+    pub(crate) fn with_snippets(self, snippets: bool) -> Session<'w> {
+        Session { snippets, ..self }
     }
 
     /// The session with the reasoning state (`None` with reasoning off).

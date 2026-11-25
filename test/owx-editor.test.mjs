@@ -5,9 +5,10 @@
 // (the W3C mapping), so it reads as a Functional file does: hover,
 // definition, references, highlights, symbols and folding, here and from
 // the Turtle and Functional files that use its terms; no semantic tokens or
-// inlay hints. Nothing writes it: a client that opts in to the dynamic
-// registrations gets none of the writing features for it, a client that
-// does not gets empty answers, and a rename of a term it uses is refused.
+// inlay hints. Nothing writes it but completion: a client that opts in to
+// the dynamic registrations gets none of the other writing features for it,
+// a client that does not gets empty answers, and a rename of a term it uses
+// is refused.
 // Its terms are known to the Turtle files, its `Import`s load, its ontology
 // is one a Turtle file imports, and closed it is part of the workspace
 // diagnostics. Each test names the test of test/ofn-editor.test.mjs it
@@ -269,12 +270,14 @@ describe("an open OWL/XML document", () => {
   // Follows "the writing features are registered for other documents only,
   // and answer nothing in it", its answers, and the tokens and hints of "it
   // reads as RDF/XML does: …".
-  test("nothing writes: no completion, formatting, code actions, semantic tokens or inlay hints; rename is refused, here and from a Turtle file", async () => {
+  test("nothing writes but completion (test/owx-completion.test.mjs): no formatting, code actions, semantic tokens or inlay hints; rename is refused, here and from a Turtle file", async () => {
     const here = at("&o;A")
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.owx }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
+    // In the class's IRI value, written with an entity: the classes, in full.
     const completion = await attempt(s, "textDocument/completion", here)
-    assert.deepEqual(completion.result?.items ?? completion.result ?? [], [], JSON.stringify(completion))
+    const offered = (completion.result?.items ?? []).map((i) => i.label)
+    assert.ok(offered.includes("http://example.org/o#A"), JSON.stringify(completion))
     const actions = await attempt(s, "textDocument/codeAction", {
       textDocument: { uri: w.owx },
       range: { start: { line: 8, character: 0 }, end: { line: 8, character: 80 } },
@@ -300,11 +303,22 @@ describe("an open OWL/XML document", () => {
 
   // Follows "the writing features are registered for other documents only,
   // and answer nothing in it", its registrations.
-  test("the dynamic registrations of a client that opts in leave .owx documents out of everything that writes; the watcher sees them", async () => {
+  test("the dynamic registrations of a client that opts in leave .owx documents out of everything that writes, but completion; the watcher sees them", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
     assert.equal(features.length, 4, JSON.stringify(registrations))
-    for (const r of features) assert.doesNotMatch(JSON.stringify(r.registerOptions.documentSelector), /owx|owl|xml/, r.method)
+    for (const r of features) {
+      const selector = r.registerOptions.documentSelector
+      // Rename takes RDF/XML files by name (.owl, .rdf), never .owx: it
+      // refuses an OWL/XML text under those names. Completion takes both,
+      // and answers by the syntax it reads.
+      const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
+      const want = {
+        "textDocument/rename": [{ pattern: "**/*.{owl,rdf}" }],
+        "textDocument/completion": [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }],
+      }
+      assert.deepEqual(xml, want[r.method] ?? [], r.method)
+    }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.owx"), JSON.stringify(watch))
   })

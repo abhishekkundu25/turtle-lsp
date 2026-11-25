@@ -68,7 +68,9 @@ pub(crate) enum Family {
     /// the statements (node objects) and writes the text.
     JsonLd,
     /// RDF/XML, OWL Functional syntax and OWL/XML: no tokens, no formatting
-    /// and no statement splice. Nothing writes the text.
+    /// and no statement splice. Nothing writes the text but a rename, in
+    /// RDF/XML only (`features::renames`), and completion
+    /// (`features::completes`).
     ReadOnly,
 }
 
