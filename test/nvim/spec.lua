@@ -414,7 +414,7 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   assert(edits == nil or #edits == 0, "formatting edits in a .ofn: " .. vim.inspect(edits))
   local res = vim.lsp.buf_request_sync(b, "textDocument/rename", {
     textDocument = vim.lsp.util.make_text_document_params(b),
-    position = pos_of(b, ":A))"),
+    position = pos_of(b, "Class(:"),
     newName = "ex:Thing",
   }, TIMEOUT)
   local answer = res and res[c.id]
