@@ -124,7 +124,7 @@ test("an .ofn file, or a Functional .owl, is checked for errors (ofn-syntax), ne
   for (const name of ["onto.ofn", "functional.owl"]) {
     const f = fileOf(res, name)
     assert.deepEqual(f.format, { status: "refused", guarantee: "same graph", reason: "OWL Functional syntax" })
-    assert.deepEqual(f.diagnostics.map((d) => [d.code, d.range.start.line, d.range.start.character, d.message]), [["ofn-syntax", 3, 14, "Undeclared prefix 'nope:'"]])
+    assert.deepEqual(f.diagnostics.map((d) => [d.code, d.range.start.line, d.range.start.character, d.message]), [["ofn-syntax", 3, 14, "Undeclared prefix 'nope:'"], ["label-whitespace", 2, 34, "Label starts and ends with whitespace"]])
   }
   assert.deepEqual(fileOf(res, "clean.ofn").diagnostics, [])
   const fixed = engine.call("fix_all", { files })

@@ -408,9 +408,9 @@ mod tests {
     use crate::knowledge::Source;
 
     /// Of the kept checks, RDF/XML runs the lints of its terms and
-    /// literals: `invalid-literal` and the term uses (its misspelt
-    /// `rdfs:labl` gives an `unknown-term`), none with fix data; no label
-    /// check.
+    /// literals and the label checks: `invalid-literal`, the term uses (its
+    /// misspelt `rdfs:labl` gives an `unknown-term`) and `label-whitespace`,
+    /// none with fix data.
     #[test]
     fn rdfxml_keeps_the_lints_of_its_terms_and_literals() {
         let uri = "file:///w/onto.owl";
@@ -431,12 +431,14 @@ mod tests {
             let kept = Kept::of(&a, &k);
             assert_eq!(
                 found(&kept),
-                [Check::TermUses, Check::Literals],
+                [Check::TermUses, Check::Literals, Check::LabelWhitespace],
                 "{:?}",
                 a.parsed.refs[0].form
             );
             let literal = kept.findings(Check::Literals).next().unwrap();
             assert!(literal.diagnostic.data.is_none());
+            let label = kept.findings(Check::LabelWhitespace).next().unwrap();
+            assert!(label.diagnostic.data.is_none());
             let terms: Vec<_> = kept.findings(Check::TermUses).collect();
             assert_eq!(terms.len(), 1, "{terms:?}");
             assert_eq!(
@@ -454,8 +456,8 @@ mod tests {
     }
 
     /// An RDF/XML document is checked again in full on a change of the
-    /// index, not through the change set (which would run the label checks
-    /// on it); its term uses see the change all the same.
+    /// index, not through the change set; its term uses see the change all
+    /// the same.
     #[test]
     fn rdfxml_is_not_followed_through_the_index() {
         let uri = "file:///w/onto.owl";

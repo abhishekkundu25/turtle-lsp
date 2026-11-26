@@ -354,11 +354,11 @@ impl Check {
     }
 
     /// Whether the check runs on an RDF/XML, OWL Functional or OWL/XML
-    /// document, which nothing edits. Its syntax errors do (`xml-syntax`,
+    /// document, which no fix edits. Its syntax errors do (`xml-syntax`,
     /// `rdfxml-syntax`, `unsupported-syntax`, `ofn-syntax`, `owx-syntax`); SHACL results
     /// and reasoning findings come from outside these checks. Of the lints,
-    /// those of its terms and literals, at the exact spans of its
-    /// references; none offers a fix.
+    /// those of its terms and literals and the curation checks, at the
+    /// exact spans of its references and literals; none offers a fix.
     fn runs_read_only(self) -> bool {
         match self {
             Check::Syntax => true,
@@ -366,17 +366,20 @@ impl Check {
             // (`unknown-term`, `deprecated-term`; [`term_uses`]), each
             // suggestion in the message only.
             Check::Literals | Check::UndescribedTerms | Check::TermUses => true,
-            // Lints of Turtle prefixes or a JSON-LD context, which RDF/XML
-            // has not, the shape lint, and the curation checks.
+            // The label checks and house style, which read the parsed
+            // values of the literals: `label-whitespace` with no string to
+            // trim ([`crate::features::curation::whitespace`]).
+            Check::LabelWhitespace
+            | Check::DuplicateLabel
+            | Check::MultipleLabels
+            | Check::HouseStyle => true,
+            // Lints of Turtle prefixes or a JSON-LD context, which these
+            // syntaxes have not, and the shape lint.
             Check::UndeclaredPrefix
             | Check::PrefixDeclarations
             | Check::UnusedPrefix
             | Check::JsonLd
-            | Check::ShaclLint
-            | Check::LabelWhitespace
-            | Check::DuplicateLabel
-            | Check::MultipleLabels
-            | Check::HouseStyle => false,
+            | Check::ShaclLint => false,
         }
     }
 
@@ -764,7 +767,7 @@ pub(crate) fn term_use<'a>(a: &'a Analysis, r: &Ref) -> Option<TermUse<'a, Iri>>
 
 /// [`Check::TermUses`] for the references `refs` of a Turtle-family,
 /// RDF/XML, OWL Functional or OWL/XML document: the findings of
-/// [`vocabulary_terms`] (in a document nothing edits, without the fix data
+/// [`vocabulary_terms`] (in a document no fix edits, without the fix data
 /// of `unknown-term`), and those of [`own_deprecations`] (subjects left
 /// out), each in the order of `refs`.
 pub(crate) fn term_uses<'a>(
@@ -1290,7 +1293,7 @@ mod tests {
 
     /// The `unknown-term` warnings of `text`, a document of `syntax` open in
     /// the workspace, as (the text covered, the message). None carries fix
-    /// data where nothing edits the document.
+    /// data where no fix edits the document.
     fn unknown_terms(uri: &str, text: &str, syntax: Syntax) -> Vec<(String, String)> {
         use crate::knowledge::Source;
         let a = Arc::new(Analysis::with_syntax(
@@ -1491,10 +1494,11 @@ mod tests {
             .collect()
     }
 
-    /// On RDF/XML run the syntax errors and the lints of its terms and
+    /// On RDF/XML run the syntax errors, the lints of its terms and
     /// literals (`invalid-literal`, `undescribed-term`,
-    /// `unknown-term`, `deprecated-term`), none with a fix; not the prefix
-    /// lints or curation. SHACL results and reasoning findings come through
+    /// `unknown-term`, `deprecated-term`) and the curation checks
+    /// (`label-whitespace` here), none with a fix; not the prefix lints or
+    /// the shape lint. SHACL results and reasoning findings come through
     /// the composer as for any document.
     #[test]
     fn rdfxml_gets_its_syntax_errors_and_the_lints_of_its_terms() {
@@ -1516,15 +1520,13 @@ mod tests {
         ] {
             assert!(linted.iter().any(|c| c == code), "{code}: {linted:?}");
         }
-        assert_eq!(
-            codes(&fx::written(uri, fx::TURTLE)),
-            ["unknown-term", "invalid-literal"]
-        );
+        let lints = ["unknown-term", "invalid-literal", "label-whitespace"];
+        assert_eq!(codes(&fx::written(uri, fx::TURTLE)), lints);
         let read = fx::read(uri);
         let found = diagnostics_with(&read, &k, Encoding::Utf8, &opts);
-        assert_eq!(codes_of(&found), ["unknown-term", "invalid-literal"]);
+        assert_eq!(codes_of(&found), lints);
         // The misspelt `rdfs:labl` at its element name, the "did you mean"
-        // in the message only; the literal at its text, between the tags.
+        // in the message only; the literals at their text, between the tags.
         assert_eq!(
             found[0].range,
             lsp_types::Range::new(
@@ -1537,6 +1539,13 @@ mod tests {
             "{found:?}"
         );
         assert_eq!(found[1].range.start, lsp_types::Position::new(11, 66));
+        assert_eq!(
+            found[2].range,
+            lsp_types::Range::new(
+                lsp_types::Position::new(6, 16),
+                lsp_types::Position::new(6, 24)
+            )
+        );
         assert!(found.iter().all(|d| d.data.is_none()));
         let broken = fx::TEXT.replace("</ex:A>", "</ex:B>");
         for (text, want) in [
@@ -1545,7 +1554,13 @@ mod tests {
             // the cap.
             (
                 broken.as_str(),
-                &["xml-syntax", "syntax", "unknown-term", "invalid-literal"][..],
+                &[
+                    "xml-syntax",
+                    "syntax",
+                    "unknown-term",
+                    "invalid-literal",
+                    "label-whitespace",
+                ][..],
             ),
             ("Prefix: : <http://example.org/o#>", &["unsupported-syntax"]),
         ] {
@@ -1561,9 +1576,13 @@ mod tests {
         let found = diagnostics_with(&a, &k, Encoding::Utf8, &opts);
         assert_eq!(found[1].range.start, lsp_types::Position::new(2, 28));
         for check in Check::ALL {
-            let on = matches!(
+            let on = !matches!(
                 check,
-                Check::Syntax | Check::Literals | Check::UndescribedTerms | Check::TermUses
+                Check::UndeclaredPrefix
+                    | Check::PrefixDeclarations
+                    | Check::UnusedPrefix
+                    | Check::JsonLd
+                    | Check::ShaclLint
             );
             assert_eq!(check.runs_on(Syntax::RdfXml), on, "{check:?}");
             assert_eq!(check.runs_on(Syntax::OwlFunctional), on, "{check:?}");
@@ -1599,6 +1618,7 @@ mod tests {
                 "xml-syntax",
                 "unknown-term",
                 "invalid-literal",
+                "label-whitespace",
                 "shacl-violation",
                 "turbowl/cax-dw"
             ]

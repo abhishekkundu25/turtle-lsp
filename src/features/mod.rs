@@ -291,10 +291,10 @@ mod syntax_table {
             Literals            yes       yes       yes       yes       yes       yes       yes       yes\n\
             ShaclLint           yes       yes       yes       yes       yes       no        no        no\n\
             UndescribedTerms    yes       yes       yes       yes       yes       yes       yes       yes\n\
-            LabelWhitespace     yes       yes       yes       yes       yes       no        no        no\n\
-            DuplicateLabel      yes       yes       yes       yes       yes       no        no        no\n\
-            MultipleLabels      yes       yes       yes       yes       yes       no        no        no\n\
-            HouseStyle          yes       yes       yes       yes       yes       no        no        no\n\
+            LabelWhitespace     yes       yes       yes       yes       yes       yes       yes       yes\n\
+            DuplicateLabel      yes       yes       yes       yes       yes       yes       yes       yes\n\
+            MultipleLabels      yes       yes       yes       yes       yes       yes       yes       yes\n\
+            HouseStyle          yes       yes       yes       yes       yes       yes       yes       yes\n\
             ";
         assert_eq!(got, want, "\n{got}");
     }
