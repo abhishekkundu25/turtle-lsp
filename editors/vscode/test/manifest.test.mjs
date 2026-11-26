@@ -164,7 +164,7 @@ test(".ofn files are OWL Functional syntax: a language of the extension, read an
   assert.match(rust, /"ofn" => Some\(Syntax::OwlFunctional\)/)
 })
 
-test("the server's registered selector, in the client's schemes, leaves .owl, .rdf, .owx and .ofn out, rename's only .owx and .ofn, and completion's none", () => {
+test("the server's registered selector, in the client's schemes, leaves .owl, .rdf, .owx and .ofn out, and rename's and completion's none", () => {
   // The selector src/server/registrations.rs sends: its languages and the JSON-LD pattern, no scheme.
   const rust = fs.readFileSync(new URL("../../../src/server/registrations.rs", import.meta.url), "utf8")
   const languages = JSON.parse(rust.match(/LANGUAGES: \[&str; \d+\] =\s*(\[[^\]]*\])/)[1])
@@ -178,16 +178,9 @@ test("the server's registered selector, in the client's schemes, leaves .owl, .r
     const selector = documentSelector(schemes)
     const narrowed = inSchemes(server, selector)
     assert.deepEqual(narrowed, selector.filter(writes), schemes.join(", "))
-    // Rename's selector has the RDF/XML pattern too: it keeps every filter
-    // but the OWL/XML pattern's and the read-only languages'.
+    // Rename's and completion's have the read-only languages and both XML
+    // patterns too: they keep every filter.
     assert.equal(rust.match(/RDFXML_PATTERN: &str = "([^"]*)"/)[1], RDFXML_PATTERN)
-    assert.deepEqual(
-      inSchemes([...server, { pattern: RDFXML_PATTERN }], selector),
-      selector.filter((f) => f.pattern !== OWX_PATTERN && !READ_ONLY_LANGUAGES.includes(f.language)),
-      schemes.join(", "),
-    )
-    // Completion's has the read-only languages and both XML patterns too:
-    // it keeps every filter.
     assert.equal(rust.match(/OWX_PATTERN: &str = "([^"]*)"/)[1], OWX_PATTERN)
     const completed = [...READ_ONLY_LANGUAGES.map((language) => ({ language })), { pattern: RDFXML_PATTERN }, { pattern: OWX_PATTERN }]
     assert.deepEqual(inSchemes([...server, ...completed], selector), selector, schemes.join(", "))

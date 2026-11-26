@@ -5,10 +5,12 @@
 // (the W3C mapping), so it reads as a Functional file does: hover,
 // definition, references, highlights, symbols and folding, here and from
 // the Turtle and Functional files that use its terms; no semantic tokens or
-// inlay hints. Nothing writes it but completion: a client that opts in to
-// the dynamic registrations gets none of the other writing features for it,
-// a client that does not gets empty answers, and a rename of a term it uses
-// is refused.
+// inlay hints. Nothing writes it but completion
+// (test/owx-completion.test.mjs) and rename: a client that opts in to the
+// dynamic registrations gets completion and rename for it and none of the
+// other writing features, a client that does not gets empty answers from
+// them, and a rename of a term it uses edits it, here or from a Turtle file,
+// or is refused with its path and line while it has a syntax error.
 // Its terms are known to the Turtle files, its `Import`s load, its ontology
 // is one a Turtle file imports, and closed it is part of the workspace
 // diagnostics. Each test names the test of test/ofn-editor.test.mjs it
@@ -18,6 +20,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { startServer, uriOf, positionOf, tempDir } from "./lsp-client.mjs"
+import { applyEdits } from "./jsonld-fixtures.mjs"
 
 // Three errors: a prefix not declared (line 8), a class expression missing
 // (line 9), an entity not declared (line 13, after a character that is two
@@ -270,7 +273,7 @@ describe("an open OWL/XML document", () => {
   // Follows "the writing features are registered for other documents only,
   // and answer nothing in it", its answers, and the tokens and hints of "it
   // reads as RDF/XML does: …".
-  test("nothing writes but completion (test/owx-completion.test.mjs): no formatting, code actions, semantic tokens or inlay hints; rename is refused, here and from a Turtle file", async () => {
+  test("nothing writes but completion (test/owx-completion.test.mjs) and rename: no formatting, code actions, semantic tokens or inlay hints", async () => {
     const here = at("&o;A")
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.owx }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
@@ -289,38 +292,104 @@ describe("an open OWL/XML document", () => {
     assert.deepEqual(tokens?.data ?? [], [])
     const hints = await s.request("textDocument/inlayHint", { textDocument: { uri: w.owx }, range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } } })
     assert.deepEqual(hints ?? [], [])
-    // prepareRename offers nothing to rename, as in a Functional document;
-    // rename says why.
-    const prepared = await attempt(s, "textDocument/prepareRename", here)
-    assert.deepEqual(prepared, { result: null })
-    const renamed = await attempt(s, "textDocument/rename", { ...here, newName: "ex:Thing" })
-    assert.match(renamed.error ?? "", /an OWL\/XML document is not edited/, JSON.stringify(renamed))
-    // From the Turtle file that uses the class: refused, the OWL/XML file
-    // named.
-    const fromData = await attempt(s, "textDocument/rename", { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:A", 3), newName: "ex:Thing" })
-    assert.match(fromData.error ?? "", /can't rename in .*(onto\.owx|owlxml\.owl): an OWL\/XML document is not edited/, JSON.stringify(fromData))
   })
 
   // Follows "the writing features are registered for other documents only,
   // and answer nothing in it", its registrations.
-  test("the dynamic registrations of a client that opts in leave .owx documents out of everything that writes, but completion; the watcher sees them", async () => {
+  test("the dynamic registrations of a client that opts in leave .owx documents out of everything that writes, but completion and rename; the watcher sees them", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     const features = registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")
     assert.equal(features.length, 5, JSON.stringify(registrations))
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
-      // Rename takes RDF/XML files by name (.owl, .rdf), never .owx: it
-      // refuses an OWL/XML text under those names. XML completion takes both,
-      // with XML-specific trigger characters, and answers by the syntax it reads.
+      // Rename and XML completion take RDF/XML (.owl, .rdf) and OWL/XML
+      // files by name, XML completion with XML-specific trigger characters,
+      // and answer by the syntax they read.
       const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
       const want = {
-        "turtle-rename": [{ pattern: "**/*.{owl,rdf}" }],
+        "turtle-rename": [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }],
         "turtle-xml-completion": [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }],
       }
       assert.deepEqual(xml, want[r.id] ?? [], r.id)
     }
     const watch = registrations.find((r) => r.method === "workspace/didChangeWatchedFiles")
     assert.ok(watch.registerOptions.watchers[0].globPattern.includes("*.owx"), JSON.stringify(watch))
+  })
+
+  // Follows the rename part of "the writing features are registered for
+  // other documents only, and answer nothing in it; …".
+  test("a rename of the class, from it, from the OWL/XML .owl or from the Turtle file, is refused with its path and the line of its first error", async () => {
+    // Both OWL/XML files have a syntax error that may hide a use: the first
+    // of them by name refuses the whole rename.
+    s.open(w.owl, ONTO, "xml")
+    s.open(w.data, DATA)
+    const inOwl = { textDocument: { uri: w.owl }, position: pos("http://example.org/o#A", "<Declaration>") }
+    const fromData = { textDocument: { uri: w.data }, position: positionOf(DATA, "ex:A", 3) }
+    for (const where of [at("http://example.org/o#A", "<Declaration>"), at(":A", '<SubClassOf><Class abbreviatedIRI=":C"/>'), inOwl, fromData]) {
+      const renamed = await attempt(s, "textDocument/rename", { ...where, newName: "<http://example.org/o#Thing>" })
+      assert.match(renamed.error ?? "", /^can't rename in .*onto\.owx: line 9: the document has a syntax error \(Undeclared prefix 'nope:': .*\): it is not edited until it is fixed$/, JSON.stringify(renamed))
+    }
+  })
+})
+
+// The class written as an IRI value and as an abbreviated IRI, in an
+// OWL/XML file with no error, beside the Turtle file.
+describe("a rename in an OWL/XML document", () => {
+  const CLEAN = `<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
+<Prefix name="" IRI="http://example.org/o#"/>
+<Declaration><Class IRI="http://example.org/o#A"/></Declaration>
+<SubClassOf><Class abbreviatedIRI=":A"/><Class IRI="http://example.org/o#B"/></SubClassOf>
+<ClassAssertion><Class abbreviatedIRI=":A"/><NamedIndividual abbreviatedIRI=":i"/></ClassAssertion>
+</Ontology>
+`
+  let dir, owx, data, s
+  before(async () => {
+    dir = tempDir("turtle-owx-rename-")
+    fs.writeFileSync(path.join(dir, "onto.owx"), CLEAN)
+    fs.writeFileSync(path.join(dir, "data.ttl"), DATA)
+    owx = uriOf(path.join(dir, "onto.owx"))
+    data = uriOf(path.join(dir, "data.ttl"))
+    s = await startServer({ cwd: dir, rootUri: uriOf(dir), capabilities: DYNAMIC, initializationOptions: { registerOutsideRdfXml: true } })
+    s.open(owx, CLEAN, "xml")
+    s.open(data, DATA)
+    const d = await s.diagnosticsFor(owx, 10000)
+    assert.deepEqual(d.filter((x) => /syntax/.test(x.code)), [], JSON.stringify(d))
+  })
+  after(async () => {
+    await s.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  // Follows "prepareRename gives the written form, a prefixed name or a
+  // full IRI with its brackets".
+  test("prepareRename gives the value: an IRI value and an abbreviated IRI, without their quotes", async () => {
+    for (const [needle, after] of [["http://example.org/o#A", "<Declaration>"], [":A", "<SubClassOf>"]]) {
+      const range = rangeOf(CLEAN, needle, after)
+      const position = { line: range.start.line, character: range.start.character + 1 }
+      const prepared = await s.request("textDocument/prepareRename", { textDocument: { uri: owx }, position })
+      assert.deepEqual(prepared, range, needle)
+    }
+  })
+
+  // Follows "a rename from it or from the Turtle file edits both, each use
+  // in its own form".
+  test("a rename from it, at either form, or from the Turtle file edits both, each use in its own form", async () => {
+    const want = {
+      [owx]: CLEAN.replace('IRI="http://example.org/o#A"', 'IRI="http://example.org/o#Thing"').replaceAll('abbreviatedIRI=":A"', 'abbreviatedIRI=":Thing"'),
+      [data]: DATA.replace("ex:A", "ex:Thing"),
+    }
+    for (const [where, newName] of [
+      [{ textDocument: { uri: owx }, position: rangeOf(CLEAN, "http://example.org/o#A").start }, "Thing"],
+      [{ textDocument: { uri: owx }, position: rangeOf(CLEAN, ":A", "<SubClassOf>").start }, ":Thing"],
+      [{ textDocument: { uri: data }, position: positionOf(DATA, "ex:A", 3) }, "ex:Thing"],
+    ]) {
+      const renamed = await attempt(s, "textDocument/rename", { ...where, newName })
+      const changes = renamed.result?.changes ?? {}
+      assert.deepEqual(Object.keys(changes).sort(), [data, owx].sort(), JSON.stringify(renamed))
+      assert.equal(applyEdits(CLEAN, changes[owx]), want[owx], `${where.textDocument.uri} ${newName}`)
+      assert.equal(applyEdits(DATA, changes[data]), want[data], `${where.textDocument.uri} ${newName}`)
+    }
   })
 })
 

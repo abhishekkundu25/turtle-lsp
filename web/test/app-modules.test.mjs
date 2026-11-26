@@ -127,10 +127,10 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   // An .owx file is XML to Monaco; the status bar names it OWL/XML.
   assert.match(editor, /\/\\\.owx\$\/i\.test\(file\) \? "OWL\/XML" : \{/)
   // connect() registers the server's features on its languages, JSON, XML
-  // and OWL Functional syntax; on the last two, only those that read, and
-  // completion, and on XML rename too.
+  // and OWL Functional syntax; on the last two, only those that read,
+  // completion and rename.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
-  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n\s*const renames = lang !== "ofn"\n/)
+  assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n/)
   const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
   assert.deepEqual(registered("if \\(writable \\|\\| COMPLETED\\.includes\\(lang\\)\\) "), ["registerCompletionItemProvider"])
   assert.deepEqual(registered("if \\(writable\\) "), [
@@ -147,8 +147,8 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
     "registerFoldingRangeProvider",
     "registerHoverProvider",
     "registerReferenceProvider",
+    "registerRenameProvider",
   ])
-  assert.deepEqual(registered("if \\(renames\\) "), ["registerRenameProvider"])
 })
 
 test("a local file is read as UTF-8, its byte order mark dropped, and refused with the offset of its first bad byte", async () => {

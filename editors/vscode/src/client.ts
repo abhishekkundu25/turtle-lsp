@@ -21,11 +21,12 @@ export const RDF_GLOB = "**/*.{ttl,turtle,trig,nt,nq,rq,sparql,ru,jsonld,owl,rdf
 export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"] as const
 
 /**
- * The languages the extension contributes that the server reads and never
- * writes: `ofn`, OWL Functional syntax (`.ofn`), which gets what an RDF/XML
- * file gets (diagnostics, hover, definition, references, highlights,
- * symbols, folding) and completion. The server registers completion for
- * them and nothing else that writes (src/server/registrations.rs).
+ * The languages the extension contributes that the server writes only by
+ * completion and rename: `ofn`, OWL Functional syntax (`.ofn`), which gets
+ * what an RDF/XML file gets (diagnostics, hover, definition, references,
+ * highlights, symbols, folding, rename) and completion. The server
+ * registers rename and completion for them and nothing else that writes
+ * (src/server/registrations.rs).
  */
 export const READ_ONLY_LANGUAGES = ["ofn"] as const
 
@@ -43,10 +44,11 @@ export const RDFXML_PATTERN = "**/*.{owl,rdf}"
 
 // OWL/XML files keep VS Code's XML language too (through the manifest's
 // `files.associations` default, as VS Code's XML language does not list
-// `.owx`). The server reads them by their name and content, and only
-// completion writes them: it registers nothing else that writes for them,
-// rename included, and completion for them (its selector has this pattern; the server's
-// OWX_PATTERN in src/server/registrations.rs must equal it).
+// `.owx`). The server reads them by their name and content, and only a
+// rename and completion write them: it registers nothing else that writes
+// for them, and rename and completion for them (their selectors have this
+// pattern; the server's OWX_PATTERN in src/server/registrations.rs must
+// equal it).
 export const OWX_PATTERN = "**/*.owx"
 
 /**

@@ -62,11 +62,11 @@ describe("completion in an OWL Functional document", () => {
     return { res, text }
   }
 
-  test("is registered for the ofn language, and only completion is", async () => {
+  test("is registered for the ofn language, and only completion and rename are", async () => {
     const registrations = s.serverRequests.filter((r) => r.method === "client/registerCapability").flatMap((r) => r.params.registrations)
     for (const r of registrations.filter((r) => r.method !== "workspace/didChangeWatchedFiles")) {
       const languages = r.registerOptions.documentSelector.map((f) => f.language).filter(Boolean)
-      assert.equal(languages.includes("ofn"), r.id === "turtle-completion", r.id)
+      assert.equal(languages.includes("ofn"), r.id === "turtle-completion" || r.method === "textDocument/rename", r.id)
     }
   })
 
@@ -107,13 +107,14 @@ describe("completion in an OWL Functional document", () => {
     assert.deepEqual(labels(res).filter((l) => l.startsWith(":") && l.length > 1), [":p1"])
   })
 
-  test("formatting, rename and code actions still offer nothing", async () => {
+  test("formatting and code actions still offer nothing; rename edits the document", async () => {
     const at = { textDocument: { uri }, position: positionOf(ONTO, "Class(:Pump", 7) }
     s.change(uri, ONTO, ++version)
     const formatted = await s.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted ?? [], [])
-    const renamed = await s.request("textDocument/rename", { ...at, newName: ":Thing" }).then(() => "", (e) => e.message)
-    assert.match(renamed, /OWL Functional syntax document is not edited/)
+    const renamed = await s.request("textDocument/rename", { ...at, newName: ":Thing" })
+    const edits = renamed.changes?.[uri] ?? renamed.documentChanges?.find((d) => d.textDocument?.uri === uri)?.edits ?? []
+    assert.ok(edits.length > 0 && edits.every((e) => e.newText === ":Thing"), JSON.stringify(renamed))
     const actions = await s.request("textDocument/codeAction", { textDocument: { uri }, range: { start: at.position, end: at.position }, context: { diagnostics: [] } })
     assert.deepEqual(actions ?? [], [])
   })

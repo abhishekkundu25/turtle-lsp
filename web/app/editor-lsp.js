@@ -13,13 +13,15 @@ export const LANGUAGES = ["turtle", "trig", "ntriples", "nquads", "sparql"]
 // server's providers that read (connect): the server reads them as
 // workspace RDF, its syntax (RDF/XML, OWL Functional or OWL/XML) from the
 // name and the content. `.ofn` is OWL Functional syntax (`ofn`,
-// registerSyntax), which the server reads as RDF and never writes.
+// registerSyntax), which the server reads as RDF and writes only by
+// completion and rename.
 export function languageOf(path) {
   const ext = path.toLowerCase().split(".").pop()
   return { ttl: "turtle", turtle: "turtle", trig: "trig", nt: "ntriples", nq: "nquads", rq: "sparql", sparql: "sparql", ru: "sparql", jsonld: "json", owl: "xml", rdf: "xml", ofn: "ofn", owx: "xml" }[ext] ?? "turtle"
 }
 
-// The languages whose documents the server reads and never writes.
+// The languages whose documents the server writes only by completion and
+// rename.
 export const READ_ONLY = ["xml", "ofn"]
 
 // The read-only languages the server is asked to complete all the same: in
@@ -240,14 +242,12 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // The server's features also serve JSON-LD files (Monaco's json language;
   // only `.jsonld` files are ever opened in it), RDF/XML and OWL/XML files
   // (Monaco's xml language; only `.owl`, `.rdf` and `.owx` files) and OWL
-  // Functional files (`ofn`). Only completion and rename write RDF/XML, and
-  // only completion OWL/XML or OWL Functional syntax: such a model gets the
-  // features that read, completion (COMPLETED) and (an xml model) rename,
-  // which the server refuses in an OWL/XML one, without formatting, code
+  // Functional files (`ofn`). Only completion and rename write RDF/XML,
+  // OWL/XML and OWL Functional syntax: such a model gets the features that
+  // read, completion (COMPLETED) and rename, without formatting, code
   // actions, semantic tokens (Monaco's colours stay) and inlay hints.
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)
-    const renames = lang !== "ofn"
     monaco.languages.registerHoverProvider(lang, {
       async provideHover(model, position, token) {
         const h = await client.request("textDocument/hover", at(model, position), token)
@@ -305,7 +305,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    if (renames) monaco.languages.registerRenameProvider(lang, {
+    monaco.languages.registerRenameProvider(lang, {
       async resolveRenameLocation(model, position, token) {
         const r = await client.request("textDocument/prepareRename", at(model, position), token)
         if (!r) return { range: new monaco.Range(1, 1, 1, 1), text: "", rejectReason: "Nothing to rename here" }

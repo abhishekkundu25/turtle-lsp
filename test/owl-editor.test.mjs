@@ -97,7 +97,7 @@ describe("a client that opts in and registers features dynamically", () => {
     fs.rmSync(w.dir, { recursive: true, force: true })
   })
 
-  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced; rename for RDF/XML too, completion for RDF/XML and OWL/XML", async () => {
+  test("formatting, rename, completion and code actions are registered for the documents the server writes, not announced; rename and completion for RDF/XML, OWL/XML and OWL Functional too", async () => {
     for (const p of PROVIDERS) assert.equal(s.init.capabilities[p], undefined, p)
     // What reads stays static, and applies to .owl too.
     for (const p of ["hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider", "foldingRangeProvider"]) {
@@ -116,20 +116,20 @@ describe("a client that opts in and registers features dynamically", () => {
     for (const r of features) {
       const selector = r.registerOptions.documentSelector
       // Completion has two registrations: non-XML (with ofn) and XML (.owl/.rdf/.owx
-      // with XML trigger characters). Rename also includes .owl/.rdf.
+      // with XML trigger characters). Rename also includes ofn, .owl/.rdf and .owx.
       const xmlComp = r.id === "turtle-xml-completion"
       const comp = r.id === "turtle-completion"
       const rename = r.method === "textDocument/rename"
       if (xmlComp) {
         assert.deepEqual(selector.map((f) => f.language ?? f.pattern), ["**/*.{owl,rdf}", "**/*.owx"], r.id)
       } else {
-        const added = comp ? ["ofn"] : rename ? ["**/*.{owl,rdf}"] : []
+        const added = comp ? ["ofn"] : rename ? ["ofn", "**/*.{owl,rdf}", "**/*.owx"] : []
         assert.deepEqual(
           selector.map((f) => f.language ?? f.pattern),
           ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld", "**/*.jsonld", ...added],
           r.id,
         )
-        if (!rename) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml/, r.id)
+        if (!rename) assert.doesNotMatch(JSON.stringify(selector), /owl|rdf|xml|owx/, r.id)
       }
     }
     const byId = Object.fromEntries(features.map((r) => [r.id, r.registerOptions]))

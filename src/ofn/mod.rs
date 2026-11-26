@@ -22,8 +22,9 @@
 //! the editor features that read need no Functional-specific code. The
 //! OWL/XML frontend (`owx`) builds the same tree, checked against the same
 //! [`signature`] table, and maps it with [`rdf`] through a source of its
-//! own; it is the one module besides `analysis` and `imports` that names
-//! this one. An item
+//! own; it is the one frontend that names this one, and besides it only
+//! `analysis`, `imports` and `features` (completion, the error code and
+//! the rename planner `features::navigation::owl`) do. An item
 //! with an error gives no triples; what the mapping takes as a definition,
 //! and its own departures (SWRL), are in [`rdf`]. Every error has the code
 //! [`CODE`].

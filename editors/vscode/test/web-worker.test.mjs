@@ -89,7 +89,7 @@ test("a client that can register features but does not opt in gets them in the i
   assert.ok(!c.posted.some((m) => m.method === "client/registerCapability"))
 })
 
-test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf, .owx and .ofn out but for completion, which takes them all, and rename, which takes .owl and .rdf", { skip }, async () => {
+test("the features the server writes with are registered after the initialize answer, once, and leave .owl, .rdf, .owx and .ofn out but for completion and rename, which take them all", { skip }, async () => {
   const real = await createEngine(bytes)
   let crashNext = false
   const engine = {
@@ -128,7 +128,7 @@ test("the features the server writes with are registered after the initialize an
     const text = JSON.stringify(selector)
     const xml = selector.filter((f) => /owl|rdf|xml|owx/.test(JSON.stringify(f)))
     // Non-XML completion includes ofn; XML completion covers .owl, .rdf and
-    // .owx with XML trigger characters; rename takes .owl and .rdf.
+    // .owx with XML trigger characters; rename takes all four.
     if (x.id === "turtle-completion") {
       assert.match(text, /"language":"ofn"/)
       assert.deepEqual(xml, [])
@@ -137,9 +137,12 @@ test("the features the server writes with are registered after the initialize an
       assert.doesNotMatch(text, /ofn/)
       assert.deepEqual(xml, [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }])
       assert.deepEqual(x.registerOptions.triggerCharacters, [":", "<", "/", "\"", "'", "&"])
+    } else if (x.method === "textDocument/rename") {
+      assert.match(text, /"language":"ofn"/)
+      assert.deepEqual(xml, [{ pattern: "**/*.{owl,rdf}" }, { pattern: "**/*.owx" }])
     } else {
       assert.doesNotMatch(text, /ofn/, x.id)
-      assert.deepEqual(xml, x.method === "textDocument/rename" ? [{ pattern: "**/*.{owl,rdf}" }] : [], x.id)
+      assert.deepEqual(xml, [], x.id)
     }
   }
   // A crash restarts the server, which registers again: the client accepted

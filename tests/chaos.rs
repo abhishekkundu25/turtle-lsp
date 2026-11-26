@@ -119,8 +119,9 @@ type Running = Option<(usize, Instant, Arc<str>, &'static str)>;
 /// A shard's watchdog: a thread that wakes every second and, when the
 /// iteration in the slot has run past the budget, reports it and exits the
 /// process (a hang would otherwise end in a timeout that names no input).
-/// Dropped, it prints the shard's five slowest iterations, and how many XML
-/// completion items the shard applied ([`XML_CHECKED`]).
+/// Dropped, it prints the shard's five slowest iterations, how many XML
+/// completion items the shard applied ([`XML_CHECKED`]), and how many
+/// renames it tried ([`RENAMES_CHECKED`]).
 struct Watchdog {
     slot: Arc<Mutex<Running>>,
     slowest: Vec<(Duration, usize)>,
@@ -134,6 +135,7 @@ impl Watchdog {
             ITERATION_BUDGET.as_millis() as u64,
         ));
         XML_CHECKED.take();
+        RENAMES_CHECKED.take();
         let slot: Arc<Mutex<Running>> = Arc::default();
         let weak = Arc::downgrade(&slot);
         std::thread::spawn(move || {
@@ -196,6 +198,13 @@ impl Drop for Watchdog {
         if values + names + declarations > 0 {
             line += &format!(
                 "{} completions applied: {values} values, {names} element names, {declarations} declarations\n",
+                self.kind
+            );
+        }
+        let [tried, edited, refused] = RENAMES_CHECKED.take();
+        if tried > 0 {
+            line += &format!(
+                "{} renames: {tried} tried, {edited} with edits checked, {refused} refused\n",
                 self.kind
             );
         }
@@ -1236,10 +1245,14 @@ fn renamed(a: &Analysis, off: u32, name: &str) -> Option<(Iri, Iri)> {
     let from = refs.partition_point(|r| r.span.end < off);
     let mut near = refs[from..].iter().take_while(|r| r.span.start <= off);
     let r = near.find(|r| inside(r.span))?;
-    // In RDF/XML the prefix of a name is part of its IRI.
+    // In RDF/XML and the OWL syntaxes the prefix of a name is part of
+    // the IRI a rename there changes.
     if let Form::PName { prefix_len } = r.form
         && off <= r.span.start + prefix_len
-        && a.parsed.syntax != Syntax::RdfXml
+        && !matches!(
+            a.parsed.syntax,
+            Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml
+        )
     {
         return None;
     }
@@ -1251,7 +1264,8 @@ fn renamed(a: &Analysis, off: u32, name: &str) -> Option<(Iri, Iri)> {
 /// The `after` text of an edit to `text` (document `a`, parsed `before`)
 /// parses without errors to the same graph, once `merge` reads a renamed
 /// IRI as the old one: `a`, implied datatypes and a collection's
-/// `rdf:first` keep the old IRI.
+/// `rdf:first` keep the old IRI. In an OWL document a warning is no error:
+/// it does not stop a rename there.
 fn keeps_the_graph(
     a: &Analysis,
     text: &str,
@@ -1262,7 +1276,12 @@ fn keeps_the_graph(
     let base = a.parsed.document_base.as_deref();
     let reparsed = parse_doc(after, a.parsed.syntax, base, &a.external);
     let (old, new) = (graph(before, merge), graph(&reparsed, merge));
-    let wrong = match reparsed.errors.first() {
+    let owl = matches!(a.parsed.syntax, Syntax::OwlFunctional | Syntax::OwlXml);
+    let error = reparsed
+        .errors
+        .iter()
+        .find(|e| !owl || e.severity == Severity::Error);
+    let wrong = match error {
         Some(e) => format!("left the syntax error {:?}", e.message()),
         None if old != new => {
             let i = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
@@ -1294,14 +1313,18 @@ fn applied(a: &Analysis, text: &str, enc: Encoding, edits: &[TextEdit]) -> Resul
     Ok(out)
 }
 
-/// The `edits` of RDF/XML `text` (document `a`, parsed `before` when it
-/// has no errors) by a rename that started in it and was not refused: it
+/// The `edits` of RDF/XML, OWL Functional or OWL/XML `text` (document `a`,
+/// parsed `before`) by a rename that started in it and was not refused: it
 /// started at a reference of the parse (`merge`, the new IRI and the old
 /// one, is that reference's); it edits the document when the IRI changes;
-/// none in a document with errors, which is not edited; and the edited
-/// text is well-formed RDF/XML that gives the same graph, once `merge`
-/// reads the new IRI as the old one.
-fn rdfxml_rename_keeps_the_graph(
+/// none where `before` is `None`, an RDF/XML document with errors, which
+/// is not edited; and the edited text parses with no error to the same
+/// graph, once `merge` reads the new IRI as the old one. An OWL document
+/// with an error is `before` too: it is edited only into one with none.
+/// An OWL document gives that graph with the old IRI read as the new one,
+/// too: it names the old IRI nowhere after the rename, as one use left
+/// as it was would.
+fn planned_rename_keeps_the_graph(
     a: &Analysis,
     text: &str,
     enc: Encoding,
@@ -1325,28 +1348,57 @@ fn rdfxml_rename_keeps_the_graph(
         return Err("edited an RDF/XML document with errors".into());
     };
     let after = applied(a, text, enc, edits)?;
-    keeps_the_graph(a, text, before, &after, merge)
+    keeps_the_graph(a, text, before, &after, merge)?;
+    if !matches!(a.parsed.syntax, Syntax::OwlFunctional | Syntax::OwlXml) {
+        return Ok(());
+    }
+    let base = a.parsed.document_base.as_deref();
+    let reparsed = parse_doc(&after, a.parsed.syntax, base, &a.external);
+    let (want, got) = (graph(before, Some((old, new))), graph(&reparsed, None));
+    match want.iter().zip(&got).position(|(w, g)| w != g) {
+        None if want.len() == got.len() => Ok(()),
+        i => {
+            let i = i.unwrap_or(want.len().min(got.len()));
+            Err(format!(
+                "gave triple {:?} where <{new}> for <{old}> means {:?}: {}",
+                got.get(i),
+                want.get(i),
+                first_difference(text, &after)
+            ))
+        }
+    }
 }
 
-/// Renames in RDF/XML `text`, alone in a workspace, to names of
-/// [`RENAMES`], at its references and anywhere: each one that is not
-/// refused started at a reference and keeps the graph
-/// ([`rdfxml_rename_keeps_the_graph`]). The mutated texts of
-/// `mutated_rdfxml` rarely parse without errors, and a document with errors
-/// is never edited: these texts are the unmutated seeds, the OWL syntaxes
-/// among them.
-fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str) {
-    let uri = doc_uri(Syntax::RdfXml);
+thread_local! {
+    /// The renames [`renames_keep_the_graph`] made on this thread (a
+    /// shard): tried, those with edits (checked against the graph), and
+    /// those refused. The shard's watchdog
+    /// prints them, so a run shows how many reached the graph check.
+    static RENAMES_CHECKED: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([0; 3]) };
+}
+
+/// Renames in `text` (RDF/XML, OWL Functional or OWL/XML, by `syntax`),
+/// alone in a workspace, to names of [`RENAMES`], at its references and
+/// anywhere: each one that is not refused started at a reference and keeps
+/// the graph ([`planned_rename_keeps_the_graph`]). Mutated texts rarely
+/// parse without errors, and a document with errors is never edited: the
+/// RDF/XML loop gives these the unmutated seeds (the OWL syntaxes among
+/// them), the OWL loops their mutated texts and their seeds.
+fn renames_keep_the_graph(rng: &mut Rng, text: &str, syntax: Syntax) {
+    let uri = doc_uri(syntax);
     let a = Arc::new(Analysis::with_syntax(
         uri.into(),
         text,
         Arc::default(),
         true,
-        Syntax::RdfXml,
+        syntax,
     ));
     let mut k = Knowledge::default();
     k.set(uri, Source::Open, a.clone());
-    let before = a.parsed.errors.is_empty().then_some(&a.parsed);
+    let before = match syntax {
+        Syntax::RdfXml => a.parsed.errors.is_empty().then_some(&a.parsed),
+        _ => Some(&a.parsed),
+    };
     let refs = &a.parsed.refs;
     for _ in 0..4 {
         let off = if !refs.is_empty() && rng.below(2) == 0 {
@@ -1367,10 +1419,18 @@ fn rdfxml_renames_keep_the_graph(rng: &mut Rng, text: &str) {
             file_of: &mut |_| None,
         };
         let rdfxml = navigation::RdfXml::Edit;
-        if let Ok(edit) = navigation::rename(&a, &k, enc, pos, name, scope, rdfxml) {
-            let edits = edits_to(Some(&edit), uri);
+        let result = navigation::rename(&a, &k, enc, pos, name, scope, rdfxml);
+        let edits = result.as_ref().map(|edit| edits_to(Some(edit), uri));
+        RENAMES_CHECKED.with(|c| {
+            let [tried, edited, refused] = c.get();
+            c.set(match &edits {
+                Ok(e) => [tried + 1, edited + usize::from(!e.is_empty()), refused],
+                Err(_) => [tried + 1, edited, refused + 1],
+            });
+        });
+        if let Ok(edits) = edits {
             let target = renamed(&a, off, name);
-            rdfxml_rename_keeps_the_graph(&a, text, enc, before, &edits, target).unwrap_or_else(
+            planned_rename_keeps_the_graph(&a, text, enc, before, &edits, target).unwrap_or_else(
                 |m| {
                     panic!(
                         "renaming to {name:?} at {off} {m}\n  edits: {edits:?}\n  text: {text:?}"
@@ -2123,8 +2183,14 @@ fn exercise(rng: &mut Rng, text: &str, syntax: Syntax, k: &mut Knowledge) {
                 let edits = edits_to(Some(&edit), doc_uri(syntax));
                 // The IRI renamed is the one at the offset the rename reads `pos` as.
                 let target = a.offset(enc, pos).and_then(|at| renamed(&a, at, name));
-                if syntax == Syntax::RdfXml {
-                    rdfxml_rename_keeps_the_graph(&a, text, enc, before.as_ref(), &edits, target)
+                // An OWL document is edited from its parse, errors or not.
+                let planned = match syntax {
+                    Syntax::RdfXml => Some(before.as_ref()),
+                    Syntax::OwlFunctional | Syntax::OwlXml => Some(Some(&a.parsed)),
+                    _ => None,
+                };
+                if let Some(before) = planned {
+                    planned_rename_keeps_the_graph(&a, text, enc, before, &edits, target)
                         .unwrap_or_else(|m| panic!("renaming to {name:?} {m}\n  edits: {edits:?}"));
                 } else {
                     let graph = before.is_some() && syntax != Syntax::JsonLd;
@@ -3512,7 +3578,7 @@ fn mutated_rdfxml(k: usize) {
                 Syntax::RdfXml,
                 &mut base,
             );
-            rdfxml_renames_keep_the_graph(&mut Rng(seed ^ i as u64 ^ 0x5A17), source);
+            renames_keep_the_graph(&mut Rng(seed ^ i as u64 ^ 0x5A17), source, Syntax::RdfXml);
         }));
         if let Err(e) = r {
             panic!(
@@ -3725,7 +3791,8 @@ fn edits_match_a_fresh_open_functional(k: usize) {
 }
 
 /// Mutated OWL Functional documents through every feature, as a `.ofn`
-/// file; one in four is also edited as LSP changes and checked against a
+/// file, and renamed in it alone, as is its seed
+/// ([`renames_keep_the_graph`]); one in four is also edited as LSP changes and checked against a
 /// fresh open, with the document named `.owl` one time in two, so the
 /// syntax its text gives is decided again at each change.
 fn mutated_functional(k: usize) {
@@ -3754,6 +3821,9 @@ fn mutated_functional(k: usize) {
                 Syntax::OwlFunctional,
                 &mut base,
             );
+            let mut renames = Rng(seed ^ i as u64 ^ 0x0F5A);
+            renames_keep_the_graph(&mut renames, &text, Syntax::OwlFunctional);
+            renames_keep_the_graph(&mut renames, source, Syntax::OwlFunctional);
             if !edits {
                 return Ok(());
             }
@@ -4313,7 +4383,8 @@ fn edits_match_a_fresh_open_owlxml_4() {
 }
 
 /// Mutated OWL/XML documents through every feature, as a `.owx` file, in a
-/// workspace with the OWL/XML seeds on disk; one in four is also edited as
+/// workspace with the OWL/XML seeds on disk, and renamed in it alone, as
+/// is its seed ([`renames_keep_the_graph`]); one in four is also edited as
 /// LSP changes and checked against a fresh open, with the document named
 /// `.owl` one time in two, so the syntax its text gives is decided again
 /// at each change.
@@ -4345,6 +4416,9 @@ fn mutated_owlxml(k: usize) {
                 Syntax::OwlXml,
                 &mut base,
             );
+            let mut renames = Rng(seed ^ i as u64 ^ 0x0E5A);
+            renames_keep_the_graph(&mut renames, &text, Syntax::OwlXml);
+            renames_keep_the_graph(&mut renames, source, Syntax::OwlXml);
             if !edits {
                 return Ok(());
             }

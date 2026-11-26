@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Rename in OWL Functional syntax and OWL/XML.** A rename of an IRI,
+  from any file, edits the `.ofn` and `.owx` workspace files that use it
+  too (and a `.owl` or `.rdf` that holds either syntax), and a rename can
+  start inside one, on a full or prefixed IRI, an `IRI` or
+  `abbreviatedIRI` value, or the text of an `IRI` or `AbbreviatedIRI`
+  element. It was refused, and one such file blocked the rename of its
+  terms in the whole workspace. Each use keeps its form (a full IRI; a
+  prefixed name with its prefix, or another declared one for the new
+  namespace; a value relative to an `xml:base`, when the new IRI starts
+  with the same text), and the edited file must parse with no error and
+  give the same triples with the new IRI. With no prefix for the new
+  namespace, a Functional name is written as `<IRI>` and an
+  `abbreviatedIRI` attribute as `IRI`; an `AbbreviatedIRI` element
+  refuses. A use written with an entity or character reference, an IRI
+  the OWL mapping implies with no text of its own, and a new name that
+  breaks the file or changes its graph refuse the whole rename with the
+  file, line and reason; a file with a syntax error refuses any rename of
+  an IRI its text may spell, at its first error. A rename on a prefix
+  declaration is refused. `rename.rdfXml` covers RDF/XML only. VS Code,
+  Neovim and the browser editor offer rename in `.ofn` and `.owx` files.
+
 ## 0.20.0 — 2026-11-26
 
 ### Added
