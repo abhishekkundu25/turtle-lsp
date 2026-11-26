@@ -74,9 +74,10 @@ pub(crate) enum Expected {
     /// An IRI.
     Iri {
         /// What its edit replaces: a closed value between its quotes (an
-        /// unclosed one to where the IRI typed after the offset ends, at
-        /// white space, a `>` or the `/` of a `/>`, or to where the scanner
-        /// ends it), or an element's text without its white space.
+        /// unclosed one, or one closed by another quote, to
+        /// where the IRI typed after the offset ends, at white space, a `>`
+        /// or the `/` of a `/>`, or to where the scanner ends it), or an
+        /// element's text without its white space.
         span: Span,
         iris: Iris,
         form: Form,
@@ -194,8 +195,13 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
             let (iris, abbreviated) = value(&v.tag.name, &v.attr.name)?;
             // A value with no closing quote runs to where the scanner ends
             // it (a `<`, the end of the text): the reader reads it whole.
-            let closed = v.attr.span.end > v.attr.value.span.end;
+            // One with none before a later attribute in the same quotes, or
+            // before a quote in the element's text, is closed by that quote
+            // and holds the attribute's name or the tag's `>`: it is cut as
+            // one not closed.
             let end = v.span.end.max(v.attr.value.span.end);
+            let closed = v.attr.span.end > v.attr.value.span.end
+                && !cursor::closed_by_another_quote(&text[v.span.start as usize..end as usize]);
             let span = typed(text, Span::new(v.span.start, end), offset, closed)?;
             Some(Expected::Iri {
                 span,
@@ -231,15 +237,16 @@ pub(crate) fn at(text: &str, offset: usize) -> Option<Expected> {
 }
 
 /// `span`, where an IRI is typed up to `offset`: whole when `closed` (a
-/// single-line value between its quotes, or an element's single-line trimmed
-/// text), else cut after `offset` where the IRI typed ends: at white space, a
-/// `>`, the `/` of a `/>` or another character no IRI holds
+/// single-line value between its own quotes, not
+/// [`cursor::closed_by_another_quote`], or an element's single-line trimmed
+/// text), else cut after `offset` where the IRI typed ends: at white space,
+/// a `>`, the `/` of a `/>` or another character no IRI holds
 /// ([`cursor::unclosed_run`]), so the end of the tag and what follows it
-/// stay. `None` when there is white space before `offset` (a value not
-/// closed, the offset on the next line), when a closed value spans lines
-/// (LSP completion edits are single-line), or when an unclosed value starts
-/// with white space before more text (cutting there would leave that text
-/// after the inserted IRI).
+/// stay. `None` when there is white space before
+/// `offset` (a value not closed, the offset on the next line), when a closed
+/// value spans lines (LSP completion edits are single-line), or when an
+/// unclosed value starts with white space before more text (cutting there
+/// would leave that text after the inserted IRI).
 fn typed(text: &str, span: Span, offset: usize, closed: bool) -> Option<Span> {
     let (start, end) = (span.start as usize, span.end as usize);
     if text[start..offset].contains(WHITE) {

@@ -354,6 +354,20 @@ pub(crate) fn unclosed_run(rest: &str) -> usize {
     }
 }
 
+/// Whether `value`, a value the scanner closed at a quote, was closed by a
+/// quote not its own, its closing quote not typed yet: the opening quote of
+/// a later attribute in the same quotes (the value holds white space and
+/// ends in `=`: `http://ex/P abbreviatedIRI=`), or a quote in the text after
+/// the tag (the value holds the tag's `>`). Such a value is not closed: its
+/// edit stops where the IRI typed ends ([`unclosed_run`]), so the
+/// attribute's name or the end of the tag stays. An IRI may end in `=`, but
+/// holds no white space and no `>`.
+pub(crate) fn closed_by_another_quote(value: &str) -> bool {
+    let space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    let value = value.trim_end_matches(space);
+    value.contains('>') || value.ends_with('=') && value.contains(space)
+}
+
 /// Whether an IRI, as written in a value, may hold `c`: not white space or
 /// another control character, and none of `<>"{}|^` `` ` `` `\` (the
 /// characters RFC 3987 and Turtle's `IRIREF` leave out).

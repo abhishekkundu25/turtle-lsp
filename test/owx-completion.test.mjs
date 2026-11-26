@@ -143,6 +143,26 @@ describe("completion in an OWL/XML document", () => {
     }
   })
 
+  test("a value closed by the quote of a later attribute: the edit keeps that attribute", async () => {
+    const pump = "http://example.org/o#Pump"
+    const sub = (l) => `<SubClassOf>${l}<Class abbreviatedIRI=":Pump"/></SubClassOf>`
+    const cases = [
+      [sub('<Class IRI="http://example.org/o#P| abbreviatedIRI=":Pump"/>'), pump, `    ${sub(`<Class IRI="${pump} abbreviatedIRI=":Pump"/>`)}`],
+      [sub("<Class IRI='http://example.org/o#P|um abbreviatedIRI=':Pump'>"), pump, `    ${sub(`<Class IRI='${pump} abbreviatedIRI=':Pump'>`)}`],
+      // The later attribute on the next line.
+      [sub('<Class IRI="http://example.org/o#P|\n      abbreviatedIRI=":Pump"/>'), pump, `    ${sub(`<Class IRI="${pump}\n      abbreviatedIRI=":Pump"/>`)}`],
+      [sub('<Class abbreviatedIRI=":P| IRI="http://example.org/o#Pump"/>'), ":Pump", `    ${sub(`<Class abbreviatedIRI=":Pump IRI="${pump}"/>`)}`],
+    ]
+    for (const [typed, label, want] of cases) {
+      const { res, text, position } = await complete(typed)
+      const item = (res?.items ?? []).find((i) => i.label === label)
+      assert.ok(item, `${label} in ${labels(res).join(", ")}: ${typed}`)
+      const accepted = applyEdits(text, [item.textEdit, ...(item.additionalTextEdits ?? [])])
+      const lines = want.split("\n").length
+      assert.equal(accepted.split("\n").slice(position.line, position.line + lines).join("\n"), want, typed)
+    }
+  })
+
   test("nothing in a comment", async () => {
     const { res } = await complete("<!-- <SubClassOf><Cl| -->")
     assert.deepEqual(labels(res), [])

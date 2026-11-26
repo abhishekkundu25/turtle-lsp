@@ -1573,6 +1573,156 @@ mod tests {
         }
     }
 
+    /// A value with no closing quote before a later attribute in the same
+    /// quotes, which the scanner closes at that attribute's opening quote:
+    /// the value holds white space and the attribute's name. Or before a
+    /// quote in the element's text: the value holds the tag's `>`. Its edit
+    /// stops where the IRI typed ends, as for a value with no closing quote,
+    /// so the name or the `>` stays. The text after accepting, whole.
+    #[test]
+    fn a_value_closed_by_a_later_attribute_s_quote_keeps_that_attribute() {
+        let int = format!("{XSD}integer");
+        let pump = "http://example.org/Pump";
+        let class = |line: &str| {
+            onto(&format!(
+                "  <owl:Class rdf:about=\"http://example.org/Hose\">\n    {line}\n  </owl:Class>\n"
+            ))
+        };
+        let datatype = |line: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    {line}\n  </rdf:Description>\n"
+            ))
+        };
+        let cases = [
+            // `/>` after the later attribute.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|um rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource='http://example.org/P| rdf:ID='r1'/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump} rdf:ID='r1'/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource='http://example.org/P|um rdf:ID='r1'/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump} rdf:ID='r1'/>"
+                )),
+            ),
+            // `>` after the later attribute.
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{XSD}int| rdf:ID=\"r1\">42</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{int} rdf:ID=\"r1\">42</ex:age>"
+                )),
+            ),
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype='{XSD}in|t rdf:ID='r1'>42</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype='{int} rdf:ID='r1'>42</ex:age>"
+                )),
+            ),
+            // The later attribute on the next line.
+            (
+                class(
+                    "<rdfs:subClassOf rdf:resource=\"http://example.org/P|\n      rdf:ID=\"r1\"/>",
+                ),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump}\n      rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class(
+                    "<rdfs:subClassOf rdf:resource='http://example.org/P|um\n      rdf:ID='r1'/>",
+                ),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump}\n      rdf:ID='r1'/>"
+                )),
+            ),
+            // White space around the later attribute's `=`.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID = \"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID = \"r1\"/>"
+                )),
+            ),
+            // Closed by a quote in the element's text, after its `>`.
+            (
+                datatype(&format!("<ex:age rdf:datatype=\"{XSD}int|>\"x\"</ex:age>")),
+                &int,
+                datatype(&format!("<ex:age rdf:datatype=\"{int}>\"x\"</ex:age>")),
+            ),
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{XSD}int|>the \"big\" one</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{int}>the \"big\" one</ex:age>"
+                )),
+            ),
+            // Closed by its own quote: between the quotes, as before.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|um\" rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump}\" rdf:ID=\"r1\"/>"
+                )),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (marked, label, want) in cases {
+            let at = at(&marked);
+            let Some(item) = at.items().into_iter().find(|i| i.label == label) else {
+                wrong.push(format!("{label} not offered in {marked}"));
+                continue;
+            };
+            let after = at.accepted(&item);
+            if after != want {
+                wrong.push(format!("want {want}\n got {after}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        // No item deletes the later attribute: the offset after the
+        // opening quote, after the IRI, or in the attribute's name.
+        for line in [
+            "<rdfs:subClassOf rdf:resource=\"| rdf:ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource=\"http://example.org/P rdf:|ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource='| rdf:ID='r1'/>",
+        ] {
+            let at = at(&class(line));
+            let tail = &line[line.rfind(" rdf:").unwrap()..].replace('|', "");
+            for item in at.items() {
+                let after = at.accepted(&item);
+                assert!(after.contains(tail.as_str()), "{}: {after}", item.label);
+            }
+        }
+    }
+
     #[test]
     fn qualified_rdf_prefix_offers_rdf_description_in_node_position() {
         for body in ["  <rdf:Des|/>\n", "  <rdf:Des|\n", "  <rdf:|/>\n"] {

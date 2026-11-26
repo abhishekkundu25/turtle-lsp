@@ -23,8 +23,10 @@
 //! none of their names. This reads the text after the offset, to the end
 //! tag that closes the element being named. A value is offered only while
 //! what it replaces may be an IRI: it holds no white space (a value not
-//! closed runs over the line end; one closed by a later attribute's quote
-//! holds that attribute's name).
+//! closed runs over the line end). One closed by another quote, a later
+//! attribute's or one in the element's text, holds that attribute's name or
+//! the tag's `>`: it is replaced only to where the IRI typed ends, as one
+//! not closed.
 
 use super::xml::cursor::{At, Document, Element};
 use super::xml::{self, Tag};
@@ -236,11 +238,26 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             // `<`, the end of the text), up to there or to what ends the IRI
             // typed after the offset (white space, a `>`, the `/` of a `/>`:
             // `cursor::unclosed_run`). A value closed by the quote of a later
-            // attribute holds its name, white space first.
-            let rest =
-                text.get(v.span.end as usize..v.attr.value.span.end.max(v.span.end) as usize)?;
+            // attribute holds its name, white space first, and one closed by
+            // a quote in the element's text holds the tag's `>`: either is
+            // cut as one not closed, after the offset; right after its
+            // quote, before white space, nothing is offered (as in OWL/XML).
+            let end = v.attr.value.span.end.max(v.span.end);
+            let whole = text.get(v.span.start as usize..end as usize)?;
+            let closed = v.attr.span.end > v.attr.value.span.end;
+            let from = if closed && super::xml::cursor::closed_by_another_quote(whole) {
+                if offset == v.span.start as usize
+                    && whole.starts_with(|c: char| c.is_ascii_whitespace())
+                {
+                    return None;
+                }
+                offset as u32
+            } else {
+                v.span.end
+            };
+            let rest = text.get(from as usize..end as usize)?;
             let run = super::xml::cursor::unclosed_run(rest);
-            let span = Span::new(v.span.start, v.span.end + run as u32);
+            let span = Span::new(v.span.start, from + run as u32);
             let value = text.get(span.start as usize..span.end as usize)?;
             if value.contains(|c: char| c.is_ascii_whitespace()) {
                 return None;

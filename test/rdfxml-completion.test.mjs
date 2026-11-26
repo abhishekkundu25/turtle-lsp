@@ -162,6 +162,28 @@ describe("completion in an RDF/XML document", () => {
     }
   })
 
+  test("a value closed by the quote of a later attribute: the edit keeps that attribute", async () => {
+    const XSD = "http://www.w3.org/2001/XMLSchema#"
+    const int = `${XSD}integer`
+    const pump = "http://example.org/Pump"
+    const desc = (l) => `  <rdf:Description rdf:about="http://example.org/s">\n    ${l}\n  </rdf:Description>`
+    const cls = (l) => `  <owl:Class rdf:about="http://example.org/Hose">\n    ${l}\n  </owl:Class>`
+    const cases = [
+      [cls('<rdfs:subClassOf rdf:resource="http://example.org/P| rdf:ID="r1"/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump} rdf:ID="r1"/>`],
+      [desc(`<ex:age rdf:datatype='${XSD}in|t rdf:ID='r1'>42</ex:age>`), int, `    <ex:age rdf:datatype='${int} rdf:ID='r1'>42</ex:age>`],
+      // The later attribute on the next line.
+      [cls('<rdfs:subClassOf rdf:resource="http://example.org/P|\n      rdf:ID="r1"/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump}\n      rdf:ID="r1"/>`],
+    ]
+    for (const [typed, label, want] of cases) {
+      const { res, text, position } = await complete(typed)
+      const item = (res?.items ?? []).find((i) => i.label === label)
+      assert.ok(item, `${label} in ${labels(res).join(", ")}: ${typed}`)
+      const accepted = applyEdits(text, [item.textEdit, ...(item.additionalTextEdits ?? [])])
+      const lines = want.split("\n").length
+      assert.equal(accepted.split("\n").slice(position.line, position.line + lines).join("\n"), want, typed)
+    }
+  })
+
   test("closing tag, attribute names, rdf:parseType and rdf:type values", async () => {
     const end = await complete('  <owl:Class rdf:about="http://example.org/Hose">\n    </|')
     assert.deepEqual(labels(end.res), ["owl:Class"])
