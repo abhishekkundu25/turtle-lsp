@@ -8,13 +8,16 @@
 //! Functional syntax, `<…>` as `<new>`, and `pfx:local` with its own
 //! prefix when that still covers the new IRI with a local name the lexer
 //! reads, else with another prefix in scope (the longest namespace first),
-//! else as `<new>`. Then it checks its work: the edited text, parsed again
-//! by the same frontend from the same base, must have no error and give
-//! the same triples with the old IRI read as the new one; a triple that
-//! still names the old IRI is one the OWL mapping implies, with no text of
-//! its own, and refuses the rename. [`at`] says what a rename started at
-//! an offset renames, and the prefixes a new name typed there reads with.
-//! It reads only the shared parse and the text.
+//! else as `<new>`. The OWL/XML writer (`owl/owx.rs`) keeps a full or
+//! relative `IRI` value and an abbreviated IRI's prefix where it can, else
+//! writes the full IRI, and refuses an `<AbbreviatedIRI>` element no
+//! declared prefix covers. Then it checks its work: the edited text,
+//! parsed again by the same frontend from the same base, must have no
+//! error and give the same triples with the old IRI read as the new one;
+//! a triple that still names the old IRI is one the OWL mapping implies,
+//! with no text of its own, and refuses the rename. [`at`] says what a
+//! rename started at an offset renames, and the prefixes a new name typed
+//! there reads with. It reads only the shared parse and the text.
 
 use crate::analysis::Analysis;
 use crate::rdfxml::rename::{Refusal, alone, apply, line, naming, renamed};
