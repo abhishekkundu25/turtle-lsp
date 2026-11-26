@@ -175,6 +175,48 @@ test("after the diff view closes, Escape is the editors' again: it closes the F1
   }
 })
 
+test("the diff view closed just after its inline mode changes logs no error: its gutter goes with it", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    const models = await modelCount(page)
+    await page.evaluate((t) => window.monaco.editor.getEditors()[0].getModel().setValue(t), MESSY)
+    await page.locator("body[data-busy='false']").waitFor()
+    await run(page, "rdf.previewFormat")
+    await view(page).waitFor()
+    // Computed: the diff editor goes at once on close.
+    await page.waitForFunction(() => window.monaco.editor.getDiffEditors()[0]?.getLineChanges() !== null, null, { timeout: 5000 })
+    // The gutter's menu (Revert Block) hears a change of the inline mode 50 ms
+    // late. Monaco kept the gutter after the diff editor, so a change heard
+    // after the close read the disposed editor's keys and logged an error. A
+    // diff that ends just after the view hides does this by chance; here the
+    // view narrows below the inline breakpoint (900 px) and closes in the same
+    // task as Monaco hears it: Monaco's resize observer, older, runs first.
+    const inline = await page.evaluate(() => new Promise((resolve) => {
+      const pane = document.querySelector(".dif")
+      const host = pane.querySelector(".dif-editor")
+      const seen = new ResizeObserver(() => {
+        if (host.getBoundingClientRect().width > 850) return
+        seen.disconnect()
+        const inline = window.monaco.editor.getDiffEditors()[0].getModifiedEditor().getLayoutInfo().width > 700
+        pane.querySelector("[data-act=close]").click()
+        pane.style.width = ""
+        // Timers started now run after the menu's (50 ms) and after the one
+        // that rethrows its error.
+        setTimeout(() => setTimeout(() => resolve(inline)), 50)
+      })
+      seen.observe(host)
+      pane.style.width = "800px"
+    }))
+    assert.equal(inline, true)
+    await view(page).waitFor({ state: "hidden" })
+    await noExtraModels(page, models)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("Compare with Saved shows the disk text against the edited text; a browser-only file toasts", async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {

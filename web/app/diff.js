@@ -101,6 +101,12 @@ export function createDiff({ monaco, client, mount, toast, options, setup, onClo
     const dispose = () => {
       if (done) return
       done = true
+      // Monaco leaves the gutter (its Revert Block menu) alive after
+      // diff.dispose(): a context key change in the 50 ms before, such as the
+      // inline mode as the view hides, then reaches it and it reads the
+      // disposed editor's keys, which logs an error. Turning the gutter off
+      // first disposes it.
+      diff.updateOptions({ renderGutterMenu: false })
       diff.dispose()
       host.remove()
       for (const m of temp) m.dispose()
