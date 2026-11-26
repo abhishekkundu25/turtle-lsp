@@ -128,7 +128,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
   assert.match(editor, /\/\\\.owx\$\/i\.test\(file\) \? "OWL\/XML" : \{/)
   // connect() registers the server's features on its languages, JSON, XML
   // and OWL Functional syntax; on the last two, only those that read,
-  // completion and rename.
+  // label hints, completion and rename.
   const lsp = fs.readFileSync(path.join(app, "editor-lsp.js"), "utf8")
   assert.match(lsp, /for \(const lang of \[\.\.\.LANGUAGES, "json", \.\.\.READ_ONLY\]\) \{\n\s*const writable = !READ_ONLY\.includes\(lang\)\n/)
   const registered = (guard) => [...lsp.matchAll(new RegExp(`\\n\\s*${guard}monaco\\.languages\\.(register\\w+)\\(lang,`, "g"))].map((m) => m[1]).sort()
@@ -137,7 +137,6 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
     "registerCodeActionProvider",
     "registerDocumentFormattingEditProvider",
     "registerDocumentSemanticTokensProvider",
-    "registerInlayHintsProvider",
   ])
   assert.deepEqual(registered(""), [
     "registerCodeLensProvider",
@@ -146,6 +145,7 @@ test("the RDF Editor opens .owl, .rdf and .owx files as Monaco's XML and .ofn fi
     "registerDocumentSymbolProvider",
     "registerFoldingRangeProvider",
     "registerHoverProvider",
+    "registerInlayHintsProvider",
     "registerReferenceProvider",
     "registerRenameProvider",
   ])

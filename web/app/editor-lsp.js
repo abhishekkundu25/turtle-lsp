@@ -244,8 +244,8 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
   // (Monaco's xml language; only `.owl`, `.rdf` and `.owx` files) and OWL
   // Functional files (`ofn`). Only completion and rename write RDF/XML,
   // OWL/XML and OWL Functional syntax: such a model gets the features that
-  // read, completion (COMPLETED) and rename, without formatting, code
-  // actions, semantic tokens (Monaco's colours stay) and inlay hints.
+  // read, label hints, completion (COMPLETED) and rename, without
+  // formatting, code actions and semantic tokens (Monaco's colours stay).
   for (const lang of [...LANGUAGES, "json", ...READ_ONLY]) {
     const writable = !READ_ONLY.includes(lang)
     monaco.languages.registerHoverProvider(lang, {
@@ -386,7 +386,7 @@ export function connect(monaco, client, capabilities, diagnosticsOf) {
       },
     })
 
-    if (writable) monaco.languages.registerInlayHintsProvider(lang, {
+    monaco.languages.registerInlayHintsProvider(lang, {
       onDidChangeInlayHints: inlayChanged.event,
       async provideInlayHints(model, range, token) {
         const r = await client.request("textDocument/inlayHint", { ...doc(model), range: fromRange(range) }, token)

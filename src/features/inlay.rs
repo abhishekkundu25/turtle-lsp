@@ -4,7 +4,7 @@
 use crate::analysis::{Analysis, Encoding};
 use crate::knowledge::Knowledge;
 use crate::settings::InlayLabels;
-use crate::syntax::{Form, Syntax};
+use crate::syntax::{Form, Ref, Syntax};
 use crate::vocab::VOCABS;
 use lsp_types::{InlayHint, InlayHintLabel, InlayHintTooltip, Position, Range};
 
@@ -18,7 +18,7 @@ pub fn inlay_hints(
     range: Range,
     mode: InlayLabels,
 ) -> Vec<InlayHint> {
-    if mode == InlayLabels::Off || !hinted(a.parsed.syntax) {
+    if mode == InlayLabels::Off {
         return vec![];
     }
     let from = a.offset(enc, range.start).unwrap_or(0);
@@ -27,31 +27,51 @@ pub fn inlay_hints(
     let first = refs.partition_point(|r| r.span.end < from);
     let mut out = Vec::new();
     for r in refs[first..].iter().take_while(|r| r.span.start <= to) {
-        let local = match r.form {
-            // No name is written at an anchor for the label to stand beside.
-            Form::A | Form::Anchor => continue,
-            Form::PName { prefix_len } => {
-                &a.text[(r.span.start + prefix_len + 1) as usize..r.span.end as usize]
-            }
-            Form::Iri => local_of(&r.iri),
+        let Some((at, local)) = placed(a.parsed.syntax, &a.text, r) else {
+            continue;
         };
-        out.extend(label_hint(k, &r.iri, local, mode, || {
-            a.position(enc, r.span.end)
-        }));
+        out.extend(label_hint(k, &r.iri, local, mode, || a.position(enc, at)));
     }
     out
 }
 
-/// Whether a document of `syntax` gets label hints. Not RDF/XML: a hint
-/// after an attribute value would sit inside its quotes, and one after an
-/// element name between it and its attributes; the editor's XML support
-/// owns that text. Nor OWL Functional syntax and OWL/XML, which are
-/// read-only as RDF/XML is: no text is put between their terms.
-pub(super) fn hinted(syntax: Syntax) -> bool {
-    match syntax {
-        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => true,
-        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => false,
-    }
+/// Where the label hint of `r` goes in `text`, a document of `syntax`, and
+/// the local name written there; `None` where no name is written for the
+/// label to stand beside. In Turtle, JSON-LD and OWL Functional syntax the
+/// hint follows the term. In XML it follows the markup that closes the
+/// term: an attribute value's closing quote, or the end tag of an
+/// element's text (`</IRI>`); none follows a qualified name, an element's
+/// or an attribute's, where it would part the name from what comes next.
+fn placed<'a>(syntax: Syntax, text: &'a str, r: &'a Ref) -> Option<(u32, &'a str)> {
+    let local = match r.form {
+        // No name is written at an anchor for the label to stand beside.
+        Form::A | Form::Anchor => return None,
+        Form::PName { prefix_len } => {
+            &text[(r.span.start + prefix_len + 1) as usize..r.span.end as usize]
+        }
+        Form::Iri => local_of(&r.iri),
+    };
+    let at = match syntax {
+        Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::OwlFunctional => r.span.end,
+        Syntax::RdfXml | Syntax::OwlXml => {
+            let rest = &text[r.span.end as usize..];
+            let next = rest.trim_start_matches([' ', '\t', '\n', '\r']);
+            let start = r.span.end + (rest.len() - next.len()) as u32;
+            if next.starts_with(['"', '\'']) {
+                start + 1
+            } else if next.starts_with("</") {
+                start + next.find('>')? as u32 + 1
+            } else {
+                return None;
+            }
+        }
+    };
+    Some((at, local))
 }
 
 /// The label hint for `iri`, written with local name `local` (the part of
@@ -216,30 +236,181 @@ mod tests {
         assert_eq!(hints(Analysis::anchored(uri, text, Syntax::Turtle)), 0);
     }
 
-    /// RDF/XML gets no hint, whether its references are exact (the
-    /// frontend's) or spelt as in Turtle: the syntax decides, not the form.
+    /// The hints of `text`, read as `syntax`, between lines `from` and `to`
+    /// in `mode`: line, UTF-16 character and label of each. The labels are
+    /// the document's own.
+    fn shown(
+        text: &str,
+        syntax: Syntax,
+        mode: InlayLabels,
+        from: u32,
+        to: u32,
+    ) -> Vec<(u32, u32, String)> {
+        let uri = "file:///w/onto";
+        let a = Arc::new(Analysis::with_syntax(
+            uri.into(),
+            text,
+            Arc::default(),
+            true,
+            syntax,
+        ));
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        let mut k = Knowledge::default();
+        k.set(uri, Source::Open, a.clone());
+        let range = Range::new(Position::new(from, 0), Position::new(to, 0));
+        inlay_hints(&a, &k, Encoding::Utf16, range, mode)
+            .into_iter()
+            .map(|h| match h.label {
+                InlayHintLabel::String(s) => (h.position.line, h.position.character, s),
+                InlayHintLabel::LabelParts(_) => unreachable!(),
+            })
+            .collect()
+    }
+
+    /// The line and UTF-16 character just after the first `written` in
+    /// `text`.
+    fn after(text: &str, written: &str) -> (u32, u32) {
+        let end = text.find(written).expect(written) + written.len();
+        let line = text[..end].matches('\n').count() as u32;
+        let start = text[..end].rfind('\n').map_or(0, |i| i + 1);
+        (line, text[start..end].encode_utf16().count() as u32)
+    }
+
+    /// `(line, character, label)` after each of `at`.
+    fn hints_after(text: &str, at: &[(&str, &str)]) -> Vec<(u32, u32, String)> {
+        at.iter()
+            .map(|(written, label)| {
+                let (line, character) = after(text, written);
+                (line, character, label.to_string())
+            })
+            .collect()
+    }
+
+    /// In OWL Functional syntax a hint follows the term, as in Turtle: a
+    /// prefixed name, or a full IRI after its `>`.
     #[test]
-    fn rdfxml_gets_no_hint() {
-        use crate::features::rdfxml_fixture as fx;
-        let uri = "file:///w/onto.owl";
-        let hints = |a: Analysis| {
-            let a = Arc::new(a);
-            let mut k = Knowledge::default();
-            k.set(uri, Source::Open, a.clone());
-            let all = Range::new(Position::new(0, 0), Position::new(99, 0));
-            inlay_hints(&a, &k, Encoding::Utf16, all, InlayLabels::All).len()
-        };
-        assert!(hints(fx::turtle(uri)) > 0);
-        let read = fx::read(uri);
-        assert!(
-            read.parsed
-                .refs
-                .iter()
-                .any(|r| r.iri.as_str() == "http://example.org/A"
-                    && matches!(r.form, Form::PName { .. }))
+    fn ofn_hints_follow_the_term() {
+        let text = "Prefix(ex:=<http://example.org/>)\n\
+                    Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\n\
+                    Ontology(<http://example.org/o>\n\
+                    Declaration(Class(ex:P0042))\n\
+                    AnnotationAssertion(rdfs:label ex:P0042 \"pump pressure\")\n\
+                    SubClassOf(<http://example.org/P0042> ex:Asset)\n\
+                    AnnotationAssertion(rdfs:label ex:Asset \"Asset\")\n\
+                    )\n";
+        let got = shown(text, Syntax::OwlFunctional, InlayLabels::Opaque, 0, 99);
+        let want = hints_after(
+            text,
+            &[
+                ("Class(ex:P0042", "pump pressure"),
+                ("label ex:P0042", "pump pressure"),
+                ("<http://example.org/P0042>", "pump pressure"),
+            ],
         );
-        assert_eq!(hints(read), 0);
-        assert_eq!(hints(fx::written(uri, fx::TURTLE)), 0);
+        assert_eq!(got, want);
+    }
+
+    /// In OWL/XML a hint follows an `IRI` or `abbreviatedIRI` value's
+    /// closing quote (either quote, the value padded with spaces or not),
+    /// and the end tag of `<IRI>` or `<AbbreviatedIRI>` text, on a later
+    /// line too; none follows a value spelt through an entity, nor any
+    /// element or attribute name. `opaque` hints opaque names only, `all`
+    /// every labelled one, `off` none.
+    #[test]
+    fn owx_hints_follow_the_closing_quote_or_end_tag() {
+        let text = "<?xml version=\"1.0\"?>\n\
+            <!DOCTYPE Ontology [ <!ENTITY ex \"http://example.org/\"> ]>\n\
+            <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+            <Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n\
+            <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n\
+            <!-- é😀 --><Declaration><Class IRI=\"http://example.org/P0042\"/></Declaration>\n\
+            <Declaration><Class abbreviatedIRI='ex:P0043'/></Declaration>\n\
+            <Declaration><Class abbreviatedIRI=\"ex:Asset\"/></Declaration>\n\
+            <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><IRI>http://example.org/P0042</IRI><Literal>pump pressure</Literal></AnnotationAssertion>\n\
+            <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>\n  ex:P0043\n</AbbreviatedIRI><Literal>flow rate</Literal></AnnotationAssertion>\n\
+            <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/><AbbreviatedIRI>ex:Asset</AbbreviatedIRI><Literal>Asset</Literal></AnnotationAssertion>\n\
+            <SubClassOf><Class IRI=\"&ex;P0042\"/><Class IRI=\" http://example.org/P0043 \"/></SubClassOf>\n\
+            </Ontology>\n";
+        let opaque = hints_after(
+            text,
+            &[
+                ("IRI=\"http://example.org/P0042\"", "pump pressure"),
+                ("abbreviatedIRI='ex:P0043'", "flow rate"),
+                ("<IRI>http://example.org/P0042</IRI>", "pump pressure"),
+                ("ex:P0043\n</AbbreviatedIRI>", "flow rate"),
+                ("IRI=\" http://example.org/P0043 \"", "flow rate"),
+            ],
+        );
+        assert_eq!(
+            shown(text, Syntax::OwlXml, InlayLabels::Opaque, 0, 99),
+            opaque
+        );
+        // The UTF-16 character: the emoji counts two (65 in bytes).
+        assert_eq!(opaque[0].1, 62);
+        // A range of one line holds the hints of its references only.
+        assert_eq!(
+            shown(text, Syntax::OwlXml, InlayLabels::Opaque, 5, 6),
+            opaque[..1]
+        );
+        let all = shown(text, Syntax::OwlXml, InlayLabels::All, 7, 8);
+        assert_eq!(
+            all,
+            hints_after(text, &[("abbreviatedIRI=\"ex:Asset\"", "Asset")])
+        );
+        assert!(shown(text, Syntax::OwlXml, InlayLabels::Off, 0, 99).is_empty());
+    }
+
+    /// In RDF/XML a hint follows an `rdf:about` or `rdf:resource` value's
+    /// closing quote; none stands at an element or attribute name (a
+    /// qualified name), nor after a value spelt through an entity.
+    #[test]
+    fn rdfxml_hints_follow_values_not_names() {
+        let text = "<?xml version=\"1.0\"?>\n\
+            <!DOCTYPE rdf:RDF [ <!ENTITY ex \"http://example.org/\"> ]>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n\
+            \x20        xmlns:ex=\"http://example.org/\">\n\
+            \x20 <rdf:Description rdf:about=\"http://example.org/P0042\">\n\
+            \x20   <rdfs:label>pump pressure</rdfs:label>\n\
+            \x20 </rdf:Description>\n\
+            \x20 <rdf:Description rdf:about='http://example.org/Q7' ex:Q7=\"v\">\n\
+            \x20   <rdfs:label>quality</rdfs:label>\n\
+            \x20 </rdf:Description>\n\
+            \x20 <ex:P0042 rdf:about=\"http://example.org/x\">\n\
+            \x20   <ex:Q7 rdf:resource=\"http://example.org/P0042\"/>\n\
+            \x20   <ex:Q7 rdf:resource=\"&ex;P0042\"/>\n\
+            \x20 </ex:P0042>\n\
+            </rdf:RDF>\n";
+        // The element name ex:P0042 and the attribute name ex:Q7 are
+        // references written at their text: their text, not their form,
+        // gives them no hint.
+        let a = Analysis::with_syntax(
+            "file:///w/onto".into(),
+            text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        );
+        for name in ["<ex:P0042 ", " ex:Q7="] {
+            let start = (text.find(name).unwrap() + name.find("ex:").unwrap()) as u32;
+            assert!(
+                a.parsed
+                    .refs
+                    .iter()
+                    .any(|r| r.span.start == start && matches!(r.form, Form::PName { .. })),
+                "{name}"
+            );
+        }
+        let got = shown(text, Syntax::RdfXml, InlayLabels::Opaque, 0, 99);
+        let want = hints_after(
+            text,
+            &[
+                ("about=\"http://example.org/P0042\"", "pump pressure"),
+                ("about='http://example.org/Q7'", "quality"),
+                ("resource=\"http://example.org/P0042\"", "pump pressure"),
+            ],
+        );
+        assert_eq!(got, want);
     }
 
     #[test]
