@@ -21,7 +21,9 @@
 //! The end tags a new element would meet up to the one that closes it, as
 //! the scanner closes elements, are [`Expected::taken`]: completion offers
 //! none of their names. This reads the text after the offset, to the end
-//! tag that closes the element being named. A value is offered only while
+//! tag that closes the element being named; at a DOCTYPE or other `<!`
+//! markup (no comment, no CDATA section) on the way, which the scanner
+//! reads past quoted text that may hold tags, nothing is offered. A value is offered only while
 //! what it replaces may be an IRI: it holds no white space (a value not
 //! closed runs over the line end). One closed by another quote, a later
 //! attribute's or one in the element's text, holds that attribute's name or
@@ -181,16 +183,16 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             root: None,
         });
     }
-    let content = match content(&c.open) {
+    let (content, in_triple) = match content(&c.open) {
         Some(content) => content,
         None if c.open.is_empty() => match &c.at {
             // A standalone document may start with a node element instead of
             // `rdf:RDF` (RDF/XML 1.1, 7.2.1): its start tag is in node position.
             At::Value(v) if v.tag.name.ns().is_some() && !v.tag.name.is(RDF, "RDF") => {
-                Content::Nodes
+                (Content::Nodes, false)
             }
             At::AttrName(a) if a.tag.name.ns().is_some() && !a.tag.name.is(RDF, "RDF") => {
-                Content::Nodes
+                (Content::Nodes, false)
             }
             _ => return None,
         },
@@ -206,20 +208,36 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             let typed = text.get(span.start as usize..span.end as usize)?;
             let mut open: Vec<&str> = c.open.iter().map(|e| e.tag.name.raw).collect();
             open.push(typed);
-            taken = end_tags(text, span.end as usize, &open);
+            taken = end_tags(text, span.end as usize, &open)?;
             // Not in the start tag of an element whose end tag names it too.
             if taken.last() == Some(&typed) {
                 return None;
             }
-            // Inside `rdf:parseType="Triple"`, changing an existing
+            // Inside `rdf:parseType="Triple"`, at any depth (the triples of
+            // its node's objects are the Triple's too), changing an existing
             // `rdf:Description` to a typed class adds an `rdf:type` triple,
             // and changing a self-closing typed node to `rdf:Description`
-            // removes its `rdf:type` triple.
-            if matches!(content, Content::TripleNode) {
+            // removes its `rdf:type` triple. That one may be the Triple's
+            // one triple: for the Triple's own node, and deeper when the
+            // property element that holds the node makes none, which it does
+            // when its own end tag closes it right after the node.
+            if in_triple && matches!(content, Content::Nodes | Content::TripleNode) {
                 if is_rdf_description(typed, &c.prefixes) {
                     return None;
                 }
-                if !typed.is_empty() && scan_tag(text, span.end as usize).1 {
+                let (next, empty) = scan_tag(text, span.end as usize);
+                let closes_its_property = || {
+                    let rest = text[next..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+                    let property = c.open.last().map(|p| p.tag.name.raw);
+                    rest.strip_prefix("</").is_some_and(|end| {
+                        let len = end.bytes().position(xml::ends_name).unwrap_or(end.len());
+                        property == Some(&end[..len])
+                    })
+                };
+                if !typed.is_empty()
+                    && empty
+                    && (matches!(content, Content::TripleNode) || !closes_its_property())
+                {
                     allow_description = false;
                 }
             }
@@ -271,7 +289,9 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
                     node,
                 },
                 Content::Properties(_) if name.is(RDF, "datatype") => Value::Datatype,
-                Content::Properties(_) if name.is(RDF, "parseType") => parse_type_offer(text, &v)?,
+                Content::Properties(_) if name.is(RDF, "parseType") => {
+                    parse_type_offer(text, &v, &c.open)?
+                }
                 _ => return None,
             };
             let quote = *text.as_bytes().get(v.span.start.checked_sub(1)? as usize)?;
@@ -325,9 +345,10 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
     })
 }
 
-/// What the children of the innermost of `open` are; `None` when nothing is
-/// open, or the root is no RDF/XML.
-fn content(open: &[Element<'_>]) -> Option<Content> {
+/// What the children of the innermost of `open` are, and whether it is
+/// inside an `rdf:parseType="Triple"` property element; `None` when nothing
+/// is open, or the root is no RDF/XML.
+fn content(open: &[Element<'_>]) -> Option<(Content, bool)> {
     let (root, inner) = open.split_first()?;
     let name = &root.tag.name;
     let mut content = if name.is(RDF, "RDF") {
@@ -337,14 +358,16 @@ fn content(open: &[Element<'_>]) -> Option<Content> {
     } else {
         return None;
     };
+    let mut in_triple = false;
     for e in inner {
         content = match content {
             Content::Nodes | Content::TripleNode => Content::Properties(node(&e.tag)),
             Content::Properties(_) => property_content(e),
             Content::None => Content::None,
         };
+        in_triple |= matches!(content, Content::TripleNode);
     }
-    Some(content)
+    Some((content, in_triple))
 }
 
 /// What a property element holds, by its `rdf:parseType`.
@@ -373,18 +396,30 @@ fn property_content(e: &Element<'_>) -> Content {
     }
 }
 
-/// Whether `rdf:parseType` on `v.tag` may be offered: not when the property
-/// element already has non-white body content (changing `parseType` changes
-/// how its children read and can break them).
-fn parse_type_offer(text: &str, v: &super::xml::cursor::AttrValue<'_>) -> Option<Value> {
+/// Whether `rdf:parseType` on `v.tag`, in the elements `open`, may be
+/// offered: not when the property element already has body content
+/// (changing `parseType` changes how its children read and can break them).
+/// It has none when it is empty (`/>`, as the scanner reads the tag), or when
+/// what follows its start tag, after white space, is the end of the text or
+/// an end tag that closes it: its own or an open element's. One that closes
+/// nothing the scanner passes over, and what follows it is the body.
+fn parse_type_offer(
+    text: &str,
+    v: &super::xml::cursor::AttrValue<'_>,
+    open: &[Element<'_>],
+) -> Option<Value> {
     let raw_tag = text.get(v.tag.span.start as usize..v.tag.span.end as usize)?;
-    let self_closing = raw_tag.ends_with("/>");
+    let self_closing = v.tag.empty;
     let tag_closed = raw_tag.ends_with('>');
     if !self_closing {
         let after = text
             .get(v.tag.span.end as usize..)?
             .trim_start_matches(|c: char| c.is_ascii_whitespace());
-        if !after.is_empty() && !after.starts_with("</") {
+        let closes = |end: &str| {
+            let name = &end[..end.bytes().position(xml::ends_name).unwrap_or(end.len())];
+            name == v.tag.name.raw || open.iter().any(|e| e.tag.name.raw == name)
+        };
+        if !after.is_empty() && !after.strip_prefix("</").is_some_and(closes) {
             return None;
         }
     }
@@ -570,13 +605,17 @@ fn scan_tag(text: &str, from: usize) -> (usize, bool) {
 /// the start tag ends with `/>`. The start tag may end with `>` (which an
 /// editor may have written with the `<`), or be cut by a `<` (which also
 /// ends a value) or the end of the text. Comments, CDATA sections and
-/// processing instructions are passed over.
-fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
+/// processing instructions are passed over. `None` at any other `<!` (a
+/// DOCTYPE, unknown markup) before that end tag: the scanner reads past
+/// quoted text there that may hold tags, which this does not follow.
+fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Option<Vec<&'t str>> {
     let (mut i, empty) = scan_tag(text, from);
     if empty {
-        return Vec::new();
+        return Some(Vec::new());
     }
-    let name = |s: &'t str| &s[..s.find(|c| !xml::is_name_char(c)).unwrap_or(s.len())];
+    // A tag's name as the scanner reads it: to the first byte that ends a
+    // name (`</a&x;>` names `a&x;`, which closes no `a`).
+    let name = |s: &'t str| &s[..s.bytes().position(xml::ends_name).unwrap_or(s.len())];
     // The elements opened after it and still open, as the scanner closes
     // them: an end tag that names one further out closes those inside it,
     // one that names none is passed over. Past `xml::MAX_DEPTH` of them, as
@@ -598,7 +637,7 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
                     None => {
                         ends.push(end);
                         if open.contains(&end) {
-                            return ends;
+                            return Some(ends);
                         }
                     }
                 }
@@ -610,6 +649,8 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
         {
             let body = &rest[open.len()..];
             i = at + open.len() + body.find(close).map_or(body.len(), |e| e + close.len());
+        } else if rest.starts_with("<!") {
+            return None;
         } else if rest[1..].starts_with(xml::is_name_start_char) {
             let n = name(&rest[1..]);
             let (next, empty) = scan_tag(text, at + 1 + n.len());
@@ -625,7 +666,7 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
             i = at + 1;
         }
     }
-    ends
+    Some(ends)
 }
 
 impl Expected<'_> {
@@ -1131,12 +1172,12 @@ mod tests {
     fn end_tags_keeps_at_most_max_depth_open_elements() {
         let n = xml::MAX_DEPTH + 50;
         let text = format!("<a>{}{}", "<x>".repeat(n), "</y>".repeat(n));
-        let ends = end_tags(&text, 2, &["a"]);
+        let ends = end_tags(&text, 2, &["a"]).unwrap();
         assert_eq!(ends.len(), xml::MAX_DEPTH);
         assert!(ends.iter().all(|e| *e == "y"), "{ends:?}");
         // Under the cap, as before: an end tag closes the one it names.
         let text = "<a><x><x></x></x></y></a>";
-        assert_eq!(end_tags(text, 2, &["a"]), ["y", "a"]);
+        assert_eq!(end_tags(text, 2, &["a"]).unwrap(), ["y", "a"]);
     }
 
     /// 100,000 unmatched start tags, then 100,000 unmatched end tags, after
@@ -1146,7 +1187,7 @@ mod tests {
         let n = 100_000;
         let text = format!("<a>{}{}", "<x>".repeat(n), "</y>".repeat(n));
         let t = std::time::Instant::now();
-        let ends = end_tags(&text, 2, &["a"]);
+        let ends = end_tags(&text, 2, &["a"]).unwrap();
         let took = t.elapsed();
         assert_eq!(ends.len(), xml::MAX_DEPTH);
         assert!(took < std::time::Duration::from_secs(1), "{took:?}");

@@ -77,6 +77,11 @@ pub(super) fn complete(
     offset: usize,
     snippets: bool,
 ) -> CompletionResponse {
+    // A text the RDF/XML parse does not read (OWL/XML, Functional or
+    // Manchester syntax, given as RDF/XML) takes no RDF/XML.
+    if crate::rdfxml::is_unread(&a.parsed) {
+        return CompletionResponse::Array(vec![]);
+    }
     let text: &str = &a.text;
     let doc = Document::read(text);
     let Some(e) = expected::at(text, &doc, offset) else {
@@ -2001,5 +2006,191 @@ mod tests {
         assert!(has(&labels, "http://example.org/Pump"), "{labels:?}");
         assert!(has(&labels, "http://example.org/Valve"), "{labels:?}");
         assert!(!has(&labels, "http://example.org/feeds"), "{labels:?}");
+    }
+
+    /// The items at `at` whose acceptance adds an error, each with the
+    /// errors it adds.
+    fn adding_errors(at: &At) -> Vec<(String, Vec<String>)> {
+        let errors = |text: &str| -> Vec<String> {
+            let a = Analysis::new(URI.into(), text, Arc::default(), true);
+            a.parsed
+                .errors
+                .iter()
+                .map(|e| e.message().to_string())
+                .collect()
+        };
+        let before = errors(&at.text);
+        let mut out = Vec::new();
+        for item in at.items() {
+            let mut new = errors(&at.accepted(&item));
+            for e in &before {
+                if let Some(i) = new.iter().position(|n| n == e) {
+                    new.remove(i);
+                }
+            }
+            if !new.is_empty() {
+                out.push((item.label, new));
+            }
+        }
+        out
+    }
+
+    /// Chaos 20261126151, iterations 54344, 169649 and 124519: an end tag
+    /// that closes no open element is passed over by the scanner, so the
+    /// text after it is the element's body, and no `rdf:parseType` value is
+    /// offered there. An element whose own end tag, or an outer one, follows
+    /// its start tag still takes them.
+    #[test]
+    fn no_parse_type_value_where_text_follows_an_end_tag_that_closes_nothing() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n";
+        let close = "  </rdf:Description>\n";
+        let mut failures = Vec::new();
+        for body in [
+            "    <ex:says rdf:parseType=\"|Trip</rdf:li>le\">\n    </ex:says>\n",
+            "    <ex:address rdf:parseType=\"|Resou</owl:Restriction></rdfs:subClassOf>rce\">\n      <ex:city>Paris</ex:city>\n    </ex:address>\n",
+            "    <ex:says rdf:parseType=\"|Triple\" rdf:about=\"http://ex</rdf:li>ample\"/>\n      <rdf:Description>\n        <rdfs:label>Pump</rdfs:label>\n      </rdf:Description>\n    </ex:says>\n",
+            "    <ex:says rdf:parseType=\"|\" x=a/>text</ex:says>\n",
+        ] {
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            let labels = at.labels();
+            let added = adding_errors(&at);
+            if !labels.is_empty() || !added.is_empty() {
+                failures.push(format!(
+                    "{body}: offered {labels:?}, adding errors {added:?}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        for body in [
+            "    <ex:says rdf:parseType=\"|\">\n    </ex:says>\n",
+            "    <ex:says rdf:parseType=\"|\">\n",
+            "    <ex:says rdf:parseType=\"|\"/>\n",
+        ] {
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            assert!(has(&at.labels(), "Resource"), "{body}: {:?}", at.labels());
+            // `Triple` on an element with no body yet is offered with its one
+            // node still to write.
+            let added: Vec<_> = adding_errors(&at)
+                .into_iter()
+                .filter(|(label, _)| label != "Triple")
+                .collect();
+            assert_eq!(added, [], "{body}");
+        }
+    }
+
+    /// Chaos 20261126151, iteration 5610: a node element at any depth in
+    /// `rdf:parseType="Triple"` adds its triples to the Triple's one, so
+    /// renaming `rdf:Description` to a class adds an `rdf:type` triple: not
+    /// offered, as for the Triple's own node. Renaming a typed empty node to
+    /// `rdf:Description` removes one: not offered where that is the one
+    /// triple (its property element makes none, not closed by its own end
+    /// tag), offered where its property element's triple stays.
+    #[test]
+    fn a_node_element_deeper_in_a_triple_keeps_its_rdf_type() {
+        let triple = |node: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      <rdf:Description rdf:about=\"http://example.org/a\">\n        <ex:feeds>\n          {node}\n        </ex:feeds>\n      </rdf:Description>\n    </ex:says>\n  </rdf:Description>\n"
+            ))
+        };
+        // One triple, `a feeds b`; `b` typed would make two.
+        let described = at(&triple(
+            "<|rdf:Description rdf:about=\"http://example.org/b\"/>",
+        ));
+        assert!(
+            described.a.parsed.errors.is_empty(),
+            "{:?}",
+            described.a.parsed.errors
+        );
+        assert_eq!(adding_errors(&described), [], "{:?}", described.labels());
+        assert!(
+            !has(&described.labels(), "ex:Pump"),
+            "{:?}",
+            described.labels()
+        );
+        // `ex:feeds` closed by the end tag of its node, its triple not made:
+        // the one triple is `b`'s type.
+        let typed = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      <rdf:Description rdf:about=\"http://example.org/a\"><ex:feeds>\n        <|ex:Pump rdf:about=\"http://example.org/b\"/></rdf:Description>\n    </ex:says>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(adding_errors(&typed), [], "{:?}", typed.labels());
+        assert!(
+            !has(&typed.labels(), "rdf:Description"),
+            "{:?}",
+            typed.labels()
+        );
+        assert!(has(&typed.labels(), "ex:Valve"), "{:?}", typed.labels());
+        // `ex:feeds` closed by its own end tag: two triples, `a feeds b` and
+        // `b`'s type, and `rdf:Description` leaves the one.
+        let two = at(&triple("<|ex:Pump rdf:about=\"http://example.org/b\"/>"));
+        assert_eq!(two.a.parsed.errors.len(), 1, "{:?}", two.a.parsed.errors);
+        let after = two.accepted(&two.item("rdf:Description"));
+        let a = Analysis::new(URI.into(), &after, Arc::default(), true);
+        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+    }
+
+    /// Chaos 20261126151, iteration 124658: a DOCTYPE after the root's start
+    /// tag is read whole by the scanner, with the tags in its quoted entity
+    /// values; the end tag after it still closes the element whose name is
+    /// typed, so no name is offered there.
+    #[test]
+    fn no_element_name_where_a_doctype_in_the_content_holds_a_tag() {
+        let at = at(&onto(
+            "  <|rdf:Description rdf:about=\"http://example.org/s\">\n    <!DOCTYPE x [<!ENTITY e '<rdf:Description rdf:about=\"http://example.org/a\">'>]>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(adding_errors(&at), [], "{:?}", at.labels());
+        assert_eq!(at.labels(), Vec::<String>::new());
+    }
+
+    /// Chaos 20261126151, iteration 136816: a text that holds OWL/XML, given
+    /// as RDF/XML by a caller that names the syntax, is not read by the
+    /// RDF/XML parse (its one error says so), and gets no RDF/XML
+    /// completion: renaming its first child `Prefix` would make the text
+    /// RDF/XML, with an error at each OWL/XML element.
+    #[test]
+    fn nothing_is_offered_in_a_text_the_rdf_xml_parse_does_not_read() {
+        let marked = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/o\">\n    <|Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n</Ontology>\n";
+        let offset = marked.find('|').expect("a cursor");
+        let text = marked.replacen('|', "", 1);
+        let a = Arc::new(Analysis::with_syntax(
+            URI.into(),
+            &text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        let codes: Vec<_> = a.parsed.errors.iter().map(|e| e.code).collect();
+        assert_eq!(codes, ["unsupported-syntax"]);
+        let mut k = Knowledge::default();
+        k.set(URI, Source::Open, a.clone());
+        let at = At { a, k, text, offset };
+        assert_eq!(adding_errors(&at), [], "{:?}", at.labels());
+        assert_eq!(at.labels(), Vec::<String>::new());
+    }
+
+    /// Chaos 20261126152, iteration 12941, and 20261126153, iteration
+    /// 20458: the scanner reads a tag's name up to white space, `>`, `/`,
+    /// `<`, `=`, a quote or `?`, so `</rdfs:label&x;>` closes no
+    /// `rdfs:label` and `<owl:Class&x;>` is no `owl:Class`. The end tag of the
+    /// element being named, after them, is still its own, and no name is
+    /// offered there.
+    #[test]
+    fn the_end_tags_a_name_meets_are_named_as_the_scanner_names_them() {
+        let mut failures = Vec::new();
+        for body in [
+            "  <|owl:Class rdf:about=\"http://example.org/A\">\n    <rdfs:label>A</rdfs:label&x;>\n    <owl:Class>\n    </rdfs:label>\n  </owl:Class>\n",
+            "  <|owl:Class rdf:about=\"http://example.org/A\">\n    <owl:Class&x; rdf:about=\"http://example.org/B\">\n  </owl:Class>\n",
+        ] {
+            let at = at(&onto(body));
+            let labels = at.labels();
+            let added = adding_errors(&at);
+            if !labels.is_empty() || !added.is_empty() {
+                let added: Vec<_> = added.into_iter().take(2).collect();
+                failures.push(format!(
+                    "{body}: {} offered, adding errors {added:?}",
+                    labels.len()
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
