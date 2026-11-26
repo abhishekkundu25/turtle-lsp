@@ -11,6 +11,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { startServer, uriOf, positionOf, tempDir } from "./lsp-client.mjs"
+import { applyEdits } from "./jsonld-fixtures.mjs"
 
 const ONTO = `<?xml version="1.0"?>
 <Ontology xmlns="http://www.w3.org/2002/07/owl#" ontologyIRI="http://example.org/o">
@@ -57,8 +58,19 @@ describe("completion in an OWL/XML document", () => {
     const line = typed.slice(0, caret) + typed.slice(caret + 1)
     const text = ONTO.replace("\n\n</Ontology>", `\n    ${line}\n</Ontology>`)
     s.change(uri, text, ++version)
-    const res = await s.request("textDocument/completion", { textDocument: { uri }, position: positionOf(text, line, caret) })
-    return { res, text }
+    const position = positionOf(text, line, caret)
+    const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
+    return { res, text, position }
+  }
+
+  // The completion in the whole text `marked`, at its `|`.
+  async function completeAll(marked) {
+    const caret = marked.indexOf("|")
+    const text = marked.slice(0, caret) + marked.slice(caret + 1)
+    s.change(uri, text, ++version)
+    const position = positionOf(text, marked.slice(0, caret))
+    const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
+    return { res, text, position }
   }
 
   test("inside SubClassOf: the class and the class expressions, as snippets", async () => {
@@ -98,6 +110,37 @@ describe("completion in an OWL/XML document", () => {
         newText: '\n    <Prefix name="skos" IRI="http://www.w3.org/2004/02/skos/core#"/>',
       },
     ])
+  })
+
+  test("a value with no closing quote: the edit keeps the end of the tag and what comes after it", async () => {
+    const XSD = "http://www.w3.org/2001/XMLSchema#"
+    const int = `${XSD}integer`
+    const pump = "http://example.org/o#Pump"
+    const literal = (l) => `<DataPropertyAssertion><DataProperty abbreviatedIRI=":power"/><NamedIndividual abbreviatedIRI=":p1"/>${l}</DataPropertyAssertion>`
+    const sub = (l) => `<SubClassOf>${l}<Class abbreviatedIRI=":Pump"/></SubClassOf>`
+    const last = (l) => `${ONTO.slice(0, ONTO.indexOf("\n\n</Ontology>"))}\n    ${l}`
+    const cases = [
+      // `>` and text after the value.
+      [complete, literal(`<Literal datatypeIRI="${XSD}int|>42</Literal>`), int, `    ${literal(`<Literal datatypeIRI="${int}>42</Literal>`)}`],
+      // `/>` after the value.
+      [complete, sub('<Class IRI="http://example.org/o#P|/>'), pump, `    ${sub(`<Class IRI="${pump}/>`)}`],
+      // `>` and a child element.
+      [complete, sub('<Class IRI="http://example.org/o#P|>'), pump, `    ${sub(`<Class IRI="${pump}>`)}`],
+      // At the end of the text.
+      [completeAll, last(`<Declaration><Datatype IRI="${XSD}int|/>`), int, `    <Declaration><Datatype IRI="${int}/>`],
+      [completeAll, last(`<Declaration><Datatype IRI="${XSD}int|`), int, `    <Declaration><Datatype IRI="${int}`],
+      // White space, then an attribute in the other quotes: to the white space.
+      [complete, sub(`<Class IRI="http://example.org/o#P| abbreviatedIRI=':Pump'/>`), pump, `    ${sub(`<Class IRI="${pump} abbreviatedIRI=':Pump'/>`)}`],
+      // Closed: between the quotes.
+      [complete, sub('<Class IRI="http://example.org/o#P|"/>'), pump, `    ${sub(`<Class IRI="${pump}"/>`)}`],
+    ]
+    for (const [how, typed, label, want] of cases) {
+      const { res, text, position } = await how(typed)
+      const item = (res?.items ?? []).find((i) => i.label === label)
+      assert.ok(item, `${label} in ${labels(res).join(", ")}: ${typed}`)
+      const accepted = applyEdits(text, [item.textEdit, ...(item.additionalTextEdits ?? [])])
+      assert.equal(accepted.split("\n")[position.line], want, typed)
+    }
   })
 
   test("nothing in a comment", async () => {

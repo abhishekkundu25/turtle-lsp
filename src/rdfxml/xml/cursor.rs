@@ -336,6 +336,31 @@ fn attr_name_at<'a>(text: &'a str, tag: Tag<'a>, end: usize, offset: usize) -> A
     }
 }
 
+/// How many bytes of `rest`, the text after the offset in a value with no
+/// closing quote, an edit there replaces: the run an IRI can hold
+/// ([`in_iri`]), less a `/` right before a `>` (the end of an empty-element
+/// tag). The scanner reads such a value to the next `<` or the end of the
+/// text, so it holds whatever ends the tag, the tag's text and the white
+/// space before the next attribute. None of `>`, white space or `"` can be
+/// in the IRI typed at the offset, and a `/>` ends the tag, so the edit stops
+/// at the first of them: where the value ends at white space or at the end
+/// of the text, as before.
+pub(crate) fn unclosed_run(rest: &str) -> usize {
+    let run = rest.find(|c| !in_iri(c)).unwrap_or(rest.len());
+    if rest[..run].ends_with('/') && rest[run..].starts_with('>') {
+        run - 1
+    } else {
+        run
+    }
+}
+
+/// Whether an IRI, as written in a value, may hold `c`: not white space or
+/// another control character, and none of `<>"{}|^` `` ` `` `\` (the
+/// characters RFC 3987 and Turtle's `IRIREF` leave out).
+fn in_iri(c: char) -> bool {
+    c > ' ' && !matches!(c, '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\')
+}
+
 /// Whether `target` (the innermost element of `open`, outermost first) is
 /// already closed by an unmatched `</target>` after the current end tag
 /// whose name ends at `after_name` (before any outer element of `open`

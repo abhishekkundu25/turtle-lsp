@@ -233,15 +233,13 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
         At::Value(v) => {
             // What the offer replaces: the value whole. One with no closing
             // quote, which the grammar reads to where the scanner ends it (a
-            // `<`, the end of the text), up to there or to the white space
-            // after the offset, which it holds already. A value closed by
-            // the quote of a later attribute holds its name, white space
-            // first.
+            // `<`, the end of the text), up to there or to what ends the IRI
+            // typed after the offset (white space, a `>`, the `/` of a `/>`:
+            // `cursor::unclosed_run`). A value closed by the quote of a later
+            // attribute holds its name, white space first.
             let rest =
                 text.get(v.span.end as usize..v.attr.value.span.end.max(v.span.end) as usize)?;
-            let run = rest
-                .find(|c: char| c.is_ascii_whitespace())
-                .unwrap_or(rest.len());
+            let run = super::xml::cursor::unclosed_run(rest);
             let span = Span::new(v.span.start, v.span.end + run as u32);
             let value = text.get(span.start as usize..span.end as usize)?;
             if value.contains(|c: char| c.is_ascii_whitespace()) {
@@ -564,20 +562,27 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
     let name = |s: &'t str| &s[..s.find(|c| !xml::is_name_char(c)).unwrap_or(s.len())];
     // The elements opened after it and still open, as the scanner closes
     // them: an end tag that names one further out closes those inside it,
-    // one that names none is passed over.
+    // one that names none is passed over. Past `xml::MAX_DEPTH` of them, as
+    // in `cursor::is_already_closed`, one is counted in `skip`, not kept,
+    // and the next end tag closes it.
     let mut inner: Vec<&str> = Vec::new();
+    let mut skip = 0usize;
     let mut ends = Vec::new();
     while let Some(lt) = text[i..].find('<') {
         let at = i + lt;
         let rest = &text[at..];
         if let Some(end) = rest.strip_prefix("</") {
             let end = name(end);
-            match inner.iter().rposition(|n| *n == end) {
-                Some(k) => inner.truncate(k),
-                None => {
-                    ends.push(end);
-                    if open.contains(&end) {
-                        return ends;
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                match inner.iter().rposition(|n| *n == end) {
+                    Some(k) => inner.truncate(k),
+                    None => {
+                        ends.push(end);
+                        if open.contains(&end) {
+                            return ends;
+                        }
                     }
                 }
             }
@@ -592,7 +597,11 @@ fn end_tags<'t>(text: &'t str, from: usize, open: &[&str]) -> Vec<&'t str> {
             let n = name(&rest[1..]);
             let (next, empty) = scan_tag(text, at + 1 + n.len());
             if !empty {
-                inner.push(n);
+                if inner.len() < xml::MAX_DEPTH {
+                    inner.push(n);
+                } else {
+                    skip += 1;
+                }
             }
             i = next;
         } else {
@@ -1095,6 +1104,35 @@ mod tests {
             )),
             None
         );
+    }
+
+    /// Past [`xml::MAX_DEPTH`] open elements, as in
+    /// `cursor::is_already_closed`, a start tag is counted, not kept, and
+    /// an end tag closes one so counted: each end tag searches at most
+    /// that many names.
+    #[test]
+    fn end_tags_keeps_at_most_max_depth_open_elements() {
+        let n = xml::MAX_DEPTH + 50;
+        let text = format!("<a>{}{}", "<x>".repeat(n), "</y>".repeat(n));
+        let ends = end_tags(&text, 2, &["a"]);
+        assert_eq!(ends.len(), xml::MAX_DEPTH);
+        assert!(ends.iter().all(|e| *e == "y"), "{ends:?}");
+        // Under the cap, as before: an end tag closes the one it names.
+        let text = "<a><x><x></x></x></y></a>";
+        assert_eq!(end_tags(text, 2, &["a"]), ["y", "a"]);
+    }
+
+    /// 100,000 unmatched start tags, then 100,000 unmatched end tags, after
+    /// the `<` typed: the end tags it meets in linear time.
+    #[test]
+    fn timing_end_tags_after_many_unmatched_tags() {
+        let n = 100_000;
+        let text = format!("<a>{}{}", "<x>".repeat(n), "</y>".repeat(n));
+        let t = std::time::Instant::now();
+        let ends = end_tags(&text, 2, &["a"]);
+        let took = t.elapsed();
+        assert_eq!(ends.len(), xml::MAX_DEPTH);
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
     }
 
     #[test]

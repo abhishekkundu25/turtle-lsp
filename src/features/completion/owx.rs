@@ -1084,6 +1084,157 @@ mod tests {
         }
     }
 
+    /// A value with no closing quote, which the reader reads to the next
+    /// `<`: its edit stops at the first character an IRI cannot hold (a
+    /// `>`, white space) and before the `/` of a `/>`, so the end of the
+    /// tag and what comes after it stay. The line after accepting, whole.
+    #[test]
+    fn an_unclosed_value_s_edit_keeps_the_end_of_its_tag() {
+        let int = "http://www.w3.org/2001/XMLSchema#integer";
+        let xsd = "http://www.w3.org/2001/XMLSchema#";
+        let pump = "http://example.org/o#Pump";
+        let literal = |l: &str| {
+            format!(
+                "<DataPropertyAssertion><DataProperty abbreviatedIRI=\":power\"/><NamedIndividual abbreviatedIRI=\":p1\"/>{l}</DataPropertyAssertion>"
+            )
+        };
+        // The whole text ends in the line.
+        let last = |line: &str| {
+            format!(
+                "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  {line}"
+            )
+        };
+        let cases = [
+            // `>` and text after the value.
+            (
+                onto(&literal(&format!(
+                    "<Literal datatypeIRI=\"{xsd}int|>42</Literal>"
+                ))),
+                int,
+                format!(
+                    "    {}",
+                    literal(&format!("<Literal datatypeIRI=\"{int}>42</Literal>"))
+                ),
+            ),
+            (
+                onto(&literal(&format!(
+                    "<Literal datatypeIRI=\"{xsd}in|t>42</Literal>"
+                ))),
+                int,
+                format!(
+                    "    {}",
+                    literal(&format!("<Literal datatypeIRI=\"{int}>42</Literal>"))
+                ),
+            ),
+            // `/>` after the value.
+            (
+                onto(
+                    "<SubClassOf><Class IRI=\"http://example.org/o#P|/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>",
+                ),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump}/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            (
+                onto(
+                    "<SubClassOf><Class IRI=\"http://example.org/o#P|um/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>",
+                ),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump}/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            (
+                onto("<SubClassOf><Class IRI=\"|/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump}/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            // `>` and a child element at once.
+            (
+                onto(
+                    "<SubClassOf><Class IRI=\"http://example.org/o#P|><Class abbreviatedIRI=\":Pump\"/></SubClassOf>",
+                ),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump}><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            // At the end of the text.
+            (
+                last(&format!("<Declaration><Datatype IRI=\"{xsd}int|/>")),
+                int,
+                format!("  <Declaration><Datatype IRI=\"{int}/>"),
+            ),
+            (
+                last(&format!("<Declaration><Datatype IRI=\"{xsd}int|>")),
+                int,
+                format!("  <Declaration><Datatype IRI=\"{int}>"),
+            ),
+            (
+                last(&format!("<Declaration><Datatype IRI=\"{xsd}int|")),
+                int,
+                format!("  <Declaration><Datatype IRI=\"{int}"),
+            ),
+            // White space, then an attribute in the other quotes: to the
+            // white space, as before.
+            (
+                onto(
+                    "<SubClassOf><Class IRI=\"http://example.org/o#P| abbreviatedIRI=':Pump'/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>",
+                ),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump} abbreviatedIRI=':Pump'/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            // Closed: between the quotes, as before.
+            (
+                onto(
+                    "<SubClassOf><Class IRI=\"http://example.org/o#P|\"/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>",
+                ),
+                pump,
+                format!(
+                    "    <SubClassOf><Class IRI=\"{pump}\"/><Class abbreviatedIRI=\":Pump\"/></SubClassOf>"
+                ),
+            ),
+            (
+                onto(&literal(&format!(
+                    "<Literal datatypeIRI=\"{xsd}int|\">42</Literal>"
+                ))),
+                int,
+                format!(
+                    "    {}",
+                    literal(&format!("<Literal datatypeIRI=\"{int}\">42</Literal>"))
+                ),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (marked, label, want) in cases {
+            let at = at_doc(&marked);
+            let line = marked[..marked.find('|').unwrap()].matches('\n').count();
+            let Some(item) = at.items().into_iter().find(|i| i.label == label) else {
+                wrong.push(format!("{label} not offered in {marked}"));
+                continue;
+            };
+            let after = at.accepted(&item);
+            let got = after.lines().nth(line).unwrap_or_default().to_string();
+            if got != want {
+                wrong.push(format!("want {want}\n got {got}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        // A `>` before the offset: no edit covers it.
+        let at = at_doc(&onto(&literal(&format!(
+            "<Literal datatypeIRI=\"{xsd}int>4|2</Literal>"
+        ))));
+        for item in at.items() {
+            let after = at.accepted(&item);
+            assert!(after.contains(">42</Literal>"), "{}: {after}", item.label);
+        }
+    }
+
     /// An `IRI` or `AbbreviatedIRI` element's text is offered only in its
     /// first run, after its start tag: past a wrong end tag the element is
     /// still open, and its text is all its runs.
