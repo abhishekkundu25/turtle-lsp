@@ -2,7 +2,8 @@
 -- already knows .trig, .nt, .rq and .sparql; .ru stays Ruby (Rack). A
 -- .jsonld file gets its own type, so plain .json buffers stay unattached.
 -- A .ofn file is OWL Functional syntax, which the server reads as RDF and
--- never writes. Neovim knows no .owx (OWL/XML): it is XML, as .owl is.
+-- edits only by completion and rename. Neovim knows no .owx (OWL/XML): it
+-- is XML, as .owl is.
 vim.filetype.add({
   extension = { ttl = "turtle", turtle = "turtle", nq = "nquads", jsonld = "jsonld", ofn = "ofn", owx = "xml" },
 })
@@ -26,11 +27,10 @@ vim.api.nvim_create_autocmd("BufReadPre", {
 -- the client starts on these files by name, when
 -- vim.lsp.enable("turtle_lsp") is on, with its configuration and root (the
 -- client of the project's Turtle files is reused). The server reads them by
--- their name and content; only completion edits them, and a rename
--- RDF/XML files. vim.lsp.enable's own
--- FileType handler detaches the client from them (its `filetypes` lacks
--- xml) when a file type is set again or another server is enabled after
--- startup: the client comes back unless it is stopping, has exited or is
+-- their name and content; only completion and a rename edit them.
+-- vim.lsp.enable's own FileType handler detaches the client from them (its
+-- `filetypes` lacks xml) when a file type is set again or another server is
+-- enabled after startup: the client comes back unless it is stopping, has exited or is
 -- disabled (a detach by hand, vim.lsp.buf_detach_client, is undone too). A
 -- .owl buffer opened before vim.lsp.enable("turtle_lsp") gets no client
 -- until it is read again (:edit).

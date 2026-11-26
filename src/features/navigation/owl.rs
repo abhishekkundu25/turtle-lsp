@@ -15,7 +15,6 @@
 //! its own, and refuses the rename. [`at`] says what a rename started at
 //! an offset renames, and the prefixes a new name typed there reads with.
 //! It reads only the shared parse and the text.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::analysis::Analysis;
 use crate::rdfxml::rename::{Refusal, alone, apply, line, naming, renamed};

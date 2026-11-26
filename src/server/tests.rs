@@ -131,14 +131,15 @@ fn embedded_dynamic_features_are_registered_after_initialized() {
     );
     for r in &regs {
         let selector = r["registerOptions"]["documentSelector"].to_string();
-        // Rename edits RDF/XML documents too, and XML completion is registered
-        // separately for `.owl`, `.rdf` and `.owx` with XML trigger characters.
+        // Rename edits RDF/XML, OWL Functional and OWL/XML documents too, and
+        // XML completion is registered separately for `.owl`, `.rdf` and
+        // `.owx` with XML trigger characters.
         let rename = r["method"] == "textDocument/rename";
         let xml_completion = r["id"] == "turtle-xml-completion";
         assert!(
             selector.contains("turtle") == !xml_completion
                 && selector.contains("owl") == (rename || xml_completion)
-                && selector.contains("owx") == xml_completion,
+                && selector.contains("owx") == (rename || xml_completion),
             "{selector}"
         );
     }

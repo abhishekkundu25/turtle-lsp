@@ -103,25 +103,18 @@ pub enum RdfXml {
     Refuse,
 }
 
-/// Why a rename that would edit `a` is refused: an RDF/XML document with
-/// [`RdfXml::Refuse`], or an OWL Functional or OWL/XML one, which nothing
-/// edits ([`super::renames`]).
+/// Why a rename that would edit RDF/XML document `a` is refused with
+/// [`RdfXml::Refuse`].
 fn not_edited(a: &Analysis) -> String {
-    let what = match a.parsed.syntax {
-        Syntax::OwlFunctional => "an OWL Functional syntax document",
-        Syntax::OwlXml => "an OWL/XML document",
-        Syntax::Turtle
-        | Syntax::TriG
-        | Syntax::NTriples
-        | Syntax::NQuads
-        | Syntax::JsonLd
-        | Syntax::RdfXml => "an RDF/XML document",
-    };
-    format!("can't rename in {}: {what} is not edited", shown(&a.uri))
+    format!(
+        "can't rename in {}: an RDF/XML document is not edited",
+        shown(&a.uri)
+    )
 }
 
-/// Why a rename cannot edit the RDF/XML document at `uri`: its file, the
-/// line (and column, when no text shows the place) and the reason.
+/// Why a rename cannot edit the RDF/XML, OWL Functional or OWL/XML
+/// document at `uri`: its file, the line (and column, when no text shows
+/// the place) and the reason.
 fn refused(uri: &str, r: rdfxml_rename::Refusal) -> String {
     let column = r
         .column
@@ -447,27 +440,25 @@ pub fn highlights(a: &Analysis, enc: Encoding, pos: Position) -> Vec<DocumentHig
 }
 
 /// What a rename at `pos` would change; `Err` for a JSON-LD term of a
-/// bundled or remote context, which can't be renamed, and for an `xmlns`
-/// declaration in RDF/XML. In an RDF/XML document, a use written there
-/// ([`crate::rdfxml::rename::at`]), and nothing with [`RdfXml::Refuse`].
+/// bundled or remote context, which can't be renamed, for an `xmlns`
+/// declaration in RDF/XML and for a prefix declaration in an OWL document.
+/// In an RDF/XML, OWL Functional or OWL/XML document, a use written there
+/// ([`written_at`]), and in RDF/XML nothing with [`RdfXml::Refuse`].
 pub fn prepare_rename(
     a: &Analysis,
     enc: Encoding,
     pos: Position,
     rdfxml: RdfXml,
 ) -> Result<Option<PrepareRenameResponse>, String> {
-    // Nothing renames in an OWL Functional or OWL/XML document.
-    if !super::renames(a.parsed.syntax) {
-        return Ok(None);
-    }
     let Some(offset) = a.offset(enc, pos) else {
         return Ok(None);
     };
-    if a.parsed.syntax == Syntax::RdfXml {
-        if rdfxml == RdfXml::Refuse {
-            return Ok(None);
+    match a.parsed.syntax {
+        Syntax::RdfXml if rdfxml == RdfXml::Refuse => return Ok(None),
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+            return Ok(written_at(a, offset)?.map(|u| prepare_written(a, enc, u)));
         }
-        return prepare_rdfxml_rename(a, enc, offset);
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {}
     }
     // A JSON-LD term: its key (or a compact IRI's prefix part).
     if let Some(t) = jsonld::term_at(a, offset) {
@@ -477,31 +468,57 @@ pub fn prepare_rename(
     Ok(prepare_iri_rename(a, enc, offset))
 }
 
-/// [`prepare_rename`] in RDF/XML: the whole written form (a value without
-/// its quotes, a name with its prefix), and, where the user would type
-/// another form to keep the IRI (a relative value, an entity, an `rdf:ID`),
-/// that form as the placeholder.
-fn prepare_rdfxml_rename(
+/// What a rename started at `offset` of an RDF/XML, OWL Functional or
+/// OWL/XML document renames: the use written there
+/// ([`crate::rdfxml::rename::at`], [`owl::at`]), `None` where none is.
+/// `Err` on an `xmlns` declaration, on an OWL prefix declaration (whose
+/// reason is the whole message) and where an RDF/XML document cannot be
+/// read. `None` in the other syntaxes, where a rename starts on a
+/// [`target_at`].
+fn written_at(a: &Analysis, offset: u32) -> Result<Option<owl::Use>, String> {
+    match a.parsed.syntax {
+        Syntax::RdfXml => {
+            let base = a.parsed.document_base.as_deref();
+            match rdfxml_rename::at(&a.text, base, offset).map_err(|r| refused(&a.uri, r))? {
+                None => Ok(None),
+                Some(rdfxml_rename::At::Namespace) => Err(NAMESPACE_PREFIX.into()),
+                Some(rdfxml_rename::At::Use {
+                    span,
+                    iri,
+                    prefixes,
+                }) => Ok(Some(owl::Use {
+                    span,
+                    iri,
+                    prefixes,
+                })),
+            }
+        }
+        Syntax::OwlFunctional | Syntax::OwlXml => owl::at(a, offset).map_err(|r| r.reason),
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {
+            Ok(None)
+        }
+    }
+}
+
+/// [`prepare_rename`] at a use [`written_at`]: the whole written form (a
+/// value without its quotes, a name with its prefix, `<…>` with its
+/// brackets), and, where the user would type another form to keep the IRI
+/// (a relative value, an entity, an `rdf:ID`), that form as the
+/// placeholder.
+fn prepare_written(
     a: &Analysis,
     enc: Encoding,
-    offset: u32,
-) -> Result<Option<PrepareRenameResponse>, String> {
-    let at = rdfxml_rename::at(&a.text, a.parsed.document_base.as_deref(), offset)
-        .map_err(|r| refused(&a.uri, r))?;
-    let (span, iri, prefixes) = match at {
-        None => return Ok(None),
-        Some(rdfxml_rename::At::Namespace) => return Err(NAMESPACE_PREFIX.into()),
-        Some(rdfxml_rename::At::Use {
-            span,
-            iri,
-            prefixes,
-        }) => (span, iri, prefixes),
-    };
+    owl::Use {
+        span,
+        iri,
+        prefixes,
+    }: owl::Use,
+) -> PrepareRenameResponse {
     let range = a.range(enc, span);
     let keeps = |name: &str| renamed_iri(&iri, name, &prefixes).as_deref() == Ok(&*iri);
     let written = &a.text[span.start as usize..span.end as usize];
     if keeps(written) {
-        return Ok(Some(PrepareRenameResponse::Range(range)));
+        return PrepareRenameResponse::Range(range);
     }
     let cut = iri.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
     let local = &iri[cut..];
@@ -510,10 +527,7 @@ fn prepare_rdfxml_rename(
     } else {
         format!("<{iri}>")
     };
-    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-        range,
-        placeholder,
-    }))
+    PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }
 }
 
 fn prepare_iri_rename(a: &Analysis, enc: Encoding, offset: u32) -> Option<PrepareRenameResponse> {
@@ -541,10 +555,12 @@ pub struct PrefixScope<'a> {
 /// a full IRI (`<http://...>`) or a bare absolute IRI ([`renamed_iri`]);
 /// each occurrence keeps its file's style.
 /// A JSON-LD term (or keyword alias) is renamed as a term
-/// ([`jsonld::term_rename`]). In an RDF/XML document, the IRI written at
-/// `pos` is renamed (the new name read with the namespaces in scope there);
-/// `Err` with [`RdfXml::Refuse`], and at an `xmlns` declaration. A prefix
-/// rename leaves RDF/XML documents out: their namespaces are their own.
+/// ([`jsonld::term_rename`]). In an RDF/XML, OWL Functional or OWL/XML
+/// document, the IRI written at `pos` is renamed ([`written_at`]; the new
+/// name read with the namespaces or prefixes in scope there); `Err` in
+/// RDF/XML with [`RdfXml::Refuse`], at an `xmlns` declaration and at an OWL
+/// prefix declaration. A prefix rename leaves these documents out: their
+/// namespaces and prefixes are their own.
 pub fn rename(
     a: &Analysis,
     k: &Knowledge,
@@ -554,30 +570,20 @@ pub fn rename(
     scope: PrefixScope,
     rdfxml: RdfXml,
 ) -> Result<WorkspaceEdit, String> {
-    if !super::renames(a.parsed.syntax) {
-        return Err(not_edited(a));
-    }
     let offset = a.offset(enc, pos).ok_or("invalid position")?;
-    if a.parsed.syntax == Syntax::RdfXml {
-        if rdfxml == RdfXml::Refuse {
-            return Err(not_edited(a));
+    match a.parsed.syntax {
+        Syntax::RdfXml if rdfxml == RdfXml::Refuse => return Err(not_edited(a)),
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => {
+            let u = written_at(a, offset)?.ok_or("nothing to rename here")?;
+            let new_iri = renamed_iri(&u.iri, new_name, &u.prefixes)?;
+            let mut changes = HashMap::new();
+            rename_term(k, enc, &u.iri, &new_iri, rdfxml, &mut changes)?;
+            return Ok(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            });
         }
-        let base = a.parsed.document_base.as_deref();
-        let at = rdfxml_rename::at(&a.text, base, offset).map_err(|r| refused(&a.uri, r))?;
-        let (old, new_iri) = match at {
-            None => return Err("nothing to rename here".into()),
-            Some(rdfxml_rename::At::Namespace) => return Err(NAMESPACE_PREFIX.into()),
-            Some(rdfxml_rename::At::Use { iri, prefixes, .. }) => {
-                let new = renamed_iri(&iri, new_name, &prefixes)?;
-                (iri, new)
-            }
-        };
-        let mut changes = HashMap::new();
-        rename_term(k, enc, &old, &new_iri, rdfxml, &mut changes)?;
-        return Ok(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        });
+        Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads | Syntax::JsonLd => {}
     }
     if let Some(t) = jsonld::term_at(a, offset) {
         return Ok(WorkspaceEdit {
@@ -693,7 +699,8 @@ pub fn rename(
 
 /// [`renamed_iri`] for a rename started at `offset` of `a`, with the
 /// prefixes in scope there: in JSON-LD, the prefix terms of the context
-/// there; in RDF/XML, the namespaces in scope (`""` the default one).
+/// there; in RDF/XML, the namespaces in scope (`""` the default one); in an
+/// OWL document, its prefixes ([`written_at`]).
 pub(crate) fn renamed_iri_at(
     a: &Analysis,
     offset: u32,
@@ -701,22 +708,13 @@ pub(crate) fn renamed_iri_at(
     new_name: &str,
 ) -> Result<String, String> {
     let prefixes = match a.parsed.syntax {
-        Syntax::RdfXml => {
-            let base = a.parsed.document_base.as_deref();
-            match rdfxml_rename::at(&a.text, base, offset) {
-                Ok(Some(rdfxml_rename::At::Use { prefixes, .. })) => prefixes,
-                _ => PrefixMap::default(),
-            }
+        Syntax::RdfXml | Syntax::OwlFunctional | Syntax::OwlXml => match written_at(a, offset) {
+            Ok(Some(u)) => u.prefixes,
+            Ok(None) | Err(_) => PrefixMap::default(),
+        },
+        Syntax::JsonLd | Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
+            jsonld::prefixes_at(a, offset)
         }
-        // An OWL Functional or OWL/XML document is never renamed in
-        // ([`rename`] refuses); the new name is read as in Turtle.
-        Syntax::JsonLd
-        | Syntax::Turtle
-        | Syntax::TriG
-        | Syntax::NTriples
-        | Syntax::NQuads
-        | Syntax::OwlFunctional
-        | Syntax::OwlXml => jsonld::prefixes_at(a, offset),
     };
     renamed_iri(old, new_name, &prefixes)
 }
@@ -779,13 +777,15 @@ fn checked_iri(iri: String) -> Result<String, String> {
 /// name, including the vocabulary a production implies (`rdf:type`,
 /// `rdf:first`, `xsd:string`) and the names read from an entity reference,
 /// which share its span and have no reference of their own
-/// ([`rdfxml_names`]). `Err` (the whole rename refused, with nothing added
-/// to `changes`) when one RDF/XML document cannot be edited so (the first,
-/// by URI, with the line and the reason), when one uses `old` at all with
-/// [`RdfXml::Refuse`], when an OWL Functional or OWL/XML document uses it
-/// (or its triples name it), which no rename edits ([`super::renames`]),
-/// and when a JSON-LD use cannot be rewritten: renaming the other uses
-/// would leave a workspace that disagrees with itself. An anchored use ([`Form::Anchor`]) of a Turtle-family document
+/// ([`rdfxml_names`]). Every OWL Functional and OWL/XML document is
+/// planned by [`owl::plan`], every use there or none, which refuses one
+/// whose triples name `old` with no text of their own and one with a
+/// syntax error whose text may spell it. `Err` (the whole rename refused,
+/// with nothing added to `changes`) when one RDF/XML or OWL document cannot
+/// be edited so (the first, by URI, with the line and the reason), when an
+/// RDF/XML one uses `old` at all with [`RdfXml::Refuse`], and when a
+/// JSON-LD use cannot be rewritten: renaming the other uses would leave a
+/// workspace that disagrees with itself. An anchored use ([`Form::Anchor`]) of a Turtle-family document
 /// is left as it is: its text is not the IRI.
 pub(crate) fn rename_term(
     k: &Knowledge,
@@ -802,7 +802,8 @@ pub(crate) fn rename_term(
     {
         match other.parsed.syntax {
             Syntax::RdfXml => rdfxml_docs.push(other),
-            Syntax::OwlFunctional | Syntax::OwlXml => return Err(not_edited(other)),
+            // Every OWL document is planned, below.
+            Syntax::OwlFunctional | Syntax::OwlXml => {}
             Syntax::JsonLd => jsonld_docs.push(other),
             Syntax::Turtle | Syntax::TriG | Syntax::NTriples | Syntax::NQuads => {
                 turtle_docs.push(other)
@@ -810,18 +811,6 @@ pub(crate) fn rename_term(
         }
     }
     if let Some(old) = Iri::get(old) {
-        // An OWL Functional or OWL/XML document whose triples name `old`
-        // is not edited, though no reference of it may be read.
-        let functional = k
-            .docs()
-            .filter(|(_, src, d)| {
-                *src != Source::External && !super::renames(d.parsed.syntax) && triples_name(d, old)
-            })
-            .map(|(_, _, d)| d)
-            .min_by(|x, y| x.uri.cmp(&y.uri));
-        if let Some(d) = functional {
-            return Err(not_edited(d));
-        }
         rdfxml_docs.extend(
             k.docs()
                 .filter(|(_, src, d)| *src != Source::External && rdfxml_names(d, old))
@@ -847,25 +836,39 @@ pub(crate) fn rename_term(
     {
         return Err(not_edited(d));
     }
-    // Every RDF/XML document is planned before anything is written.
-    let mut rdfxml_changes = Vec::new();
-    for d in rdfxml_docs {
-        if let Some(r) = blocked.remove(d.uri.as_str()) {
-            return Err(refused(&d.uri, r));
-        }
-        if let Some(old) = Iri::get(old) {
-            let edits = rdfxml_rename::plan(&d.text, &d.parsed, old, new_iri)
-                .map_err(|r| refused(&d.uri, r))?;
-            if !edits.is_empty() {
-                let edits: Vec<TextEdit> = edits
-                    .into_iter()
-                    .map(|(span, new_text)| TextEdit {
-                        range: d.range(enc, span),
-                        new_text,
-                    })
-                    .collect();
-                rdfxml_changes.push((edited_uri(&d.uri)?, edits));
+    // Every RDF/XML and OWL document is planned before anything is
+    // written.
+    let mut planned = rdfxml_docs;
+    planned.extend(
+        k.docs()
+            .filter(|(_, src, d)| {
+                *src != Source::External
+                    && matches!(d.parsed.syntax, Syntax::OwlFunctional | Syntax::OwlXml)
+            })
+            .map(|(_, _, d)| &**d),
+    );
+    planned.sort_by(|x, y| x.uri.cmp(&y.uri));
+    let mut planned_changes = Vec::new();
+    for d in planned {
+        let edits = if d.parsed.syntax == Syntax::RdfXml {
+            match (blocked.remove(d.uri.as_str()), Iri::get(old)) {
+                (Some(r), _) => Err(r),
+                (None, Some(old)) => rdfxml_rename::plan(&d.text, &d.parsed, old, new_iri),
+                (None, None) => Ok(Vec::new()),
             }
+        } else {
+            owl::plan(&d.text, &d.parsed, Iri::intern(old), new_iri)
+        }
+        .map_err(|r| refused(&d.uri, r))?;
+        if !edits.is_empty() {
+            let edits: Vec<TextEdit> = edits
+                .into_iter()
+                .map(|(span, new_text)| TextEdit {
+                    range: d.range(enc, span),
+                    new_text,
+                })
+                .collect();
+            planned_changes.push((edited_uri(&d.uri)?, edits));
         }
     }
     let mut jsonld_changes = jsonld::Changes {
@@ -902,7 +905,7 @@ pub(crate) fn rename_term(
             changes.insert(edited_uri(&other.uri)?, text_edits(other, enc, reps));
         }
     }
-    changes.extend(rdfxml_changes);
+    changes.extend(planned_changes);
     Ok(())
 }
 
@@ -1012,11 +1015,16 @@ mod tests {
             true,
             Syntax::JsonLd,
         ));
+        let ofn_text =
+            "Prefix(ex:=<http://example.org/>)\nOntology(\nDeclaration(Class(ex:a))\n)\n";
+        let ofn = turtle_doc(&in_w("a.ofn").1, ofn_text);
+        assert_eq!(ofn.parsed.syntax, Syntax::OwlFunctional);
         let old = "http://example.org/a";
         let docs = [
             (&ttl, offset_of(&ttl.text, "ex:a", 3)),
             (&owl, offset_of(owl_text, "example.org/a", 3)),
             (&json, offset_of(json_text, "ex:a", 3)),
+            (&ofn, offset_of(ofn_text, "ex:a", 3)),
         ];
         for name in [
             "b",
@@ -1036,6 +1044,134 @@ mod tests {
                 .collect();
             assert!(got.iter().all(|g| *g == got[0]), "{name:?}: {got:?}");
         }
+    }
+
+    /// A Turtle file and an OWL Functional file that use the same terms.
+    const OFN_TTL: &str = "@prefix ex: <http://example.org/> .\nex:x a ex:A .\n";
+    const OFN: &str = "Prefix(ex:=<http://example.org/>)\nOntology(<http://example.org/o>\nDeclaration(Class(ex:A))\nSubClassOf(ex:A <http://example.org/B>)\n)\n";
+
+    /// A rename edits an OWL Functional document as a Turtle one, and the
+    /// same from either: each use keeps its form. One can start in it, on
+    /// a prefixed name or a full IRI, which prepare-rename gives whole, but
+    /// not on the name of a prefix declaration.
+    #[test]
+    fn a_rename_edits_turtle_and_functional_documents_from_either() {
+        let (_, ttl_uri) = in_w("a.ttl");
+        let (_, ofn_uri) = in_w("onto.ofn");
+        let ttl = turtle_doc(&ttl_uri, OFN_TTL);
+        let ofn = turtle_doc(&ofn_uri, OFN);
+        assert_eq!(ofn.parsed.syntax, Syntax::OwlFunctional);
+        assert!(ofn.parsed.errors.is_empty(), "{:?}", ofn.parsed.errors);
+        let mut k = Knowledge::default();
+        k.set(&ttl_uri, Source::Open, ttl.clone());
+        k.set(&ofn_uri, Source::Open, ofn.clone());
+        let want_ofn = OFN.replace("ex:A", "ex:C");
+        for (a, at) in [
+            (&ttl, offset_of(OFN_TTL, "ex:A", 3)),
+            (&ofn, offset_of(OFN, "ex:A", 3)),
+        ] {
+            let edit = renamed_at(a, &k, a.position(Encoding::Utf8, at), "C").unwrap();
+            assert_eq!(edit.changes.as_ref().unwrap().len(), 2, "{}", a.uri);
+            assert_eq!(
+                edited(&ttl, &edit),
+                OFN_TTL.replace("ex:A", "ex:C"),
+                "{}",
+                a.uri
+            );
+            assert_eq!(edited(&ofn, &edit), want_ofn, "{}", a.uri);
+        }
+        // `rename.rdfXml` off governs RDF/XML only.
+        let at = ofn.position(Encoding::Utf8, offset_of(OFN, "ex:A", 3));
+        let scope = PrefixScope {
+            file: None,
+            file_of: &mut |_| None,
+        };
+        let edit = rename(&ofn, &k, Encoding::Utf8, at, "C", scope, RdfXml::Refuse).unwrap();
+        assert_eq!(edited(&ofn, &edit), want_ofn);
+        // A full IRI stays one.
+        let at = ofn.position(Encoding::Utf8, offset_of(OFN, "<http://example.org/B>", 3));
+        let edit = renamed_at(&ofn, &k, at, "ex:D").unwrap();
+        assert_eq!(
+            edited(&ofn, &edit),
+            OFN.replace("<http://example.org/B>", "<http://example.org/D>")
+        );
+        // Prepare-rename: the written form, brackets and prefix included.
+        let range = |needle: &str| {
+            let start = offset_of(OFN, needle, 0);
+            let span = Span::new(start, start + needle.len() as u32);
+            Ok(Some(PrepareRenameResponse::Range(
+                ofn.range(Encoding::Utf8, span),
+            )))
+        };
+        for (needle, plus) in [("ex:A", 1), ("<http://example.org/B>", 5)] {
+            let at = ofn.position(Encoding::Utf8, offset_of(OFN, needle, plus));
+            assert_eq!(
+                prepare_rename(&ofn, Encoding::Utf8, at, RdfXml::Edit),
+                range(needle),
+                "{needle}"
+            );
+        }
+        // No prefix is renamed there, and nothing on a keyword.
+        let prefix =
+            "can't rename a prefix in an OWL document: rename a term written with it instead";
+        let at = ofn.position(Encoding::Utf8, offset_of(OFN, "ex:=", 1));
+        assert_eq!(
+            prepare_rename(&ofn, Encoding::Utf8, at, RdfXml::Edit),
+            Err(prefix.to_string())
+        );
+        assert_eq!(renamed_at(&ofn, &k, at, "ey").unwrap_err(), prefix);
+        let at = ofn.position(Encoding::Utf8, offset_of(OFN, "SubClassOf", 2));
+        assert_eq!(
+            prepare_rename(&ofn, Encoding::Utf8, at, RdfXml::Edit),
+            Ok(None)
+        );
+        assert_eq!(
+            renamed_at(&ofn, &k, at, "C").unwrap_err(),
+            "nothing to rename here"
+        );
+    }
+
+    /// An OWL Functional document with a syntax error that may spell the
+    /// renamed IRI refuses the whole rename, though no use of it is read
+    /// there: nothing is added to the changes, not even the other files'.
+    #[test]
+    fn a_broken_functional_document_refuses_the_whole_rename() {
+        let (_, ttl_uri) = in_w("a.ttl");
+        let (_, ofn_uri) = in_w("a.ofn");
+        let (broken_path, broken_uri) = in_w("broken.ofn");
+        let broken_text = "Prefix(ex:=<http://example.org/>)\nOntology(\nSubClassOf(ex:A)\n)\n";
+        let broken = turtle_doc(&broken_uri, broken_text);
+        assert!(!broken.parsed.errors.is_empty());
+        let a = Iri::intern("http://example.org/A");
+        assert!(broken.parsed.refs.iter().all(|r| r.iri != a));
+        assert!(!triples_name(&broken, a));
+        let ttl = turtle_doc(&ttl_uri, OFN_TTL);
+        let mut k = Knowledge::default();
+        k.set(&ttl_uri, Source::Open, ttl.clone());
+        k.set(&ofn_uri, Source::Open, turtle_doc(&ofn_uri, OFN));
+        k.set(&broken_uri, Source::Disk, broken);
+        let mut changes = HashMap::new();
+        let err = rename_term(
+            &k,
+            Encoding::Utf8,
+            "http://example.org/A",
+            "http://example.org/C",
+            RdfXml::Edit,
+            &mut changes,
+        )
+        .unwrap_err();
+        let want = format!(
+            "can't rename in {}: line 3: the document has a syntax error (",
+            broken_path.display()
+        );
+        assert!(err.starts_with(&want), "{err}");
+        assert!(
+            err.ends_with("): it is not edited until it is fixed"),
+            "{err}"
+        );
+        assert!(changes.is_empty(), "{changes:?}");
+        let at = ttl.position(Encoding::Utf8, offset_of(OFN_TTL, "ex:A", 3));
+        assert_eq!(renamed_at(&ttl, &k, at, "C").unwrap_err(), err);
     }
 
     /// An import read without a cache is named by its IRI, and an IRI may
@@ -1712,9 +1848,11 @@ mod tests {
     }
 
     /// A prefix renamed in the prefixes.ttl that serves the folder is not
-    /// renamed in an RDF/XML document there, though its parse uses it.
+    /// renamed in an RDF/XML document there, though its parse uses it, nor
+    /// in an OWL Functional document that writes it: their prefixes are
+    /// their own.
     #[test]
-    fn a_shared_prefix_is_not_renamed_in_rdfxml() {
+    fn a_shared_prefix_is_not_renamed_in_rdfxml_or_owl() {
         // The folder's prefixes.ttl is matched by path.
         let (prefixes_path, prefixes_uri) = in_w("prefixes.ttl");
         let (_, a_uri) = in_w("a.ttl");
@@ -1732,6 +1870,8 @@ mod tests {
         k.set(&prefixes_uri, Source::Open, prefixes.clone());
         k.set(&a_uri, Source::Open, ttl);
         k.set(OWL_URI, Source::Disk, owl);
+        let (_, ofn_uri) = in_w("onto.ofn");
+        k.set(&ofn_uri, Source::Disk, turtle_doc(&ofn_uri, OFN));
         let mut file_of = |_: &str| Some(prefixes_path.clone());
         let scope = PrefixScope {
             file: Some(prefixes.clone()),
@@ -2004,8 +2144,7 @@ mod tests {
     /// An OWL Functional or OWL/XML document whose triples name an IRI
     /// that none of its references names (`owl:Class`, implied by a class
     /// declaration) refuses a rename of it from a Turtle file, and the
-    /// message names it: neither syntax is renamed in
-    /// ([`crate::features::renames`]).
+    /// message names it, the line and why: no text there is the IRI.
     #[test]
     fn an_iri_only_the_triples_of_an_owl_document_name_is_not_renamed() {
         let text = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:ex:o> a owl:Class .\n";
@@ -2013,21 +2152,18 @@ mod tests {
         let ttl = turtle_doc(&a_uri, text);
         let at = ttl.position(Encoding::Utf8, offset_of(text, "owl:Class", 5));
         let owl_class = Iri::intern("http://www.w3.org/2002/07/owl#Class");
-        for (name, tx, what) in [
+        for (name, tx) in [
             (
                 "onto.ofn",
                 "Prefix(:=<http://example.org/>)\nOntology(<http://example.org/o>\nDeclaration(Class(:A))\n)\n",
-                "an OWL Functional syntax document",
             ),
             (
                 "onto.owx",
                 "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n  <Declaration><Class IRI=\"http://example.org/A\"/></Declaration>\n</Ontology>\n",
-                "an OWL/XML document",
             ),
         ] {
             let (path, uri) = in_w(name);
             let owl = Arc::new(Analysis::new(uri.clone(), tx, Arc::default(), true));
-            assert!(!crate::features::renames(owl.parsed.syntax), "{name}");
             assert!(
                 owl.parsed.errors.is_empty(),
                 "{name}: {:?}",
@@ -2041,7 +2177,10 @@ mod tests {
             let err = renamed_at(&ttl, &k, at, "<http://example.org/Kind>").unwrap_err();
             assert_eq!(
                 err,
-                format!("can't rename in {}: {what} is not edited", path.display()),
+                format!(
+                    "can't rename in {}: line 3: the OWL mapping implies <{owl_class}> here, with no text of its own",
+                    path.display()
+                ),
                 "{name}"
             );
         }

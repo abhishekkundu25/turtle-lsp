@@ -179,10 +179,9 @@ mod gates {
             .map(|f| (f.start_line, f.end_line))
             .collect();
         assert_eq!(folds, [(2, 3)]);
-        // Completion is the one edit (`completion::owx`); nothing is
-        // formatted, coloured, spliced or renamed.
+        // Completion (`completion::owx`) and rename are the edits; nothing
+        // is formatted, coloured or spliced.
         assert!(!crate::features::writes(Syntax::OwlXml));
-        assert!(!crate::features::renames(Syntax::OwlXml));
         assert!(crate::features::completes(Syntax::OwlXml));
         let got = completion::complete(&a, &k, Encoding::Utf8, Position::new(4, 39));
         let CompletionResponse::List(list) = got else {

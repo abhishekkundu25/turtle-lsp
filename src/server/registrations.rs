@@ -1,33 +1,30 @@
 //! The features that write a document or offer text to type: formatting,
 //! rename, completion and code actions. RDF/XML files (`.owl`, `.rdf`) keep
 //! their editor's own XML language, and of the features that write only
-//! rename (`features::renames`) and completion (`features::completes`)
-//! edit them, so the editor should not offer
+//! rename (`features::navigation::rename_term`) and completion
+//! (`features::completes`) edit them, so the editor should not offer
 //! formatting or code actions there. Nor in OWL/XML files (`.owx`), which
 //! editors keep in their XML language too, nor in OWL Functional files
-//! (`.ofn`, the `ofn` language of VS Code and Neovim), which are read-only
-//! too: [`LANGUAGES`] leaves `xml` and `ofn` out, and rename refuses a term
-//! a Functional or OWL/XML document uses (one under a `.owl` or `.rdf` name
-//! is in [`rename_selector`]'s pattern, and is refused there). Completion
-//! is asked in all of them: its selector ([`completion_selector`]) adds
-//! [`COMPLETED_LANGUAGES`], [`RDFXML_PATTERN`] and [`OWX_PATTERN`], and the
-//! server answers in each by the syntax it reads (`features::completes`), so
-//! a `.owl` that holds Turtle or OWL Functional syntax gets that syntax's
-//! completion.
+//! (`.ofn`, the `ofn` language of VS Code and Neovim), which only rename and
+//! completion edit too: [`LANGUAGES`] leaves `xml` and `ofn` out. Rename
+//! and completion are asked in all of them: their selectors
+//! ([`rename_selector`], [`completion_selector`] and
+//! [`xml_completion_selector`]) add [`COMPLETED_LANGUAGES`],
+//! [`RDFXML_PATTERN`] and [`OWX_PATTERN`], and the server answers in each by
+//! the syntax it reads, so a `.owl` that holds Turtle, OWL Functional
+//! syntax or OWL/XML is renamed and completed as that syntax.
 //!
 //! By default the `initialize` result announces each one statically, for
 //! every document. Of the features that write, the server answers only a
-//! rename in an RDF/XML document and completion in an RDF/XML, OWL
-//! Functional or OWL/XML document: no formatting edits and no code action
-//! that edits one.
+//! rename and completion in an RDF/XML, OWL Functional or OWL/XML
+//! document: no formatting edits and no code action that edits one.
 //! A client opts in to more with `"registerOutsideRdfXml": true` at the top
 //! level of its `initializationOptions` ([`OPT_IN`]): each of the four
 //! features that the client can register dynamically (`dynamicRegistration`)
 //! is then left out of the result and registered once the client is
 //! initialized, for [`selector`], which leaves RDF/XML, OWL/XML and OWL
-//! Functional files out, rename for [`rename_selector`], which takes
-//! RDF/XML files in, and completion for [`completion_selector`], which
-//! takes all three in. VS Code opts in, so that it lists no turtle-lsp
+//! Functional files out, and rename and completion for selectors that take
+//! all three in. VS Code opts in, so that it lists no turtle-lsp
 //! formatter for XML files. The option is read once, at
 //! `initialize`, and is not a setting: the settings ignore the key, and a
 //! configuration section that replaces `initializationOptions` later does
@@ -54,8 +51,8 @@ pub(crate) const OPT_IN: &str = "registerOutsideRdfXml";
 pub(crate) const LANGUAGES: [&str; 6] =
     ["turtle", "trig", "ntriples", "nquads", "sparql", "jsonld"];
 
-/// The language ids of the documents the server reads, never writes, and
-/// completes: `ofn`, OWL Functional syntax, where an accepted term may add
+/// The language ids of the documents the server writes only by completion
+/// and rename: `ofn`, OWL Functional syntax, where an accepted term may add
 /// its `Prefix( … )` declaration (`features::completes`).
 pub(crate) const COMPLETED_LANGUAGES: [&str; 1] = ["ofn"];
 
@@ -99,11 +96,12 @@ pub(crate) fn xml_completion_selector() -> Vec<DocumentFilter> {
         .into()
 }
 
-/// The documents rename applies to: [`selector`]'s, and RDF/XML files,
-/// which a rename edits too (`rename.rdfXml`).
+/// The documents rename applies to: [`selector`]'s, [`COMPLETED_LANGUAGES`],
+/// RDF/XML files (`rename.rdfXml` turns their edits off) and OWL/XML files.
 pub(crate) fn rename_selector() -> Vec<DocumentFilter> {
     let mut out = selector();
-    out.push(filter(None, Some(RDFXML_PATTERN)));
+    out.extend(COMPLETED_LANGUAGES.iter().map(|l| filter(Some(l), None)));
+    out.extend([RDFXML_PATTERN, OWX_PATTERN].map(|p| filter(None, Some(p))));
     out
 }
 
@@ -328,8 +326,8 @@ mod tests {
     }
 
     /// Formatting and code actions leave RDF/XML and OWL/XML files out;
-    /// rename takes RDF/XML files too, and completion both, by VS Code's
-    /// patterns for them.
+    /// rename and completion take both, by VS Code's patterns for them, and
+    /// OWL Functional files.
     #[test]
     fn the_selector_leaves_xml_files_out_but_for_rename_and_completion() {
         let all = Dynamic {
@@ -354,14 +352,18 @@ mod tests {
                 "{}",
                 r.id
             );
-            assert_eq!(filters.contains(&owx), xml_completion, "{}", r.id);
+            assert_eq!(filters.contains(&owx), rename || xml_completion, "{}", r.id);
+            let ofn = json!({"language": "ofn"});
+            assert_eq!(filters.contains(&ofn), rename || completion, "{}", r.id);
             if xml_completion {
                 assert_eq!(filters.len(), 2, "{}", r.id);
             } else {
                 let added = if completion {
                     COMPLETED_LANGUAGES.len()
+                } else if rename {
+                    COMPLETED_LANGUAGES.len() + 2
                 } else {
-                    usize::from(rename)
+                    0
                 };
                 assert_eq!(filters.len(), LANGUAGES.len() + 1 + added, "{}", r.id);
             }

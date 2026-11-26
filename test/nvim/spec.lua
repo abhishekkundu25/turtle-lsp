@@ -390,7 +390,7 @@ check("a .owl buffer keeps filetype xml, the client attaches and hover answers",
   vim.api.nvim_buf_delete(other, { force = true })
 end)
 
-check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; formatting and rename write nothing in it", function()
+check("a .ofn buffer gets filetype ofn, the server's errors, hover and definition; formatting writes nothing in it, and rename refuses it while it has an error", function()
   local file = owl_dir .. "/onto.ofn"
   local text = {
     "Prefix(:=<http://example.org/o#>)",
@@ -419,7 +419,7 @@ check("a .ofn buffer gets filetype ofn, the server's errors, hover and definitio
   }, TIMEOUT)
   local answer = res and res[c.id]
   local message = answer and answer.err and answer.err.message or vim.inspect(answer)
-  assert(message:find("OWL Functional syntax document is not edited", 1, true), "rename in a .ofn: " .. message)
+  assert(message:find("the document has a syntax error", 1, true), "rename in a .ofn: " .. message)
   -- Its axioms are read: the label in hover, the declaration as definition.
   local h = request(b, "textDocument/hover", {
     textDocument = vim.lsp.util.make_text_document_params(b),
@@ -475,7 +475,7 @@ check("completing in a .ofn buffer offers the slot's classes and adds a Prefix l
   vim.api.nvim_buf_delete(b, { force = true })
 end)
 
-check("a .owx buffer gets filetype xml, the server's errors, hover and definition; nothing is written in it", function()
+check("a .owx buffer gets filetype xml, the server's errors, hover and definition; formatting writes nothing, and rename refuses it while it has an error", function()
   local file = owl_dir .. "/onto.owx"
   -- No XML declaration: Neovim's own detection names such a text xml.
   vim.fn.writefile({
@@ -505,7 +505,7 @@ check("a .owx buffer gets filetype xml, the server's errors, hover and definitio
   }, TIMEOUT)
   local answer = res and res[c.id]
   local message = answer and answer.err and answer.err.message or vim.inspect(answer)
-  assert(message:find("OWL/XML document is not edited", 1, true), "rename in a .owx: " .. message)
+  assert(message:find("the document has a syntax error", 1, true), "rename in a .owx: " .. message)
   -- Its axioms are read: the label in hover, the declaration as definition.
   local h = request(b, "textDocument/hover", {
     textDocument = vim.lsp.util.make_text_document_params(b),
