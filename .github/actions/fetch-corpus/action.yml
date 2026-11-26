@@ -1,0 +1,58 @@
+name: Fetch CI corpus
+description: Restore or fetch the eight selected corpus sources and JSON-LD corpus (saving caches on main only).
+inputs:
+  save-cache:
+    description: Whether this job saves the corpus caches on main pushes
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Select the eight CI corpus rows
+      shell: bash
+      run: |
+        mkdir -p target
+        awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl" || $1 == "sib-sparql-examples" || $1 == "foaf" || $1 == "obo-bfo" || $1 == "obo-ro" || $1 == "obo-pato"' tools/corpus/sources.tsv > target/corpus-sources.tsv
+        test "$(wc -l < target/corpus-sources.tsv)" -eq 8
+    - id: jsonld-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: test/corpus/jsonld
+        key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
+    - id: corpus-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          test/corpus/brick.ttl
+          test/corpus/dcat-ap-shacl.ttl
+          test/corpus/w3c-shacl.ttl
+          test/corpus/sib-sparql-examples
+          test/corpus/foaf.rdf
+          test/corpus/obo-bfo.rdf
+          test/corpus/obo-ro.rdf
+          test/corpus/obo-pato.rdf
+        key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}
+    - name: Fetch missing corpus files
+      shell: bash
+      run: |
+        # One retry: w3.org and the other hosts throttle runners now and then.
+        CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh ||
+          { sleep 15; CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh; }
+    - if: inputs.save-cache == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.jsonld-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: test/corpus/jsonld
+        key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
+    - if: inputs.save-cache == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.corpus-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          test/corpus/brick.ttl
+          test/corpus/dcat-ap-shacl.ttl
+          test/corpus/w3c-shacl.ttl
+          test/corpus/sib-sparql-examples
+          test/corpus/foaf.rdf
+          test/corpus/obo-bfo.rdf
+          test/corpus/obo-ro.rdf
+          test/corpus/obo-pato.rdf
+        key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}

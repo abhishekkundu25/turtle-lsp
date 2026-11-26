@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Nightly on main: the Tests, VS Code and Browser jobs with the shipped
-  # release profile (fat LTO), the chaos tests with a new seed, and the
-  # dependency audit, so a new advisory shows up here first.
+  # Nightly on main: the native build, Rust test, chaos, VS Code and Browser
+  # jobs with the shipped release profile (fat LTO), the chaos tests with a new
+  # seed, and the dependency audit, so a new advisory shows up here first.
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -34,14 +34,47 @@ concurrency:
 
 # Actions are pinned to full commit SHAs (tags can be moved); Dependabot bumps them.
 #
-# Release profile: the Tests, VS Code and Browser jobs build without fat LTO
-# (the CARGO_PROFILE_RELEASE_* variables below), which takes minutes off every
-# build and test link. The nightly run keeps the shipped profile (Cargo.toml),
-# as do the Performance job and release.yml.
+# Release profile: the native build, Rust test and chaos jobs build without fat
+# LTO on PRs and main pushes (the CARGO_PROFILE_RELEASE_* variables below),
+# which takes minutes off every build and test link. The nightly run keeps the
+# shipped profile (Cargo.toml), as do the Performance job and release.yml.
 #
-# Caches: only a push to main saves one (save-if). Pull requests restore main's,
-# and storage stays under the 10 GB limit, so main's warm cache is not evicted.
+# Caches: only a push to main saves caches. Pull requests restore main's, so
+# storage stays under the 10 GB limit and main's warm caches are not evicted.
 jobs:
+  # Classifies PR changes for non-gating installer checks (always true on main,
+  # nightly and manual runs).
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      install_action: ${{ steps.filter.outputs.install_action }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "install_action=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+            echo "install_action=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only HEAD^1 HEAD | grep -Eq '^(action\.yml|install\.sh|install\.ps1)$'; then
+            echo "install_action=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "install_action=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Formatting on Linux; clippy on every OS, as there is cfg(windows) code.
   lint:
     name: Lint (${{ matrix.os }})
@@ -68,11 +101,61 @@ jobs:
       - run: cargo clippy --release --locked --all-targets -- -D warnings
         timeout-minutes: 10
 
-  test:
-    name: Tests (${{ matrix.os }})
+  # Per-OS native binary producers: each OS builds turtle-lsp once and hands it
+  # to its own Node, VS Code and (on Linux) Browser parity consumers without
+  # making Linux or macOS wait for Windows.
+  build-linux:
+    name: Build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build-native
+        with:
+          artifact: turtle-lsp-linux
+
+  build-macos:
+    name: Build (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build-native
+        with:
+          artifact: turtle-lsp-macos
+
+  build-windows:
+    name: Build (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build-native
+        with:
+          artifact: turtle-lsp-windows
+
+  # Rust library, integration, timing and doc tests on every OS (starts at T=0;
+  # saves the shared per-OS Rust dependency cache on main). Extended chaos runs
+  # in parallel in the `chaos` job below; macOS runs mutated_* here at default
+  # counts.
+  rust-tests:
+    name: Rust tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # A hang fails the job instead of holding a runner for 6 hours; each test
-    # step below has its own, shorter limit.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -89,155 +172,37 @@ jobs:
         timeout-minutes: 5
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          shared-key: test
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      # Linux and macOS share one cache archive; Windows has its own archive.
+      - uses: ./.github/actions/fetch-corpus
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: package-lock.json
-      # The oldest Neovim the README promises (0.11), on Linux only, into its
-      # own folder (~/nvim-<version>). It goes before the main install: each
-      # install puts its folder first on PATH, so the later one is `nvim` for
-      # every step after. Raise both versions by hand; Dependabot does not.
-      # TMPDIR: the action unpacks under the temp folder and renames the result
-      # into ~. On ubuntu-26.04 /tmp is another file system and the rename
-      # fails with EXDEV (rhysd/action-setup-vim#80); runner.temp is under ~.
-      - name: Install Neovim 0.11
-        id: nvim011
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        timeout-minutes: 5
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
-        env:
-          TMPDIR: ${{ runner.temp }}
-        with:
-          neovim: true
-          version: v0.11.7
-      - name: Install Neovim 0.11 (second attempt)
-        id: nvim011-retry
-        if: runner.os == 'Linux' && steps.nvim011.outcome == 'failure'
-        timeout-minutes: 5
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
-        env:
-          TMPDIR: ${{ runner.temp }}
-        with:
-          neovim: true
-          version: v0.11.7
-      # A download fails now and then: one retry, and the second failure fails
-      # the job (the Neovim tests fail without nvim when CI=true).
-      - name: Install Neovim (for the editor checks)
-        id: nvim
-        continue-on-error: true
-        timeout-minutes: 5
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
-        env:
-          TMPDIR: ${{ runner.temp }}
-        with:
-          neovim: true
-          version: v0.12.6
-      - name: Install Neovim (second attempt)
-        if: steps.nvim.outcome == 'failure'
-        timeout-minutes: 5
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1.6.1
-        env:
-          TMPDIR: ${{ runner.temp }}
-        with:
-          neovim: true
-          version: v0.12.6
-      - run: npm ci
-        timeout-minutes: 5
-      # The JSON-LD corpus, the three SHACL files that src/knowledge.rs reads,
-      # the SPARQL examples that tests/w3c_sparql.rs checks the lexer against
-      # and the four RDF/XML files that src/rdfxml/grammar.rs compares with
-      # oxrdfxml (FOAF, BFO, RO, PATO; PATO is 21 MB): with CI=true the tests
-      # fail when they are absent. tests/corpus_edits.rs edits every file
-      # present. Downloaded again only when the source lists or checksums change.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: test/corpus/jsonld
-          key: jsonld-corpus-${{ hashFiles('tools/corpus/jsonld-sources.tsv', 'tools/corpus/jsonld-sha256.tsv') }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            test/corpus/brick.ttl
-            test/corpus/dcat-ap-shacl.ttl
-            test/corpus/w3c-shacl.ttl
-            test/corpus/sib-sparql-examples
-            test/corpus/foaf.rdf
-            test/corpus/obo-bfo.rdf
-            test/corpus/obo-ro.rdf
-            test/corpus/obo-pato.rdf
-          key: corpus-files-v3-${{ hashFiles('tools/corpus/sources.tsv') }}
-      # fetch.sh with a source list of only those eight rows; it fetches the
-      # JSON-LD corpus as well. Files already present are not downloaded again.
-      - name: Corpus (JSON-LD, Brick, DCAT-AP, SHACL, SPARQL examples, RDF/XML)
-        shell: bash
-        timeout-minutes: 10
-        run: |
-          mkdir -p target
-          awk -F'\t' '$1 == "brick" || $1 == "dcat-ap-shacl" || $1 == "w3c-shacl" || $1 == "sib-sparql-examples" || $1 == "foaf" || $1 == "obo-bfo" || $1 == "obo-ro" || $1 == "obo-pato"' tools/corpus/sources.tsv > target/corpus-sources.tsv
-          test "$(wc -l < target/corpus-sources.tsv)" -eq 8
-          # One retry: w3.org and the other hosts throttle runners now and then.
-          CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh ||
-            { sleep 15; CORPUS_SOURCES=target/corpus-sources.tsv tools/corpus/fetch.sh; }
-      # npm test, split so each part has its own time limit.
-      # TODO: lower the build to 10 and --no-run to 10 minutes (and the job to
-      # 30) once runs without fat LTO have been measured.
-      - run: cargo build --release --locked
-        timeout-minutes: 20
+          save-cache: ${{ runner.os != 'macOS' && 'true' || 'false' }}
       # The test binaries: the lib, the integration tests and nothing else
       # (`--bins` would link main.rs although it has `test = false`; the
       # examples are type-checked by clippy).
       - run: cargo test --release --locked --lib --tests --no-run
         timeout-minutes: 30
       # The wall-clock lib tests (named timing_*) run in the next step on their
-      # own. The mutation loops (mutated_*) run in the chaos step below, which
+      # own. The mutation loops (mutated_*) run in the chaos job below, which
       # macOS does not have, so macOS runs them here at their default counts.
       - name: Tests
         timeout-minutes: 5
-        run: cargo test --release --locked --lib --tests -- --skip timing_ ${{ runner.os != 'macOS' && '--skip mutated_' || '' }}
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cargo test --release --locked --lib --tests -- --skip timing_
+          else
+            cargo test --release --locked --lib --tests -- --skip timing_ --skip mutated_
+          fi
       - name: Timing tests, one at a time
         timeout-minutes: 5
         run: cargo test --release --locked --lib -- timing_ --test-threads=1
       # The public-interface list in src/lib.rs.
       - run: cargo test --release --locked --doc
         timeout-minutes: 10
-      # The command line's memory budget: mimalloc's peak commit, the same
-      # figure on Linux and macOS (bench/perf.mjs, scenario big-file-peak).
-      - name: Memory budget
-        if: runner.os != 'Windows'
-        timeout-minutes: 5
-        run: node bench/perf.mjs --only big-file-peak
-      - run: npm run test:node
-        timeout-minutes: 5
-      - name: Neovim 0.11
-        if: runner.os == 'Linux'
-        timeout-minutes: 5
-        env:
-          NVIM_011: ${{ steps.nvim011.outputs.executable || steps.nvim011-retry.outputs.executable }}
-        run: |
-          PATH="$(dirname "$NVIM_011"):$PATH"
-          version=$(nvim --version | head -n 1)
-          echo "$version"
-          case "$version" in "NVIM v0.11."*) ;; *) echo "expected Neovim 0.11"; exit 1 ;; esac
-          node --test --test-timeout=30000 test/nvim.test.mjs test/nvim-plugin.test.mjs
-      # The mutation loops at 30,000 iterations with the fixed seeds, so a
-      # failure on a pull request is its own. Not on macOS: Windows' stack
-      # frames are the OS-specific signal, and macOS adds little to Linux.
-      # Nightly: a new seed (the run id) and 200,000 iterations; the failure
-      # message gives the seed, iteration and input to reproduce it.
-      - name: Chaos test, longer run
-        if: runner.os != 'macOS'
-        timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 5 }}
-        shell: bash
-        env:
-          CHAOS_ITERS: ${{ github.event_name == 'schedule' && '200000' || '30000' }}
-          CHAOS_SEED: ${{ github.event_name == 'schedule' && github.run_id || '' }}
-        run: |
-          if [ -n "$CHAOS_SEED" ]; then
-            echo "CHAOS_SEED=$CHAOS_SEED CHAOS_ITERS=$CHAOS_ITERS (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          cargo test --release --locked --test chaos -- mutated_
       # What the integration tests left under target/tmp, to read a failure that
       # does not reproduce locally.
       - name: Keep the test folders of a failed run
@@ -248,6 +213,142 @@ jobs:
           path: target/tmp
           if-no-files-found: ignore
           retention-days: 7
+
+  # The mutation loops at 30,000 iterations with the fixed seeds, split into
+  # two balanced parallel shards (`rdfxml` alone and all other `mutated_*`) so
+  # chaos runs beside Rust tests instead of after them. Not on macOS: Windows'
+  # stack frames are the OS-specific signal, and macOS adds little to Linux.
+  # Nightly: a new seed (the run id) and 200,000 iterations.
+  chaos:
+    name: Chaos (${{ matrix.os }}, ${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 50 || 20 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [rdfxml, other]
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+        timeout-minutes: 5
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test
+          save-if: false
+      - uses: ./.github/actions/fetch-corpus
+      - run: cargo test --release --locked --test chaos --no-run
+        timeout-minutes: 15
+      - name: Chaos test, longer run
+        timeout-minutes: ${{ github.event_name == 'schedule' && 30 || 5 }}
+        shell: bash
+        env:
+          CHAOS_ITERS: ${{ github.event_name == 'schedule' && '200000' || '30000' }}
+          CHAOS_SEED: ${{ github.event_name == 'schedule' && github.run_id || '' }}
+          MATRIX_OS: ${{ matrix.os }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ -n "$CHAOS_SEED" ]; then
+            echo "CHAOS_SEED=$CHAOS_SEED CHAOS_ITERS=$CHAOS_ITERS ($MATRIX_OS, $SHARD)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$SHARD" = "rdfxml" ]; then
+            cargo test --release --locked --test chaos -- mutated_rdfxml_
+          else
+            cargo test --release --locked --test chaos -- mutated_ --skip mutated_rdfxml_
+          fi
+      - name: Keep the test folders of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chaos-tmp-${{ matrix.os }}-${{ matrix.shard }}
+          path: target/tmp
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Node LSP, Neovim and memory-budget tests consuming each OS's prebuilt binary.
+  node-linux:
+    name: Node and Neovim (ubuntu-latest)
+    needs: build-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-node-tests
+        with:
+          artifact: turtle-lsp-linux
+
+  node-macos:
+    name: Node and Neovim (macos-latest)
+    needs: build-macos
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-node-tests
+        with:
+          artifact: turtle-lsp-macos
+
+  node-windows:
+    name: Node and Neovim (windows-latest)
+    needs: build-windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-node-tests
+        with:
+          artifact: turtle-lsp-windows
+
+  # Desktop VS Code extension tests consuming each OS's prebuilt binary.
+  vscode-linux:
+    name: VS Code extension (ubuntu-latest)
+    needs: build-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-vscode-tests
+        with:
+          artifact: turtle-lsp-linux
+
+  vscode-macos:
+    name: VS Code extension (macos-latest)
+    needs: build-macos
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-vscode-tests
+        with:
+          artifact: turtle-lsp-macos
+
+  vscode-windows:
+    name: VS Code extension (windows-latest)
+    needs: build-windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-vscode-tests
+        with:
+          artifact: turtle-lsp-windows
 
   # The oldest compiler Cargo.toml claims (rust-version; its comment says why).
   msrv:
@@ -314,10 +415,11 @@ jobs:
         timeout-minutes: 5
       # data/vocab.tsv must be what the pinned sources of data/vocab-sources.tsv
       # and the corrections give. The downloads are cached under the manifest's
-      # hash, so a run that does not change it downloads nothing; the nightly
-      # run downloads every source again (-f), so a publisher's change to an
-      # unversioned file fails it first.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # hash (saved on main only), so a run that does not change it downloads
+      # nothing; the nightly run downloads every source again (-f), so a
+      # publisher's change to an unversioned file fails it first.
+      - id: vocab-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/vocab-sources
           key: vocab-sources-${{ hashFiles('data/vocab-sources.tsv') }}
@@ -339,6 +441,11 @@ jobs:
           else
             exit "$status"
           fi
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vocab-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/vocab-sources
+          key: vocab-sources-${{ hashFiles('data/vocab-sources.tsv') }}
       # The extension ships only its runtime dependencies; dev tools stay local.
       - working-directory: editors/vscode
         run: npm audit --omit=dev --audit-level=moderate
@@ -346,10 +453,12 @@ jobs:
       # devDependencies: --omit=dev would audit nothing here.
       - run: npm audit --audit-level=moderate
 
-  web:
-    name: Browser build and tests
+  # Builds the WebAssembly browser engine (with its own release profile and
+  # gzip size budget), clips it, and uploads web/app for parallel test jobs.
+  web-build:
+    name: Browser build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -359,9 +468,8 @@ jobs:
         timeout-minutes: 5
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: |
-            .
-            web/engine
+          workspaces: web/engine
+          shared-key: web-engine
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -372,44 +480,66 @@ jobs:
         timeout-minutes: 5
       # The engine for wasm32 (web/app/engine.wasm), then Monaco beside the pages.
       # It keeps its own profile (web/engine/Cargo.toml), which its size budget
-      # in web/build.mjs assumes, so the profile variables are set only on the
-      # native build below.
+      # in web/build.mjs assumes.
       - run: node web/build.mjs
         timeout-minutes: 15
       - run: cargo clippy --locked -- -D warnings
         working-directory: web/engine
         timeout-minutes: 10
-      # The engine tests compare it with the native server, so build that too.
-      - run: cargo build --release --locked
-        timeout-minutes: 15
-        env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
-      # First the tests that need no browser, so a failure there points at the
-      # engine.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-app
+          path: web/app
+          if-no-files-found: error
+          retention-days: 7
+
+  # Engine parity tests against the prebuilt native binary, VS Code for the Web
+  # and the required browser server-worker tests.
+  web-engine:
+    name: Browser engine & VS Code Web
+    needs: [web-build, build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-app
+          path: web/app
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: turtle-lsp-linux
+          path: target/release
+      - shell: bash
+        run: chmod +x target/release/turtle-lsp
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            editors/vscode/package-lock.json
+      - run: npm ci
+        timeout-minutes: 5
+      # Engine parity tests (run once here; excluded from web-browser below).
       - name: Engine tests (no browser)
         timeout-minutes: 5
         run: >-
           node --test --test-force-exit --test-timeout=60000
           web/test/engine.test.mjs web/test/host.test.mjs
           web/test/jsonld-engine.test.mjs web/test/lsp.test.mjs
-      # The pages in a real browser. The tests drive Google Chrome (Playwright's
-      # "chrome" channel), so install that one rather than rely on the runner image.
       - run: npx playwright-core install chrome
         timeout-minutes: 5
-      # Two files at a time: most start Chrome, and the runner has 4 vCPUs.
-      - name: Every web test (toolbox, editor, CSP, engine)
-        timeout-minutes: 10
-        run: node --test --test-concurrency=2 --test-force-exit --test-timeout=60000 "web/test/*.test.mjs"
       # The extension's browser entry in VS Code for the Web, with the engine
-      # built above, in the same Google Chrome. Playwright's own Chromium is
-      # not used, so it is not downloaded.
+      # built above, in the same Google Chrome.
       - name: VS Code for the Web
         working-directory: editors/vscode
         timeout-minutes: 5
         run: npm ci && npm run build && npm run test:web
       # The worker tests drive the server worker on the engine built above;
-      # the VS Code job has no engine, so they skip there and must run here.
+      # the desktop VS Code jobs have no engine, so they skip there and must run here.
       - name: Server worker tests
         working-directory: editors/vscode
         timeout-minutes: 3
@@ -417,60 +547,61 @@ jobs:
           TURTLE_REQUIRE_ENGINE: "1"
         run: node --test --test-timeout=60000 test/web-worker.test.mjs
 
-  vscode:
-    name: VS Code extension (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+  # Browser UI tests (toolbox, editor, CSP, graph), dynamically balanced across
+  # two parallel runners with the four engine-only files excluded so every test
+  # file runs exactly once.
+  web-browser:
+    name: Browser UI tests (shard ${{ matrix.shard }}/2)
+    needs: web-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    env:
-      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'schedule' && 'fat' || 'false' }}
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'schedule' && '1' || '16' }}
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install
-        timeout-minutes: 5
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          name: web-app
+          path: web/app
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: editors/vscode/package-lock.json
-      - run: cargo build --release --locked
-        timeout-minutes: 15
-      - working-directory: editors/vscode
+          cache-dependency-path: package-lock.json
+      - run: npm ci
         timeout-minutes: 5
-        run: npm ci && npm run typecheck
-      # VS Code needs a display on Linux.
-      - if: runner.os == 'Linux'
-        working-directory: editors/vscode
-        timeout-minutes: 10
-        run: xvfb-run -a npm test
-      - if: runner.os != 'Linux'
-        working-directory: editors/vscode
-        timeout-minutes: 10
-        run: npm test
-      # The oldest VS Code the extension claims (engines.vscode), with the
-      # extension npm test just built.
-      - name: VS Code 1.91.0
-        if: runner.os == 'Linux'
-        working-directory: editors/vscode
+      - run: npx playwright-core install chrome
         timeout-minutes: 5
+      # Two files at a time per runner: most start Chrome, and each runner has 4 vCPUs.
+      - name: Browser tests (shard ${{ matrix.shard }}/2)
+        timeout-minutes: 10
+        shell: bash
         env:
-          VSCODE_VERSION: "1.91.0"
-        run: xvfb-run -a node test/run.mjs
-      # Catches packaging errors (e.g. @types/vscode newer than engines.vscode)
-      # before a release does.
-      - if: runner.os == 'Linux'
-        working-directory: editors/vscode
-        timeout-minutes: 5
-        run: npm run package
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mapfile -t files < <(node -e '
+            const fs = require("node:fs");
+            const skip = new Set(["engine.test.mjs", "host.test.mjs", "jsonld-engine.test.mjs", "lsp.test.mjs"]);
+            const list = fs.readdirSync("web/test")
+              .filter((f) => f.endsWith(".test.mjs") && !skip.has(f))
+              .map((f) => ({ f: `web/test/${f}`, s: fs.statSync(`web/test/${f}`).size }))
+              .sort((a, b) => b.s - a.s || a.f.localeCompare(b.f));
+            const bins = [[], []], sums = [0, 0];
+            for (const x of list) {
+              const k = sums[0] <= sums[1] ? 0 : 1;
+              bins[k].push(x.f);
+              sums[k] += x.s;
+            }
+            const bin = bins[Number(process.env.SHARD) - 1];
+            if (bin.length > 0) console.log(bin.join("\n"));
+          ')
+          echo "Running ${#files[@]} test files: ${files[*]}"
+          test "${#files[@]}" -gt 0
+          node --test --test-concurrency=2 --test-force-exit --test-timeout=60000 "${files[@]}"
 
   # Performance (bench/perf.mjs), with the shipped release profile. GitHub-hosted
   # runners share hardware, so the timings are noisy: the job reports and never
@@ -478,7 +609,8 @@ jobs:
   # uploaded (the p50 of the keystroke rows, marked over 1.5x) and writes the
   # table to the step summary; a push to main uploads its own results for the
   # next comparison. The benchmark still fails on a scenario that throws or an
-  # expectation that fails. The memory budget runs in Tests as well, where it gates.
+  # expectation that fails. The memory budget runs in node-linux/node-macos as
+  # well, where it gates.
   perf:
     name: Performance (ubuntu-latest, noisy)
     runs-on: ubuntu-latest
@@ -538,14 +670,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  # The one check the ruleset requires: it passes when every job it needs
-  # passed, so a renamed or added matrix entry needs no ruleset change. Not
-  # Performance, which reports only.
   # The action (action.yml) on each runner, against a real release: the one
-  # place install.sh and install.ps1 download from GitHub. Not in "CI passed":
-  # a GitHub download that fails is not a fault of this code.
+  # place install.sh and install.ps1 download from GitHub. On PRs, runs only
+  # when action.yml, install.sh or install.ps1 changed; always runs on main,
+  # nightly and manual runs. Not in "CI passed": a GitHub download that fails
+  # is not a fault of this code.
   install-action:
     name: Install action (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.install_action == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -572,18 +705,43 @@ jobs:
           grep -qx 'turtle-lsp 0.18.0' version.txt
           test -f "$INSTALLED"
 
+  # The one check the ruleset requires: every gating job must succeed (skipped,
+  # cancelled or failed fails the gate). Not Performance or Install action.
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, test, msrv, audit, web, vscode]
+    needs:
+      - changes
+      - lint
+      - msrv
+      - audit
+      - build-linux
+      - build-macos
+      - build-windows
+      - rust-tests
+      - chaos
+      - node-linux
+      - node-macos
+      - node-windows
+      - vscode-linux
+      - vscode-macos
+      - vscode-windows
+      - web-build
+      - web-engine
+      - web-browser
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Every needed job passed
+        shell: bash
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           echo "results: $RESULTS"
-          case " $RESULTS " in
-            *" failure "* | *" cancelled "*) exit 1 ;;
-          esac
+          test -n "$RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "A required job did not succeed (saw: $r)" >&2
+              exit 1
+            fi
+          done
