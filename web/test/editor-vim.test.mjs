@@ -150,6 +150,11 @@ test("both editors of a split use Vim; Ctrl+\\, Ctrl+P, F1, Ctrl+Shift+F and com
     await page.keyboard.press("Escape")
     await page.locator("#quick-input").waitFor({ state: "hidden" })
     await focus0()
+    // Monaco clears the second editor's widget focus in a timer after the
+    // focus leaves it. Until then it takes the palette's Escape as that
+    // editor's, and the palette here can no longer be closed. This test can
+    // press F1 and Escape before the timer runs; a person cannot.
+    await page.waitForFunction(() => !window.monaco.editor.getEditors()[1].hasWidgetFocus())
     await page.keyboard.press("F1")
     // The palette shows, then takes focus a few milliseconds later; an Escape
     // before that goes to the editor and leaves the palette open.
