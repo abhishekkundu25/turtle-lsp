@@ -75,6 +75,16 @@ pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
     }
 }
 
+/// Whether `parsed`, an RDF/XML parse, read nothing: its text holds
+/// another syntax ([`unread`]), which its one error names. The grammar
+/// never gives that error's code.
+pub(crate) fn is_unread(parsed: &Parsed) -> bool {
+    parsed
+        .errors
+        .first()
+        .is_some_and(|e| e.code == UNSUPPORTED_SYNTAX)
+}
+
 /// Why `text` is not read here: an OWL syntax that is not RDF (Manchester,
 /// or Functional syntax or OWL/XML, which their own frontends read). Its
 /// XML may still look like RDF/XML to the grammar, so what reads the text

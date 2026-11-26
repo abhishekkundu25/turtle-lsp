@@ -402,7 +402,8 @@ impl<'t> Lexed<'t> {
     /// its new text's, lexed alone. An edit that cuts into tokens (the local
     /// name of `<http://e/a>`, the inside of a JSON string or of an embedded
     /// query) is widened to them, and their new text must lex to tokens of
-    /// the same kinds; one that adds a directive may not. A directive an
+    /// the same kinds; one that adds a directive may not, nor write one its
+    /// old text did not hold into the token it joins. A directive an
     /// edit adds must follow a document-level statement or directive, or
     /// only comments. Else what is wrong, with the token and its offset.
     fn splice(&self, edits: Vec<(usize, usize, &str)>, keep: bool) -> Result<String, String> {
@@ -520,11 +521,25 @@ impl<'t> Lexed<'t> {
             let adds = directives(&new, &region) > directives(old, text);
             // A directive written into a token it then joins (a string) is
             // seen in the edit's own text: a keyword and an IRI (`base` in
-            // `http://e/base/x` or `prefix` in `sh:prefix` is none).
-            let written = edits[range.clone()].iter().any(|&(_, _, new)| {
-                let ts = lex.tokens(new);
-                let iri = |j: usize| ts.get(j).is_some_and(|t| new[t.1..].starts_with('<'));
-                (0..ts.len()).any(|j| lex.directive(new, ts[j]) && (iri(j + 1) || iri(j + 2)))
+            // `http://e/base/x` or `prefix` in `sh:prefix` is none), from the
+            // keyword to the IRI's end. The edit writes one when its new text
+            // holds one the text it replaces, lexed alone too, did not (a
+            // trim of a string that holds `@prefix q: <http://q/>` writes
+            // none); an insertion replaces no text.
+            fn directives_in(lex: Lexer, src: &str) -> Vec<&str> {
+                let ts = lex.tokens(src);
+                let iri = |k: usize| ts.get(k).filter(|t| src[t.1..].starts_with('<'));
+                (0..ts.len())
+                    .filter(|&j| lex.directive(src, ts[j]))
+                    .filter_map(|j| iri(j + 1).or(iri(j + 2)).map(|i| &src[ts[j].1..i.2]))
+                    .collect()
+            }
+            let written = edits[range.clone()].iter().any(|&(s, e, new)| {
+                let mut had = directives_in(lex, &text[s..e]);
+                directives_in(lex, new).into_iter().any(|d| {
+                    let i = had.iter().position(|h| *h == d);
+                    i.map(|i| had.swap_remove(i)).is_none()
+                })
             });
             if widened
                 && (adds
@@ -5566,6 +5581,50 @@ fn a_rewrite_that_fuses_or_splits_tokens_names_the_token() {
     let m = spliced(json, Lexer::Json, "//a/", 0, "\"ex\": \"http://e/\", ").unwrap_err();
     assert!(
         m.contains("cuts into \"\\\"http://a/\\\"\" at byte 19"),
+        "{m}"
+    );
+}
+
+#[test]
+fn a_directive_already_in_a_string_is_not_written_by_a_rewrite_of_it() {
+    // A trim of a label whose text already holds `@prefix q: <http://q/> .`
+    // (the nightly run's seeds 45620489760 and 44731015760): it writes no
+    // directive.
+    let text = "ex:s rdfs:label \"\"\" m@prefix q: <http://q/> . q:s q:p \"\"\" .\n";
+    let label = " m@prefix q: <http://q/> . q:s q:p ";
+    assert_eq!(
+        spliced(text, Lexer::Turtle, label, 0, label.trim()).unwrap(),
+        "ex:s rdfs:label \"\"\"m@prefix q: <http://q/> . q:s q:p\"\"\" .\n"
+    );
+    // A rewrite that adds a second directive, swaps the one there for
+    // another, or writes one over text that held none still cuts into the
+    // string.
+    let text = "ex:s rdfs:label \"\"\" @prefix q: <http://q/> . \"\"\" .\n";
+    let old = " @prefix q: <http://q/> . ";
+    for new in [
+        "@prefix q: <http://q/> . @prefix r: <http://r/> .",
+        "@prefix r: <http://r/> .",
+        "@prefix q: <http://r/> .",
+    ] {
+        let m = spliced(text, Lexer::Turtle, old, 0, new).unwrap_err();
+        assert!(
+            m.contains(
+                "cuts into \"\\\"\\\"\\\" @prefix q: <http://q/> . \\\"\\\"\\\"\" at byte 16"
+            ),
+            "{new}: {m}"
+        );
+    }
+    let text = "ex:s rdfs:label \"\"\" a label \"\"\" .\n";
+    let m = spliced(
+        text,
+        Lexer::Turtle,
+        " a label ",
+        0,
+        " @prefix q: <http://q/> . ",
+    )
+    .unwrap_err();
+    assert!(
+        m.contains("cuts into \"\\\"\\\"\\\" a label \\\"\\\"\\\"\" at byte 16"),
         "{m}"
     );
 }

@@ -63,7 +63,17 @@ describe("completion in an RDF/XML document", () => {
     const before = HEAD + "\n" + typed.slice(0, caret)
     const position = positionOf(text, before)
     const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
-    return { res, text }
+    return { res, text, position }
+  }
+
+  // The completion in the whole text `marked`, at its `|`.
+  async function completeAll(marked) {
+    const caret = marked.indexOf("|")
+    const text = marked.slice(0, caret) + marked.slice(caret + 1)
+    s.change(uri, text, ++version)
+    const position = positionOf(text, marked.slice(0, caret))
+    const res = await s.request("textDocument/completion", { textDocument: { uri }, position })
+    return { res, text, position }
   }
 
   test("a node element: rdf:Description and the classes, as qualified names", async () => {
@@ -119,6 +129,59 @@ describe("completion in an RDF/XML document", () => {
     await s.diagnosticsFor(turtle, 10000)
     const res = await s.request("textDocument/completion", { textDocument: { uri: turtle }, position: positionOf(text, "a owl:Cl") })
     assert.ok(labels(res).includes("owl:Class"), labels(res).join(", "))
+  })
+
+  test("a value with no closing quote: the edit keeps the end of the tag and what comes after it", async () => {
+    const XSD = "http://www.w3.org/2001/XMLSchema#"
+    const int = `${XSD}integer`
+    const pump = "http://example.org/Pump"
+    const desc = (l) => `  <rdf:Description rdf:about="http://example.org/s">\n    ${l}\n  </rdf:Description>`
+    const cls = (l) => `  <owl:Class rdf:about="http://example.org/Hose">\n    ${l}\n  </owl:Class>`
+    const last = (l) => `${HEAD}  <rdf:Description rdf:about="http://example.org/s">\n    ${l}`
+    const cases = [
+      // `>` and text after the value.
+      [complete, desc(`<ex:age rdf:datatype="${XSD}int|>42</ex:age>`), int, `    <ex:age rdf:datatype="${int}>42</ex:age>`],
+      // `/>`, then the line end.
+      [complete, cls('<rdfs:subClassOf rdf:resource="http://example.org/P|/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump}/>`],
+      // `>` and a child element.
+      [complete, '  <rdf:Description rdf:type="http://example.org/P|><rdfs:label>x</rdfs:label></rdf:Description>', pump, `  <rdf:Description rdf:type="${pump}><rdfs:label>x</rdfs:label></rdf:Description>`],
+      // At the end of the text.
+      [completeAll, last(`<ex:p rdf:datatype="${XSD}int|/>`), int, `    <ex:p rdf:datatype="${int}/>`],
+      [completeAll, last(`<ex:p rdf:datatype="${XSD}int|`), int, `    <ex:p rdf:datatype="${int}`],
+      // White space, then an attribute in the other quotes: to the white space.
+      [complete, cls(`<rdfs:subClassOf rdf:resource="http://example.org/P| rdf:ID='r1'/>`), pump, `    <rdfs:subClassOf rdf:resource="${pump} rdf:ID='r1'/>`],
+      // Closed: between the quotes.
+      [complete, cls('<rdfs:subClassOf rdf:resource="http://example.org/P|"/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump}"/>`],
+    ]
+    for (const [how, typed, label, want] of cases) {
+      const { res, text, position } = await how(typed)
+      const item = (res?.items ?? []).find((i) => i.label === label)
+      assert.ok(item, `${label} in ${labels(res).join(", ")}: ${typed}`)
+      const accepted = applyEdits(text, [item.textEdit, ...(item.additionalTextEdits ?? [])])
+      assert.equal(accepted.split("\n")[position.line], want, typed)
+    }
+  })
+
+  test("a value closed by the quote of a later attribute: the edit keeps that attribute", async () => {
+    const XSD = "http://www.w3.org/2001/XMLSchema#"
+    const int = `${XSD}integer`
+    const pump = "http://example.org/Pump"
+    const desc = (l) => `  <rdf:Description rdf:about="http://example.org/s">\n    ${l}\n  </rdf:Description>`
+    const cls = (l) => `  <owl:Class rdf:about="http://example.org/Hose">\n    ${l}\n  </owl:Class>`
+    const cases = [
+      [cls('<rdfs:subClassOf rdf:resource="http://example.org/P| rdf:ID="r1"/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump} rdf:ID="r1"/>`],
+      [desc(`<ex:age rdf:datatype='${XSD}in|t rdf:ID='r1'>42</ex:age>`), int, `    <ex:age rdf:datatype='${int} rdf:ID='r1'>42</ex:age>`],
+      // The later attribute on the next line.
+      [cls('<rdfs:subClassOf rdf:resource="http://example.org/P|\n      rdf:ID="r1"/>'), pump, `    <rdfs:subClassOf rdf:resource="${pump}\n      rdf:ID="r1"/>`],
+    ]
+    for (const [typed, label, want] of cases) {
+      const { res, text, position } = await complete(typed)
+      const item = (res?.items ?? []).find((i) => i.label === label)
+      assert.ok(item, `${label} in ${labels(res).join(", ")}: ${typed}`)
+      const accepted = applyEdits(text, [item.textEdit, ...(item.additionalTextEdits ?? [])])
+      const lines = want.split("\n").length
+      assert.equal(accepted.split("\n").slice(position.line, position.line + lines).join("\n"), want, typed)
+    }
   })
 
   test("closing tag, attribute names, rdf:parseType and rdf:type values", async () => {

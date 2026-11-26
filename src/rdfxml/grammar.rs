@@ -78,7 +78,10 @@
 //! resolve, or is not absolute, is kept as written in its reference, and a
 //! triple that names it (as subject, predicate, object or datatype) is
 //! dropped, as Turtle and `oxrdfxml` drop it. The IRIs one parse makes are
-//! bounded ([`IRI_BYTES_PER_BYTE`]); past that, new ones give no triple. An element the XML scanner closes for it (an
+//! bounded ([`IRI_BYTES_PER_BYTE`]); past that, new ones give no triple. So
+//! are the bytes its XML literals write ([`LITERAL_BYTES_PER_BYTE`]); past
+//! that, the literal being written and every later one give no triple, and
+//! nothing more is written. An element the XML scanner closes for it (an
 //! [`End::implied`] end) gives no triple at its end: a property element
 //! that is not closed has no object yet, which is also what `oxrdfxml`
 //! reads from a text cut short.
@@ -135,6 +138,37 @@ const ITS: &str = "http://www.w3.org/2005/11/its";
 const IRI_BYTES_PER_BYTE: usize = 16;
 const MIN_IRI_BYTES: usize = 1 << 20;
 
+/// The XML literals of a parse (`rdf:parseType="Literal"`, written as
+/// exclusive canonical XML) total at most this many bytes per byte of
+/// text, plus [`MIN_LITERAL_BYTES`]. Every byte appended to a literal is
+/// charged, over the whole parse, so many literals share one budget.
+///
+/// What a document that is not crafted writes, per byte it is read from:
+/// text and attribute values at most 6 (`"` read as one byte in a value
+/// quoted with `'` is written `&quot;`; `>` is `&gt;`); an empty element
+/// under 2 (`<b/>` is `<b></b>`); depth nothing more, since a namespace
+/// is written once, on the outermost element inside the literal that
+/// uses it. What is not in proportion is that declaration: each element
+/// writes the namespaces it uses that no open ancestor inside the literal
+/// wrote, so each top-level sibling writes them again. An XHTML `<br/>`
+/// (5 bytes) is `<br xmlns="http://www.w3.org/1999/xhtml"></br>` (46
+/// bytes, 9.2 per byte), and a sibling `<b/>` in a namespace of n bytes
+/// writes n + 16 bytes for 4. Past 16 per byte only for n > 48, and past
+/// the floor only with over 65,536 such siblings in a row (n = 64: 80
+/// bytes written for 4 read, 16 over the ratio each). A sibling that uses
+/// another prefix per attribute writes a declaration of at least
+/// 10 + |prefix| + n bytes for each attribute of at least 6 (`a:x=""`).
+///
+/// The cost under the budget: 16 bytes of literal per byte of text plus
+/// 1 MiB, and the event that crosses it (one tag, text run or processing
+/// instruction, bounded by the text and the entity budget). While a
+/// literal is written its buffer may hold twice its length (a `String`
+/// doubles), and the triple copies it once more: about 3 × (16 × text +
+/// 1 MiB) at the peak, 2.4 GB for the 50 MB workspace limit, where the
+/// unbounded literal grows with siblings × namespace length.
+const LITERAL_BYTES_PER_BYTE: usize = 16;
+const MIN_LITERAL_BYTES: usize = 1 << 20;
+
 /// Parse an RDF/XML document. `base` is the document's URL, against which
 /// relative IRIs resolve until an `xml:base` replaces it.
 pub(crate) fn parse(text: &str, base: Option<&str>) -> Parsed {
@@ -171,7 +205,7 @@ fn read(text: &str, base: Option<&str>, rec: Option<Recorder>) -> (Parsed, Vec<U
                 }
             }
             Event::Text { span, text } => g.text(span, &text),
-            Event::Pi(_, text) => g.pi(text),
+            Event::Pi(span, text) => g.pi(span, text),
         }
     }
     let (errors, comments) = scanner.finish();
@@ -443,6 +477,10 @@ struct Grammar<'a> {
     made: FxHashSet<Iri>,
     iri_bytes: usize,
     iri_budget: usize,
+    /// The bytes written to XML literals by this parse: at most
+    /// `literal_budget` ([`LITERAL_BYTES_PER_BYTE`]).
+    literal_bytes: usize,
+    literal_budget: usize,
     /// The current top-level statement.
     statement: u32,
     /// How many `parseType="Triple"` elements are open.
@@ -499,7 +537,7 @@ impl Vocab {
 
 /// `rdf:` names that cannot name a node element; a property element cannot
 /// be `rdf:Description` either.
-const RESERVED_ELEMENTS: [&str; 11] = [
+pub(super) const RESERVED_ELEMENTS: [&str; 11] = [
     "about",
     "aboutEach",
     "aboutEachPrefix",
@@ -545,6 +583,11 @@ impl<'a> Grammar<'a> {
             made: FxHashSet::default(),
             iri_bytes: 0,
             iri_budget: text.len().saturating_mul(IRI_BYTES_PER_BYTE) + MIN_IRI_BYTES,
+            literal_bytes: 0,
+            literal_budget: text
+                .len()
+                .saturating_mul(LITERAL_BYTES_PER_BYTE)
+                .saturating_add(MIN_LITERAL_BYTES),
             statement: 0,
             in_triple: 0,
             v,
@@ -1423,6 +1466,7 @@ impl<'a> Grammar<'a> {
     }
 
     fn end(&mut self, end: End) {
+        let spent = self.literal_spent();
         if let Some(State::Literal {
             names,
             out,
@@ -1431,10 +1475,15 @@ impl<'a> Grammar<'a> {
         }) = self.stack.last_mut()
             && let Some(name) = names.pop()
         {
-            out.push_str("</");
-            out.push_str(&name);
-            out.push('>');
             written.close(names.len() + 1);
+            if !spent {
+                let before = out.len();
+                out.push_str("</");
+                out.push_str(&name);
+                out.push('>');
+                let n = out.len() - before;
+                self.charge_literal(n, end.span);
+            }
             return;
         }
         let Some(state) = self.stack.pop() else {
@@ -1536,7 +1585,7 @@ impl<'a> Grammar<'a> {
                 self.prop_triple(&prop, head, content(prop.tag));
             }
             State::Literal { prop, out, .. } => {
-                if end.implied {
+                if end.implied || self.literal_spent() {
                     return;
                 }
                 let o = Node::Literal {
@@ -1584,6 +1633,7 @@ impl<'a> Grammar<'a> {
     }
 
     fn text(&mut self, span: Span, text: &str) {
+        let spent = self.literal_spent();
         match self.stack.last_mut() {
             Some(State::Prop { object, .. }) => match object {
                 Object::Node(..) => {
@@ -1594,7 +1644,14 @@ impl<'a> Grammar<'a> {
                 Object::Text(t) => t.push_str(text),
                 Object::None => *object = Object::Text(text.to_string()),
             },
-            Some(State::Literal { out, .. }) => escape_text(out, text),
+            Some(State::Literal { out, .. }) => {
+                if !spent {
+                    let before = out.len();
+                    escape_text(out, text);
+                    let n = out.len() - before;
+                    self.charge_literal(n, span);
+                }
+            }
             _ => {
                 if !xml::is_whitespace(text) {
                     // The white space the source text starts with: an
@@ -1608,17 +1665,50 @@ impl<'a> Grammar<'a> {
         }
     }
 
-    fn pi(&mut self, text: &str) {
-        if let Some(State::Literal { out, .. }) = self.stack.last_mut() {
+    fn pi(&mut self, span: Span, text: &str) {
+        let spent = self.literal_spent();
+        if let Some(State::Literal { out, .. }) = self.stack.last_mut()
+            && !spent
+        {
+            let before = out.len();
             // Line ends normalized (XML 1.0, 2.11).
             out.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+            let n = out.len() - before;
+            self.charge_literal(n, span);
         }
+    }
+
+    /// Whether the XML literal budget ([`LITERAL_BYTES_PER_BYTE`]) is
+    /// spent: then nothing more is written to a literal, and a literal
+    /// that ends gives no triple.
+    fn literal_spent(&self) -> bool {
+        self.literal_bytes > self.literal_budget
+    }
+
+    /// Charge `n` bytes just written to the open XML literal, at `span`.
+    /// Past the budget, reported once there; the literal's text is let go.
+    fn charge_literal(&mut self, n: usize, span: Span) {
+        let was_spent = self.literal_spent();
+        self.literal_bytes = self.literal_bytes.saturating_add(n);
+        if was_spent || !self.literal_spent() {
+            return;
+        }
+        if let Some(State::Literal { out, .. }) = self.stack.last_mut() {
+            *out = String::new();
+        }
+        self.error(
+            span,
+            format!(
+                "the XML literals are over {LITERAL_BYTES_PER_BYTE} bytes per byte of text: this one and the ones after it give no triple"
+            ),
+        );
     }
 
     /// A start tag inside `rdf:parseType="Literal"`, in exclusive canonical
     /// XML: the namespaces it uses that are not written above it (sorted by
     /// prefix), then its attributes sorted by namespace and local name.
     fn literal_start(&mut self, tag: &Tag<'a>) {
+        let spent = self.literal_spent();
         let mut unknown = Vec::new();
         let Some(State::Literal {
             out,
@@ -1629,6 +1719,12 @@ impl<'a> Grammar<'a> {
         else {
             unreachable!()
         };
+        if spent {
+            // Nothing is written; the name only keeps the depth.
+            names.push(String::new());
+            return;
+        }
+        let before = out.len();
         let depth = names.len() + 1;
         let mut decls: FxHashMap<String, String> = FxHashMap::default();
         let mut used = |name: &Name<'_>, element: bool, decls: &mut FxHashMap<String, String>| {
@@ -1638,9 +1734,9 @@ impl<'a> Grammar<'a> {
                 None if element => "",
                 None => return,
             };
-            let uri = match &name.ns {
-                Ns::Bound(u) => u.to_string(),
-                Ns::Unbound => String::new(),
+            let uri: &str = match &name.ns {
+                Ns::Bound(u) => u,
+                Ns::Unbound => "",
                 Ns::Unknown => {
                     unknown.push(name.span);
                     return;
@@ -1651,7 +1747,9 @@ impl<'a> Grammar<'a> {
                 None => !uri.is_empty(),
             };
             if needed {
-                decls.entry(prefix.to_string()).or_insert(uri);
+                decls
+                    .entry(prefix.to_string())
+                    .or_insert_with(|| uri.to_string());
             }
         };
         used(&tag.name, true, &mut decls);
@@ -1688,10 +1786,12 @@ impl<'a> Grammar<'a> {
             out.push('"');
         }
         out.push('>');
+        let n = out.len() - before;
         names.push(tag.name.raw.to_string());
         for span in unknown {
             self.error(span, "the prefix is not declared");
         }
+        self.charge_literal(n, tag.name.span);
     }
 }
 

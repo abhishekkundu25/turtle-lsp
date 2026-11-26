@@ -9353,7 +9353,7 @@ term	AllergenTypeCode-AP	I		Peanuts and its derivatives	Refers to the presence o
 term	AllergenTypeCode-APL	I		Apple and its derivatives	Refers to the presence of Apple and its derivatives in the product. - Family/Genus/Species: Malus domestica.
 term	AllergenTypeCode-AS	I		Sesame Seeds and its derivatives	Refers to the presence of Sesame seeds or its derivatives in the product, as listed in in the product - Family/Genus/Species: Sesamum.
 term	AllergenTypeCode-ASD	I		Aspartame and aspartame-acesulfame salt and its derivatives	Refers to the presence of Aspartame and Aspartame-acesulfame salt in the product.
-term	AllergenTypeCode-AU	I		Sulfur Dioxide and Sulfits	Refers to the presence of sulfur dioxide and sulfits in the product.
+term	AllergenTypeCode-AU	I		Sulfur Dioxide and Sulfites	Refers to the presence of sulfur dioxide and sulfites in the product.
 term	AllergenTypeCode-AW	I		Cereals and its derivatives	Refers to the presence of cereal grains containing gluten (protein) and their derivatives in the product.
 term	AllergenTypeCode-AWF	I		Whitefish and its derivatives	Refers to the presence of Whitefish and its derivatives in the product.
 term	AllergenTypeCode-AY	I		Soybean and its derivatives	Refers to the presence of Soybean and its derivatives in the product, as listed in in the product. - Family/Genus/Species: Glycine max.
@@ -9444,7 +9444,7 @@ term	AllergenTypeCode-DIAMINOPHENOLS	I	D	Diaminophenols	Refers to the presence o
 term	AllergenTypeCode-DMF	I		Drum fish and its derivatives	Refers to the presence of Drum and its Derivatives in the product.
 term	AllergenTypeCode-DP	I		Diaminophenols	Refers to the presence of Diaminophenol in the product.
 term	AllergenTypeCode-DYF	I		Dory fish and its derivatives	Refers to the presence of Dory and its Derivatives in the product.
-term	AllergenTypeCode-EEL	I	D	Eel and its Derivatives	Refers to the presence of Eel and its derivates in the product.
+term	AllergenTypeCode-EEL	I		Eel and its derivatives	Refers to the presence of Eel and its derivatives in the product.
 term	AllergenTypeCode-EG	I		Eugenol	Refers to the presence of Eugenol in the product.
 term	AllergenTypeCode-EGGS	I	D	Eggs and Their Derivatives	Refers to the presence of eggs and their derivatives in the product, as listed as listed in the regulations specified in AllergenSpecificationAgency and AllergenSpecificationName
 term	AllergenTypeCode-EOD	I		Escolar and its derivatives	Refers to the presence of Escolar and its Derivatives in the product.
@@ -9940,7 +9940,7 @@ term	GrowingMethodCode-HYDROPONIC	I		Hydroponic	Plants grown using mineral nutri
 term	GrowingMethodCode-INTEGRATED_PEST_MANAGEMENT	I		Integrated Pest Management	(IPM) Plants grown using a pest control strategy that uses an array of complimentary methods: mechanical devices, physical devices, genetic, biological, legal, cultural management and chemical management.
 term	GrowingMethodCode-ORGANIC	I		Organic	Foods grown organically, either indoors or outdoors.
 term	GrowingMethodCode-SHADE_GROWN	I		Shade Grown	Produce which has been grown under shade or grown under cloth.
-term	GrowingMethodCode-SUSTAINABLE	I		Sustainable	
+term	GrowingMethodCode-SUSTAINABLE	I		Sustainable	A method of growing a resource so that the resource is not depleted or permanently damaged
 term	GrowingMethodCode-WILD	I		Wild	The animal or plant was not inhibited or prohibited from roving, wandering, and not tamed or domesticated.
 term	Illuminance	I		Illuminance	The energy in the form of visible radiation reaching a surface per unit area in unit time; the amount of luminous flux per unit area. SI Units: lux = 1 lumen per square metre
 term	Inductance	I		Inductance	The magnitude of the property of an element or circuit to form a magnetic field and store magnetic energy when carrying a current.
@@ -9995,7 +9995,7 @@ term	LocationRoleType-AIRPORT_GATE	I		Airport Gate	Entrance to a movable passage
 term	LocationRoleType-AMBIENT_STORAGE	I		Ambient Storage	A specific area or room that does not control environmental parameters such as temperature, light, humidity and/or gas concentration.
 term	LocationRoleType-AMBULANCE_SERVICE	I		Ambulance Service	Provides initial patient care and transportation to a medical facility
 term	LocationRoleType-AMUSEMENT_ENTERTAINMENT_GAMING	I		Amusement Entertainment Gaming	Provides recreation and entertainment services
-term	LocationRoleType-ASSEMBLY	I		Assembly	An area where components are put together into an end product, appropriate to the process concerned.
+term	LocationRoleType-ASSEMBLY	I		Assembly Area	An area where components are put together appropriate to the process concerned. NOTE: Assembly processes take place throughout supply chains. The output from one assembly process is often the input for a later assembly process.
 term	LocationRoleType-ATM	I		ATM	An automated teller machine (ATM) is an electronic banking outlet that allows customers to complete basic transactions without the aid of a branch representative or teller.
 term	LocationRoleType-BACKROOM	I		Backroom	An area within a store (all formats - club, etc.) used to hold product until it is purchased or can be moved to the sales floor.
 term	LocationRoleType-BANK	I		Bank	A location offering financial services to consumers and/or businesses.
@@ -10003,7 +10003,7 @@ term	LocationRoleType-BERTH	I		Berth	A berth is a specialised space or part of a
 term	LocationRoleType-BIRTH_AREA	I		Birth Area	The place the animal was born/hatched. Note: the term animal includes but is not limited to mammals, birds, fish and crustaceans.
 term	LocationRoleType-BOAT	I		Boat	A watercraft of a large range of types and sizes, but generally smaller than a ship,
 term	LocationRoleType-BOTTLING_SITE	I		Bottling Site	A location or area within a larger location where beverages are bottled.
-term	LocationRoleType-BOX_CRUSHER	I		Box Crusher	A Baler used to compact recycled materials (e.g. corrugated boxes, slip sheets and packaging material).
+term	LocationRoleType-BOX_CRUSHER	I		Box Crushing Area	An area where devices are used to compact recycled materials (e.g. corrugated boxes, slip sheets and packaging material).
 term	LocationRoleType-BRANCH_LOCATION	I		Branch Location	A location for an organization segment that operates in a different physical location or jurisdiction than its parent organization, although is considered as an extension of the parent organization (i.e., same legal entity.).
 term	LocationRoleType-CASH_CARRY_STORE	I		Cash and Carry Store	Location where goods are paid for in full at the time of purchase and taken away by the purchaser.
 term	LocationRoleType-CITY_CENTER_SHOP	I		City Center Shop	The product is intended to be sold in a city center. A city center shop is centrally located in the commercial, cultural and often the historical, political and geographic heart of a city, especially those in the Western world.
@@ -10012,16 +10012,17 @@ term	LocationRoleType-CLINICAL_TRIAL_SITE	I		Clinical Trial Site	A location desi
 term	LocationRoleType-COLLECTION_CENTER	I		Collection Center	A location where purchased products may be collected by the purchaser or a delegated party.
 term	LocationRoleType-CONSOLIDATING_CENTER	I		Consolidating Center	A facility where smaller shipments or consignments are combined into larger consignments bound for a destination.
 term	LocationRoleType-CONSTRUCTION_SITE	I		Construction Site	A construction site is an area or piece of land on which construction works are being carried out.
-term	LocationRoleType-CONTAINER_DECK	I		Container Deck	An area on board a shipping vessel where containers are loaded.
-term	LocationRoleType-CONTROLLED_SUBSTANCE_AREA	I		Controlled Substance Area	A caged and locked area in which regulated, controlled substance pharmaceuticals are held while awaiting shipment.
+term	LocationRoleType-CONTAINER_DECK	I		Container Deck	An area on board a cargo ship where containers are loaded.
+term	LocationRoleType-CONTROLLED_SUBSTANCE_AREA	I		Controlled Substance Area	A caged and locked area in which regulated, controlled substances are held while awaiting shipment.
 term	LocationRoleType-CONVENIENCE_STORE	I		Convenience Store	A location for a type of small format retail store often located with or connected to a gas/fuel station. Convenience stores usually provide extended trading hours, operating earlier and later than traditional retail stores.
-term	LocationRoleType-CONVEYOR_BELT	I		Conveyor Belt	A continuous moving strip or surface that is used for transporting single cartons or a load of objects from one place to another.
+term	LocationRoleType-CONVEYOR_BELT	I		Conveyor Area	An area of continuous moving strip or surface is used for transporting single cartons or a load of objects from one place to another. May also be used when products are barcoded or marked.
 term	LocationRoleType-CORRECTION_FACILITY	I		Correction Facility	Provides detention and rehabilitative services to inmates
+term	LocationRoleType-CROSS_DOCK	I		Cross Dock	An assigned area in which shipping containers of any type and size are prepared for loading into a transportation vehicle (e.g., truck, train, vessel or aircraft) or where the containers are stacked or stored immediately after unloading…
 term	LocationRoleType-CUSTOMER_PICK-UP_AREA	I		Customer Pick-Up Area	An area, usually within a store or collection center, that is reserved specifically for consumers to collect goods purchased online (sometimes known as 'click and collect'), or goods purchased in store to be collected at a later time or…
 term	LocationRoleType-CUSTOMS_BORDER_CONTROL	I		Customs Border Control	A location where cross-border procedures and formalities may be executed and fulfilled. Examples of these include passport control, importation of goods, sanitary and phytosanitary (SPS) formalities etc.
 term	LocationRoleType-DENTAL_HEALTH_SERVICE	I		Dental health service	Provides oral health treatment and support services
 term	LocationRoleType-DEPOT	I		Depot	A location where vehicles such as those used for transportation (e.g., trucks, trains) or services (e.g., mobile food truck, exhibition cart) can be housed, maintained and deployed from.
-term	LocationRoleType-DISPENSER	I		Dispenser	Tablet, caplet or capsule dispensing machine in which bulk product has been placed to be dispensed on a prescription basis.
+term	LocationRoleType-DISPENSER	I		Dispenser Area	An area in which machines or devices dispense product.
 term	LocationRoleType-DISTRIBUTION_CENTER	I		Distribution Center	A specialised warehouse space that serves as a hub for the strategic storage of goods, for the purpose of picking, packing and shipping to another location, or the final destination.
 term	LocationRoleType-DOCK	I		Dock	An area within a facility where transportation such as trucks or rail cars can be loaded with goods for dispatch (i.e., outbound shipping, or sending) or unloaded with goods delivered (i.e., inbound shipping or receiving).
 term	LocationRoleType-DOCTOR_OFFICE	I		Doctor office	A room or clinic where a doctor works.
@@ -10042,10 +10043,10 @@ term	LocationRoleType-FIXED_READER	I		Fixed Reader	A location equipped with any 
 term	LocationRoleType-FIXED_TRANSPORT_FACILITIES	I		Fixed Transport Facilities	A location with permanent facilities to load or discharge cargo, that does not fit within a maritime, rail, road, air, or multimodal type facility. For example, an oil platform or terminal.
 term	LocationRoleType-FOOD_BUSINESS	I		Food Business	A location for businesses selling prepared food to consumers such as cafes, restaurants, food trucks.
 term	LocationRoleType-FREIGHT_HUB	I		Freight Hub	A location that is an interchange point at which equipment or goods are exchanged between drivers and/or transport operators.
-term	LocationRoleType-FREIGHT_TERMINAL	I		Freight Terminal	An assigned area in which shipping containers of any type and size are prepared for loading into a transportation vehicle (e.g., truck, train, vessel or aeroplane) or where the containers are stacked immediately after unloading from a…
+term	LocationRoleType-FREIGHT_TERMINAL	I		Freight Terminal	An assigned area in which cargo of any type and size is consolidated, sorted and transferred between modes of transportation.
 term	LocationRoleType-GARDEN_CENTER	I		Garden Center	An establishment where plants and gardening equipment are sold.
 term	LocationRoleType-GATE	I		Gate	A location that is a type of opening to allow both entry to and exit from an enclosed place such as a terminal, warehousing, healthcare facility, or agricultural facility or parts thereof, for example.
-term	LocationRoleType-GENERAL_MDSE_AREA	I		General Merchandise Area	An area where typically - non-food products other than perishable, dry groceries and health and beauty care products that are displayed in stores on standard shelving.
+term	LocationRoleType-GENERAL_MDSE_AREA	I		General Merchandise Area	A retail area for non-food, non-personal care products, primarily general household and utility items displayed on standard shelving. Examples include household cleaning products, paper napkins, laundry detergents, and insect repellents.
 term	LocationRoleType-GOVERNMENT_DEPARTMENT_AGENCY	I		Government Department Agency	Location where a government body conducts operations.
 term	LocationRoleType-GREENHOUSE	I		Greenhouse	A location where plants are grown and cultivated, within an enclosed or semi-enclosed environment, often within a covered indoor space. Includes temporary or semi-permanent structures.
 term	LocationRoleType-GROCERY	I		Grocery	An area where household grocery products, such as fresh or shelf stable foods, domestic cleaning supplies, personal hygiene items, for example, that are displayed in stores on standard shelving.
@@ -10057,20 +10058,20 @@ term	LocationRoleType-HOSPITAL_DEPARTMENT	I		Hospital Department	An area within 
 term	LocationRoleType-HOSPITAL_PHARMACY	I		Hospital Pharmacy	A location within a hospital where pharmaceuticals or medical devices can be dispensed by a pharmacy operator to hospital staff for inpatient treatment as well as directly to patients being discharged.
 term	LocationRoleType-IMAGING_DIAGNOSTICS_AREA	I		Imaging Diagnostics Area	An area within a healthcare facility, usually a hospital or radiology facility, designated for the purpose of imaging and diagnostics.
 term	LocationRoleType-IMPREST_LOCATION	I		Imprest Location	Usually a ward-level location in which stock is held for use on that ward.
-term	LocationRoleType-INLAND_FISHERY	I		Inland Fishery	A location devoted to the rearing and harvesting of aquatic animals and plants within an inland freshwater ecosystem (i.e., fresh or limnetic waters) for industrial, small-scall/artisanal or recreational purposes.
+term	LocationRoleType-INLAND_FISHERY	I		Inland Fishery	A location devoted to the rearing and harvesting of aquatic animals and plants within an inland freshwater ecosystem (i.e., fresh or limnetic waters) for industrial, small-scale/artisanal or recreational purposes.
 term	LocationRoleType-INLAND_PORT	I		Inland Port	A location with permanent facilities, situated along inland waterways, where inland waterway ships and vessels may dock to receive services such as loading and discharging passengers, crews or cargo, refuelling, restocking, etc.
 term	LocationRoleType-INTERMODAL_TERMINAL	I		Intermodal Terminal	A location that is a specific type of terminal, which supports the transfer between various modes of transport such as rail, road, maritime, inland waterways.
 term	LocationRoleType-INTERNATIONAL_MAIL_PROCESSING_CENTER	I		International Mail Processing Center	A location with mail processing facilities recognized by the Universal Postal Union (UPU) that generates or receives dispatches and/or acts as a transit center for mail exchanged between other International Mail Processing Centers (IMPC).
 term	LocationRoleType-LANE_OR_ROUTE	I		Lane or route	A specific transportation lane or route.
-term	LocationRoleType-LAY-AWAY	I		Lay-Away	An area within a store for holding or consolidating customer purchases for final payment and pickup.
+term	LocationRoleType-LAY-AWAY	I		Lay-Away Area	An area within a store for holding or consolidating customer purchases for final payment and pickup.
 term	LocationRoleType-LIBRARY	I		Library	A building or room containing collections of books, periodicals, and sometimes films and recorded music for use or borrowing by the public or the members of an institution.
 term	LocationRoleType-MAIN_RECEPTION	I		Main Reception	An area within a facility, often near the entrance, that is used predominantly to greet visitors to the building.
 term	LocationRoleType-MANUFACTURING_PLANT	I		Manufacturing Plant	A location consisting of one or more buildings with facilities for manufacturing.
-term	LocationRoleType-MARINE_FISHERY	I		Marine Fishery	A location devoted to the rearing and harvesting of aquatic animals and plants within a marine saltwater ecosystem (i.e., open sea/pelagic zone), for industrial, small-scall/artisanal or recreational purposes.
+term	LocationRoleType-MARINE_FISHERY	I		Marine Fishery	A location devoted to the rearing and harvesting of aquatic animals and plants within a marine saltwater ecosystem (i.e., open sea/pelagic zone), for industrial, small-scale/artisanal or recreational purposes.
 term	LocationRoleType-MARKET	I		Market	A location where multiple sellers can set-up mobile stalls, booths or stores, to sell various goods to consumers.
 term	LocationRoleType-MENTAL_HEALTH_SERVICE	I		Mental Health Service	Provides mental health treatment and support services.
 term	LocationRoleType-MILKING_SITE	I		Milking Site	Milking is the act of removing milk from mammary glands of various animal types.
-term	LocationRoleType-MOBILE_READER	I		Mobile Reader	Any non-fixed (portable) reader configuration (reader and antennas) for the purpose of capturing EPC data (e.g. Hand held or forklift reader).
+term	LocationRoleType-MOBILE_READER	I		Mobile Reader	Any non-fixed (portable) reader configuration (reader and antennas) for the purpose of capturing EPC data (e.g. scanning a parcel as it is delivered on a delivery van or when it is delivered to the recipient).
 term	LocationRoleType-NURSE_STATION	I		Nurse Station	Nurse station within a hospital or other healthcare service provider
 term	LocationRoleType-OFFICE	I		Office	A room, set of rooms, or building where the business of a commercial or industrial organization or an individual professional is conducted.
 term	LocationRoleType-ONLINE_PLATFORM	I		Online Platform	A digital location offering online services that utilize the internet to facilitate interactions between two or more distinct but interdependent sets of users.
@@ -10078,7 +10079,7 @@ term	LocationRoleType-ONLINE_SHOP	I		Online Shop	A digital location where a vari
 term	LocationRoleType-OPERATING_THEATER	I		Operating Theater	A facility usually within a hospital used to perform medical/surgical procedures.
 term	LocationRoleType-PACKAGING_AREA	I		Packaging Area	An area within a facility where product is packaged.
 term	LocationRoleType-PACKHOUSE	I		Packhouse	A location (standalone or part of a larger facility) where fresh foods such as fruit, vegetables, grains, meat or horticultural products, for example, are sorted, prepared and packed ahead of distribution to shops or markets for sale to…
-term	LocationRoleType-PALLET_WRAPPER	I		Pallet Wrapper	An area where any automatic or manual method using bands of plastic film applied to product used to encase palletised loads prior to shipment to protect against product damage.
+term	LocationRoleType-PALLET_WRAPPER	I		Pallet Wrapping Area	An area where palletised loads are wrapped manually or automatically before shipment.
 term	LocationRoleType-PATHOLOGY	I		Pathology	Pathology area within a hospital or independently operated.
 term	LocationRoleType-PERSONAL_SERVICES	I		Personal Services	Business providing personal services such as beauty therapy, tattoo parlours, hair salons etc.
 term	LocationRoleType-PETROL_STATION	I		Petrol Station	An establishment beside a road selling fuel for motor vehicles.
@@ -10086,32 +10087,34 @@ term	LocationRoleType-PICK-UP_LOCATION	I		Pick-Up Location	A location where good
 term	LocationRoleType-PICKING_AREA	I		Picking Area	An area within a facility in which product is picked to fulfil an order.
 term	LocationRoleType-POINT_OF_SALE	I		Point Of Sale	An area, usually within a store, commonly known as a 'checkout', where barcodes on trade items can be scanned to enable a consumer purchase and to complete and record the transaction for the seller.
 term	LocationRoleType-PRIMARY_HEALTH_SERVICE	I		Primary Health Service	A health service which provides a first point of consultation for patients. Includes community centres.
-term	LocationRoleType-PRINTING_ROOM	I		Printing Room	An area which provides printed labels/tags for the goods/cartons/pallets within a DC or manufacturer facility.
+term	LocationRoleType-PRINTING_ROOM	I		Printing Room	An area which provides printing facilities.
 term	LocationRoleType-PRODUCTION_AREA	I		Production Area	An area within a facility where the conversion of materials and or assembly of components to manufacture goods, products or services takes place.
 term	LocationRoleType-PRODUCTION_LINE	I		Production Line	An area in a factory in which goods being manufactured is passed through a set linear sequence of mechanical or manual operations.
-term	LocationRoleType-PROMOTION_AREA	I		Promotion Area	A specific area or room that is used to hold special purchased product.
+term	LocationRoleType-PROMOTION_AREA	I		Promotion Area	A specific area or room where products for promotion are contained and made available to the consumer.
 term	LocationRoleType-PUBLIC_WAREHOUSE	I		Public Warehouse	A building, or a part of one, where storage space is offered to other companies for compensation (fee), for the storage of their goods, merchandise, etc.
-term	LocationRoleType-QUALITY_CONTROL	I		Quality Control	An area in which any product not meeting quality standards is held pending further evaluation.
-term	LocationRoleType-QUARANTINE	I		Quarantine	An area at a manufacturing, distribution or retail facility to hold product that may not be suitable for consumption until further inspection.
+term	LocationRoleType-QUALITY_CONTROL	I		Quality Control Area	An area in which products are held pending quality evaluation.
+term	LocationRoleType-QUARANTINE	I		Quarantine Area	An area at a manufacturing, distribution or retail facility to hold product until further inspection.
 term	LocationRoleType-RAIL_STATION	I		Rail Station	A location with one or more buildings/platforms where trains can stop for people to embark and disembark.
 term	LocationRoleType-RAIL_TERMINAL	I		Rail Terminal	A location with one or more railway terminals such as freight terminals or rail stations (excluding passenger terminals), that provides connections with other rail vehicles and other modes of transport.
 term	LocationRoleType-READ_POINT_VERIFICATION_SPOT	I		Read Point Verification Spot	A point at which a tagged object's location has been verified by an associated read of a separate fixed location tag.
 term	LocationRoleType-REARING_AREA	I		Rearing Area	The place the animal was raised after birth to the end of the animals' life. Note: the term animal includes but is not limited to mammals, birds, fish and crustaceans.
-term	LocationRoleType-RECALLED_PRODUCT_AREA	I		Recalled Product Area	An area in which recalled product is stored pending shipment back to the manufacturer or the manufacturer's designated returns centre for final disposition.
+term	LocationRoleType-RECALLED_PRODUCT_AREA	I		Recalled Product Area	An area in which recalled product is stored pending processing decisions.
 term	LocationRoleType-RECEIVING_AREA	I		Receiving Area	An area within a facility where incoming goods are unloaded and checked for condition and completeness.
 term	LocationRoleType-RECEIVING_LOCATION	I		Receiving Location	A location where goods may be temporarily received and stored for the purpose of unloading shipments.
 term	LocationRoleType-REPACKING_FACILITY	I		Repacking Facility	A location where goods may be combined with other goods and packed for sale or shipping distribution as a single pack. For locations where transport units are combined for shipping, see CONSOLIDATING_CENTER.
 term	LocationRoleType-RESEARCH_FACILITY	I		Research Facility	An institute, centre, or other location where research is conducted.
 term	LocationRoleType-RESIDENCE	I		Residence	A dwelling or an apartment where one lives.
-term	LocationRoleType-RETAIL_PHARMACY	I		Retail Pharmacy	A location for a retail store that sells and/or dispenses pharmaceuticals and medical devices to the general public, often at the direction of physicians.
+term	LocationRoleType-RESTRICTED_AREA	I		Restricted Area	A designated location to which access is restricted but not physically prevented (e.g., tobacco products behind a counter).
+term	LocationRoleType-RETAIL_PHARMACY	I		Retail Pharmacy	A location of or within a retail store that sells and/or dispenses pharmaceuticals and medical devices to the general public, often at the direction of physicians.
 term	LocationRoleType-RETURNABLE_ASSET_SERVICE_CENTER	I		Returnable Asset Service Center	The location where a returnable asset is serviced.
 term	LocationRoleType-RETURNS_AREA	I		Returns Area	An area where goods, that have been dispatched to be delivered, are received back into a facility for further processing.
 term	LocationRoleType-ROAD_TERMINAL	I		Road Terminal	A location that is connected to other locations by means of roads.
 term	LocationRoleType-SALES_FLOOR	I		Sales Floor	An area within a store (all formats - club, etc.) where product is displayed for customer purchase.
-term	LocationRoleType-SALES_FLOOR_TRANSITION_AREA	I		Sales Floor Transition Area	An area within a store between two physical locations (e.g. Backroom and Sales Floor) - used for a read point only.
+term	LocationRoleType-SALES_FLOOR_TRANSITION_AREA	I		Sales Floor Transition Area	A transition area within a retail store between two physical locations (e.g. Backroom and Sales Floor) - used for a read point only.
 term	LocationRoleType-SALES_YARD	I		Sales Yard	A location for individuals or companies to sell used goods.
 term	LocationRoleType-SEAPORT	I		Seaport	A location with maritime facilities, at which both seagoing and inland waterway ships and seagoing vessels may dock to receive services such as loading and discharging passengers, crews or cargo, refuelling, restocking, repair.
-term	LocationRoleType-SECURITY_AREA	I		Security Area	A designated internal location for the purpose of minimising direct access to the product.
+term	LocationRoleType-SECURED_AREA	I		Secured Area	A designated location to which access is controlled via one or more Security Area(s) or by physical means (e.g., airside terminal operations at an airport).
+term	LocationRoleType-SECURITY_AREA	I		Security Area	A designated location for the purpose of minimising direct access to the product or Secured Area (e.g., baggage scanning at an airport).
 term	LocationRoleType-SELF_SERVICE	I		Self Service	The product should be placed in an area where the consumer can self serve themselves to their purchase needs. The product may have been portioned, cut or modified prior.
 term	LocationRoleType-SERVICE_COUNTER	I		Service Counter	The product is recommended to be placed at a location where an employee from the trading partner will need to portion, cut, or modify the product to the end consumer based upon consumer need.
 term	LocationRoleType-SHELF	I		Shelf	A location specified within a larger area, used to hold or store objects.
@@ -10781,7 +10784,7 @@ term	PaymentMethod-BANK_CHEQUE	I		Bank Cheque	Payment by a pre-printed form, whi
 term	PaymentMethod-BANK_GIRO	I		Bank Giro	The payment was originally made by bankgiro.
 term	PaymentMethod-BOOKENTRY_CREDIT	I		Book Entry Credit	House Credit.
 term	PaymentMethod-BOOKENTRY_DEBIT	I		Book Entry Debit	House Debit.
-term	PaymentMethod-BOP	I		BOP	
+term	PaymentMethod-BOP	I		BOP	Payment by balance of payments
 term	PaymentMethod-CASH	I		Cash	Payment by currency (including bills and coins) in circulation, including checking account deposits.
 term	PaymentMethod-CERTIFIED_CHEQUE	I		Certified Cheque	Payment by a pre-printed form stamped with the paying bank's certification on which instructions are given to an account holder (a bank or building society) to pay a stated sum to a named recipient .
 term	PaymentMethod-CHEQUE	I		Cheque	Payment by a pre-printed form on which instructions are given to an account holder (a bank or building society) to pay a stated sum to a named recipient.
@@ -11602,7 +11605,7 @@ term	openingHoursInfo	P		Opening hours information	A link to details on hours of
 term	organicClaim	P		Has Organic Claim	Relates to an organic claim about the product		Product	OrganicClaimDetails
 term	organicClaimAgency	P		Organic Claim Agency Code	A governing body that creates and maintains standards related to organic products.		OrganicClaimDetails	OrganicClaimAgencyCode
 term	organicPercentClaim	P		Organic Percent Claim	The percent of actual organic materials per weight of the product. This is usually claimed on the product.		OrganicClaimDetails	xsd:float
-term	organizationClassification	P		Has Organization Classification	Links to one or more instances of gs1:OrganizationClassificationDetails for expresing the classification of the economic activities of an organisation.		Organization	OrganizationClassificationDetails
+term	organizationClassification	P		Has Organization Classification	Links to one or more instances of gs1:OrganizationClassificationDetails for expressing the classification of the economic activities of an organisation.		Organization	OrganizationClassificationDetails
 term	organizationClassificationID	P		Organization Classification ID	Classification value that is administered by an organisation. This value SHALL follow rules set forth by the system indicated by the code value of gs1:organizationClassificationType.		OrganizationClassificationDetails	xsd:string
 term	organizationClassificationType	P		Organization Classification Type	Classification system name associated with gs1:organizationClassificationID.		OrganizationClassificationDetails	OrganizationClassificationType
 term	organizationFormationDate	P		Organisation Formation Date	Date in which an organisation was formed or otherwise established. Note that this is NOT the date when a GLN was allocated to identify the organisation. To designate when organisation was terminated, see gs1:organizationTerminationDate		Organization	xsd:date
@@ -11628,6 +11631,7 @@ term	packaging	P		Has Packaging	Details on the packaging for a product including
 term	packagingDate	P		Packaging Date	The packaging date is the date when the goods were packed as determined by the packager. The date may refer to the trade item itself or to items contained.		Product schema:Product	xsd:date
 term	packagingFeature	P		Packaging Feature	Code indicating a feature that facilitates the usage of the product by the consumer, for example a handle. Packaging features do not affect the core composition of the packaging type nor modify its usage.		PackagingDetails	PackagingFeatureCode
 term	packagingFunction	P		Packaging Function	Code indicating specific functionality for packaging resulting from specific processes or features present in the packaging type,for example, ANTI_TAMPERING.		PackagingDetails	PackagingFunctionCode
+term	packagingInfo	P		Packaging info	A link to information about an item's packaging.	linkType	owl:Thing	xsd:anyURI
 term	packagingMarkedDietAllergenType	P		Packaging Marked Diet Allergen Type Code	Indication of which dietary or allergen marks are on the package.		FoodBeverageTobaccoProduct	PackagingMarkedDietAllergenCode
 term	packagingMarkedFreeFrom	P		Packaging Marked Free From Code	Indication of the food ingredients that the package is marked free from.		FoodBeverageTobaccoProduct	PackagingMarkedFreeFromCode
 term	packagingMarkedLabelAccreditation	P		Accreditation Code	A marking that the product received recognition, endorsement, certification by following guidelines by the label issuing agency. This does not represent claims for regulatory purposes on products such as free from markings.		Product	PackagingMarkedLabelAccreditationCode
@@ -11672,7 +11676,7 @@ term	productID	P		Product ID	Additional means to the Global Trade Item Number to
 term	productMarketingMessage	P		Product Marketing Message	Marketing message associated with the product. Consumer-friendly marketing detailed description of the product.		Product	rdf:langString
 term	productName	P		Product Name	Consumer friendly short description of the product suitable for compact presentation.	schema:name	Product	rdf:langString
 term	productRange	P		Product Range	A name, used by a Brand Owner, that span multiple consumer categories or uses. E.g. (Waist Watchers).		Product	rdf:langString
-term	productSustainabilityInfo	P		Sustainability and recycling (deprecated)	This term has been deprecated. Please use gs1:sustainabilityInfo instead.	linkType	Product schema:Product	xsd:anyURI
+term	productSustainabilityInfo	P	D	Sustainability and recycling (deprecated)	This term has been deprecated. Please use gs1:sustainabilityInfo instead.	linkType	Product schema:Product	xsd:anyURI
 term	productYield	P		Product Yield	Product quantity after preparation. This can differ based on productYieldType		ProductYieldDetails	QuantitativeValue
 term	productYieldType	P		Product Yield Type Code	Code indicating the type of yield measurement specified in productYield. Examples: AFTER_DILUTION, DRAINED_WEIGHT.		ProductYieldDetails	ProductYieldTypeCode
 term	productYieldVariationPercentage	P		Product Yield Variation Percentage	Indication of range in percent of the given cooking / roasting loss. Percentage that the actual weight of the product differs upward or downward from the average or estimated product yield.		ProductYieldDetails	xsd:float
@@ -11680,7 +11684,7 @@ term	productionDate	P		Production Date	The production date is the production or 
 term	productionDateTime	P		Production Date and Time	The date and time of production (or assembly). The date and time of production is determined by the manufacturer. The date and time may refer to the trade item itself or to the items contained.		Product schema:Product	xsd:dateTime
 term	productionVariantDescription	P		Production Variant Description	Free text assigned by the manufacturer to describe the production variant. Examples are: package series X, package series Y.		Product	rdf:langString
 term	productionVariantEffectiveDateTime	P		Production Variant Effective Date Time	The start date of a production variant. The variant applies to products having a date mark (a best before date or expiration date) on the package that comes on or after the effective date.		Product	xsd:dateTime
-term	promotion	P		Promotion	A link to a promotion.	linkType	owl:Thing	xsd:anyURI
+term	promotion	P		Promotion	A link to a promotion, game or other related activity.	linkType	owl:Thing	xsd:anyURI
 term	proteinPerNutrientBasis	P		Protein Per Nutrient Basis Quantity	Protein per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	provenanceStatement	P		Provenance Statement	Free text description of the region or place the product originates from. This is to be specifically used to specify areas such as cities, mountain ranges, regions.		Product	rdf:langString
 term	purchaseSuppliesOrAccessories	P		Purchase supplies or accessories	A link to information about where supplies or accessories for the item can be purchased or ordered.	linkType	owl:Thing	xsd:anyURI
@@ -11791,7 +11795,7 @@ term	textileMaterialPercentage	P		Textile Material Percentage	Corresponding net 
 term	textileMaterialThreadCount	P		Textile Material Thread Count	The quality of material (fabric) of a product based on the total number of vertical and horizontal threads in one square inch.		TextileMaterialDetails	rdf:langString
 term	textileMaterialWeight	P		Textile Material Weight	The measured weight of the material expressed in ounces per square yard or grams per square meter.		TextileMaterialDetails	QuantitativeValue
 term	thiaminPerNutrientBasis	P		Thiamin Per Nutrient Basis Quantity	Thiamin per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
-term	traceability	P		Traceability information	A link to traceability information (includes track and trace). Traceability information may be provided for consumption by humans or computers. If the target is an EPCIS repository, use gs1:epcis instead.	linkType	owl:Thing	xsd:anyURI
+term	traceability	P		Traceability information	A link to traceability information (includes track and trace). Traceability information may be provided for consumption by humans or computers. If the target is an EPCIS repository, use gs1:epcisRepository instead.	linkType	owl:Thing	xsd:anyURI
 term	transFatPerNutrientBasis	P		Trans Fat Per Nutrient Basis Quantity	Trans Fat per specified nutrient basis quantity.		FoodBeverageTobaccoProduct	NutritionMeasurementType
 term	transactionDate	P		Transaction Date	The date associated with a business transaction		Transaction	xsd:date
 term	transactionID	P		Transaction Reference	An identifier for a business transactions		Transaction	xsd:string

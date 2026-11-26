@@ -114,10 +114,11 @@ node web/build.mjs && timeout 120 node --test --test-timeout=60000 web/test/engi
 
 ## Release
 
-1. Set one version in `Cargo.toml`, `Cargo.lock`,
-   `editors/vscode/package.json`, `editors/vscode/package-lock.json` (two
-   fields) and the top heading of `CHANGELOG.md`: rename `## Unreleased` to
-   `## X.Y.Z — YYYY-MM-DD`. `web/engine/Cargo.toml` stays `0.0.0`.
+1. Set one version in `Cargo.toml`, `Cargo.lock`, `web/engine/Cargo.lock`
+   (its `turtle-lsp` entry), `editors/vscode/package.json`,
+   `editors/vscode/package-lock.json` (two fields) and the top heading of
+   `CHANGELOG.md`: rename `## Unreleased` to `## X.Y.Z — YYYY-MM-DD`.
+   `web/engine/Cargo.toml` stays `0.0.0`.
    `RELEASE_TAG=vX.Y.Z node --test test/versions.test.mjs` checks all of
    them.
 2. When `rust-toolchain.toml` moves to a new compiler, run clippy on it;

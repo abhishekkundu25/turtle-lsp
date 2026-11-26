@@ -77,6 +77,11 @@ pub(super) fn complete(
     offset: usize,
     snippets: bool,
 ) -> CompletionResponse {
+    // A text the RDF/XML parse does not read (OWL/XML, Functional or
+    // Manchester syntax, given as RDF/XML) takes no RDF/XML.
+    if crate::rdfxml::is_unread(&a.parsed) {
+        return CompletionResponse::Array(vec![]);
+    }
     let text: &str = &a.text;
     let doc = Document::read(text);
     let Some(e) = expected::at(text, &doc, offset) else {
@@ -102,7 +107,11 @@ pub(super) fn complete(
             ));
         }
         expected::Slot::Value {
-            of: Value::ParseType { allow_triple },
+            of:
+                Value::ParseType {
+                    allow_triple,
+                    allow_collection,
+                },
             entity,
             ..
         } => {
@@ -110,6 +119,7 @@ pub(super) fn complete(
                 typed,
                 entity.is_some(),
                 *allow_triple,
+                *allow_collection,
                 range,
             ));
         }
@@ -258,7 +268,13 @@ fn attributes(
 }
 
 /// The four `rdf:parseType` values of RDF 1.2 XML Syntax.
-fn parse_types(typed: &str, in_entity: bool, allow_triple: bool, range: Range) -> CompletionList {
+fn parse_types(
+    typed: &str,
+    in_entity: bool,
+    allow_triple: bool,
+    allow_collection: bool,
+    range: Range,
+) -> CompletionList {
     const VALUES: [(&str, &str); 4] = [
         ("Resource", "blank node with child property elements"),
         ("Collection", "rdf:List of child node elements"),
@@ -268,7 +284,7 @@ fn parse_types(typed: &str, in_entity: bool, allow_triple: bool, range: Range) -
     let mut items = Vec::new();
     if !in_entity {
         for (idx, (val, desc)) in VALUES.iter().enumerate() {
-            if *val == "Triple" && !allow_triple {
+            if (*val == "Triple" && !allow_triple) || (*val == "Collection" && !allow_collection) {
                 continue;
             }
             if fuzzy(typed, val) {
@@ -1450,6 +1466,279 @@ mod tests {
         );
     }
 
+    /// A value with no closing quote, which the grammar reads to the next
+    /// `<`: its edit stops at the first character an IRI cannot hold (a
+    /// `>`, white space) and before the `/` of a `/>`, so the end of the
+    /// tag and what comes after it stay. The line after accepting, whole.
+    #[test]
+    fn an_unclosed_value_s_edit_keeps_the_end_of_its_tag() {
+        let int = format!("{XSD}integer");
+        let pump = "http://example.org/Pump";
+        let datatype = |line: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    {line}\n  </rdf:Description>\n"
+            ))
+        };
+        let class = |line: &str| {
+            onto(&format!(
+                "  <owl:Class rdf:about=\"http://example.org/Hose\">\n    {line}\n  </owl:Class>\n"
+            ))
+        };
+        let top = |line: &str| onto(&format!("  {line}\n"));
+        // The whole text ends in the line.
+        let last = |line: &str| {
+            format!(
+                "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n  <rdf:Description rdf:about=\"http://example.org/s\">\n    {line}"
+            )
+        };
+        let cases = [
+            // `>` and text after the value.
+            (
+                datatype(&format!("<ex:age rdf:datatype=\"{XSD}int|>42</ex:age>")),
+                int.as_str(),
+                format!("    <ex:age rdf:datatype=\"{int}>42</ex:age>"),
+            ),
+            (
+                datatype(&format!("<ex:age rdf:datatype=\"{XSD}in|t>42</ex:age>")),
+                &int,
+                format!("    <ex:age rdf:datatype=\"{int}>42</ex:age>"),
+            ),
+            // `/>` after the value, then the line end.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|/>"),
+                pump,
+                format!("    <rdfs:subClassOf rdf:resource=\"{pump}/>"),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|um/>"),
+                pump,
+                format!("    <rdfs:subClassOf rdf:resource=\"{pump}/>"),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource=\"|/>"),
+                pump,
+                format!("    <rdfs:subClassOf rdf:resource=\"{pump}/>"),
+            ),
+            // `>` and a child element at once.
+            (
+                top(
+                    "<rdf:Description rdf:type=\"http://example.org/P|><rdfs:label>x</rdfs:label></rdf:Description>",
+                ),
+                pump,
+                format!(
+                    "  <rdf:Description rdf:type=\"{pump}><rdfs:label>x</rdfs:label></rdf:Description>"
+                ),
+            ),
+            // At the end of the text.
+            (
+                last(&format!("<ex:p rdf:datatype=\"{XSD}int|/>")),
+                &int,
+                format!("    <ex:p rdf:datatype=\"{int}/>"),
+            ),
+            (
+                last(&format!("<ex:p rdf:datatype=\"{XSD}int|>")),
+                &int,
+                format!("    <ex:p rdf:datatype=\"{int}>"),
+            ),
+            (
+                last(&format!("<ex:p rdf:datatype=\"{XSD}int|")),
+                &int,
+                format!("    <ex:p rdf:datatype=\"{int}"),
+            ),
+            // White space, then an attribute in the other quotes: to the
+            // white space, as before.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID='r1'/>"),
+                pump,
+                format!("    <rdfs:subClassOf rdf:resource=\"{pump} rdf:ID='r1'/>"),
+            ),
+            // Closed: between the quotes, as before.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|\"/>"),
+                pump,
+                format!("    <rdfs:subClassOf rdf:resource=\"{pump}\"/>"),
+            ),
+            (
+                datatype(&format!("<ex:age rdf:datatype=\"{XSD}int|\">42</ex:age>")),
+                &int,
+                format!("    <ex:age rdf:datatype=\"{int}\">42</ex:age>"),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (marked, label, want) in cases {
+            let at = at(&marked);
+            let line = marked[..at.offset].matches('\n').count();
+            let Some(item) = at.items().into_iter().find(|i| i.label == label) else {
+                wrong.push(format!("{label} not offered in {marked}"));
+                continue;
+            };
+            let after = at.accepted(&item);
+            let got = after.lines().nth(line).unwrap_or_default().to_string();
+            if got != want {
+                wrong.push(format!("want {want}\n got {got}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        // A `>` before the offset: no edit covers it.
+        let at = at(&datatype(&format!(
+            "<ex:age rdf:datatype=\"{XSD}int>4|2</ex:age>"
+        )));
+        for item in at.items() {
+            let after = at.accepted(&item);
+            assert!(after.contains(">42</ex:age>"), "{}: {after}", item.label);
+        }
+    }
+
+    /// A value with no closing quote before a later attribute in the same
+    /// quotes, which the scanner closes at that attribute's opening quote:
+    /// the value holds white space and the attribute's name. Or before a
+    /// quote in the element's text: the value holds the tag's `>`. Its edit
+    /// stops where the IRI typed ends, as for a value with no closing quote,
+    /// so the name or the `>` stays. The text after accepting, whole.
+    #[test]
+    fn a_value_closed_by_a_later_attribute_s_quote_keeps_that_attribute() {
+        let int = format!("{XSD}integer");
+        let pump = "http://example.org/Pump";
+        let class = |line: &str| {
+            onto(&format!(
+                "  <owl:Class rdf:about=\"http://example.org/Hose\">\n    {line}\n  </owl:Class>\n"
+            ))
+        };
+        let datatype = |line: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    {line}\n  </rdf:Description>\n"
+            ))
+        };
+        let cases = [
+            // `/>` after the later attribute.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|um rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource='http://example.org/P| rdf:ID='r1'/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump} rdf:ID='r1'/>"
+                )),
+            ),
+            (
+                class("<rdfs:subClassOf rdf:resource='http://example.org/P|um rdf:ID='r1'/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump} rdf:ID='r1'/>"
+                )),
+            ),
+            // `>` after the later attribute.
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{XSD}int| rdf:ID=\"r1\">42</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{int} rdf:ID=\"r1\">42</ex:age>"
+                )),
+            ),
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype='{XSD}in|t rdf:ID='r1'>42</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype='{int} rdf:ID='r1'>42</ex:age>"
+                )),
+            ),
+            // The later attribute on the next line.
+            (
+                class(
+                    "<rdfs:subClassOf rdf:resource=\"http://example.org/P|\n      rdf:ID=\"r1\"/>",
+                ),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump}\n      rdf:ID=\"r1\"/>"
+                )),
+            ),
+            (
+                class(
+                    "<rdfs:subClassOf rdf:resource='http://example.org/P|um\n      rdf:ID='r1'/>",
+                ),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource='{pump}\n      rdf:ID='r1'/>"
+                )),
+            ),
+            // White space around the later attribute's `=`.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID = \"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump} rdf:ID = \"r1\"/>"
+                )),
+            ),
+            // Closed by a quote in the element's text, after its `>`.
+            (
+                datatype(&format!("<ex:age rdf:datatype=\"{XSD}int|>\"x\"</ex:age>")),
+                &int,
+                datatype(&format!("<ex:age rdf:datatype=\"{int}>\"x\"</ex:age>")),
+            ),
+            (
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{XSD}int|>the \"big\" one</ex:age>"
+                )),
+                &int,
+                datatype(&format!(
+                    "<ex:age rdf:datatype=\"{int}>the \"big\" one</ex:age>"
+                )),
+            ),
+            // Closed by its own quote: between the quotes, as before.
+            (
+                class("<rdfs:subClassOf rdf:resource=\"http://example.org/P|um\" rdf:ID=\"r1\"/>"),
+                pump,
+                class(&format!(
+                    "<rdfs:subClassOf rdf:resource=\"{pump}\" rdf:ID=\"r1\"/>"
+                )),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (marked, label, want) in cases {
+            let at = at(&marked);
+            let Some(item) = at.items().into_iter().find(|i| i.label == label) else {
+                wrong.push(format!("{label} not offered in {marked}"));
+                continue;
+            };
+            let after = at.accepted(&item);
+            if after != want {
+                wrong.push(format!("want {want}\n got {after}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        // No item deletes the later attribute: the offset after the
+        // opening quote, after the IRI, or in the attribute's name.
+        for line in [
+            "<rdfs:subClassOf rdf:resource=\"| rdf:ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource=\"http://example.org/P| rdf:ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource=\"http://example.org/P rdf:|ID=\"r1\"/>",
+            "<rdfs:subClassOf rdf:resource='| rdf:ID='r1'/>",
+        ] {
+            let at = at(&class(line));
+            let tail = &line[line.rfind(" rdf:").unwrap()..].replace('|', "");
+            for item in at.items() {
+                let after = at.accepted(&item);
+                assert!(after.contains(tail.as_str()), "{}: {after}", item.label);
+            }
+        }
+    }
+
     #[test]
     fn qualified_rdf_prefix_offers_rdf_description_in_node_position() {
         for body in ["  <rdf:Des|/>\n", "  <rdf:Des|\n", "  <rdf:|/>\n"] {
@@ -1728,5 +2017,305 @@ mod tests {
         assert!(has(&labels, "http://example.org/Pump"), "{labels:?}");
         assert!(has(&labels, "http://example.org/Valve"), "{labels:?}");
         assert!(!has(&labels, "http://example.org/feeds"), "{labels:?}");
+    }
+
+    /// The items at `at` whose acceptance adds an error, each with the
+    /// errors it adds.
+    fn adding_errors(at: &At) -> Vec<(String, Vec<String>)> {
+        let errors = |text: &str| -> Vec<String> {
+            let a = Analysis::new(URI.into(), text, Arc::default(), true);
+            a.parsed
+                .errors
+                .iter()
+                .map(|e| e.message().to_string())
+                .collect()
+        };
+        let before = errors(&at.text);
+        let mut out = Vec::new();
+        for item in at.items() {
+            let mut new = errors(&at.accepted(&item));
+            for e in &before {
+                if let Some(i) = new.iter().position(|n| n == e) {
+                    new.remove(i);
+                }
+            }
+            if !new.is_empty() {
+                out.push((item.label, new));
+            }
+        }
+        out
+    }
+
+    /// Chaos 20261126151, iterations 54344, 169649 and 124519: an end tag
+    /// that closes no open element is passed over by the scanner, so the
+    /// text after it is the element's body, and no `rdf:parseType` value is
+    /// offered there. An element whose own end tag, or an outer one, follows
+    /// its start tag still takes them.
+    #[test]
+    fn no_parse_type_value_where_text_follows_an_end_tag_that_closes_nothing() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n";
+        let close = "  </rdf:Description>\n";
+        let mut failures = Vec::new();
+        for body in [
+            "    <ex:says rdf:parseType=\"|Trip</rdf:li>le\">\n    </ex:says>\n",
+            "    <ex:address rdf:parseType=\"|Resou</owl:Restriction></rdfs:subClassOf>rce\">\n      <ex:city>Paris</ex:city>\n    </ex:address>\n",
+            "    <ex:says rdf:parseType=\"|Triple\" rdf:about=\"http://ex</rdf:li>ample\"/>\n      <rdf:Description>\n        <rdfs:label>Pump</rdfs:label>\n      </rdf:Description>\n    </ex:says>\n",
+            "    <ex:says rdf:parseType=\"|\" x=a/>text</ex:says>\n",
+        ] {
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            let labels = at.labels();
+            let added = adding_errors(&at);
+            if !labels.is_empty() || !added.is_empty() {
+                failures.push(format!(
+                    "{body}: offered {labels:?}, adding errors {added:?}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        for body in [
+            "    <ex:says rdf:parseType=\"|\">\n    </ex:says>\n",
+            "    <ex:says rdf:parseType=\"|\">\n",
+            "    <ex:says rdf:parseType=\"|\"/>\n",
+        ] {
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            assert!(has(&at.labels(), "Resource"), "{body}: {:?}", at.labels());
+            // `Triple` on an element with no body yet is offered with its one
+            // node still to write.
+            let added: Vec<_> = adding_errors(&at)
+                .into_iter()
+                .filter(|(label, _)| label != "Triple")
+                .collect();
+            assert_eq!(added, [], "{body}");
+        }
+    }
+
+    /// Chaos 20261126151, iteration 5610: a node element at any depth in
+    /// `rdf:parseType="Triple"` adds its triples to the Triple's one, so
+    /// renaming `rdf:Description` to a class adds an `rdf:type` triple, and
+    /// renaming a typed node to `rdf:Description` removes one: neither is
+    /// offered, as for the Triple's own node
+    /// ([`a_name_in_a_triple_keeps_what_the_triple_counts`]).
+    #[test]
+    fn a_node_element_deeper_in_a_triple_keeps_its_rdf_type() {
+        let triple = |node: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      <rdf:Description rdf:about=\"http://example.org/a\">\n        <ex:feeds>\n          {node}\n        </ex:feeds>\n      </rdf:Description>\n    </ex:says>\n  </rdf:Description>\n"
+            ))
+        };
+        // One triple, `a feeds b`; `b` typed would make two.
+        let described = at(&triple(
+            "<|rdf:Description rdf:about=\"http://example.org/b\"/>",
+        ));
+        assert!(
+            described.a.parsed.errors.is_empty(),
+            "{:?}",
+            described.a.parsed.errors
+        );
+        assert_eq!(adding_errors(&described), [], "{:?}", described.labels());
+        assert!(
+            !has(&described.labels(), "ex:Pump"),
+            "{:?}",
+            described.labels()
+        );
+        // `ex:feeds` closed by the end tag of its node, its triple not made:
+        // the one triple is `b`'s type.
+        let typed = at(&onto(
+            "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      <rdf:Description rdf:about=\"http://example.org/a\"><ex:feeds>\n        <|ex:Pump rdf:about=\"http://example.org/b\"/></rdf:Description>\n    </ex:says>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(adding_errors(&typed), [], "{:?}", typed.labels());
+        assert!(
+            !has(&typed.labels(), "rdf:Description"),
+            "{:?}",
+            typed.labels()
+        );
+        assert!(has(&typed.labels(), "ex:Valve"), "{:?}", typed.labels());
+        // `ex:feeds` closed by its own end tag: two triples, `a feeds b` and
+        // `b`'s type. A rename keeps the count, so no `rdf:Description` here
+        // either, though it would leave the one.
+        let two = at(&triple("<|ex:Pump rdf:about=\"http://example.org/b\"/>"));
+        assert_eq!(two.a.parsed.errors.len(), 1, "{:?}", two.a.parsed.errors);
+        assert!(!has(&two.labels(), "rdf:Description"), "{:?}", two.labels());
+        assert!(has(&two.labels(), "ex:Valve"), "{:?}", two.labels());
+    }
+
+    /// Chaos 20261126151, iteration 124658: a DOCTYPE after the root's start
+    /// tag is read whole by the scanner, with the tags in its quoted entity
+    /// values; the end tag after it still closes the element whose name is
+    /// typed, so no name is offered there.
+    #[test]
+    fn no_element_name_where_a_doctype_in_the_content_holds_a_tag() {
+        let at = at(&onto(
+            "  <|rdf:Description rdf:about=\"http://example.org/s\">\n    <!DOCTYPE x [<!ENTITY e '<rdf:Description rdf:about=\"http://example.org/a\">'>]>\n  </rdf:Description>\n",
+        ));
+        assert_eq!(adding_errors(&at), [], "{:?}", at.labels());
+        assert_eq!(at.labels(), Vec::<String>::new());
+    }
+
+    /// Chaos 20261126151, iteration 136816: a text that holds OWL/XML, given
+    /// as RDF/XML by a caller that names the syntax, is not read by the
+    /// RDF/XML parse (its one error says so), and gets no RDF/XML
+    /// completion: renaming its first child `Prefix` would make the text
+    /// RDF/XML, with an error at each OWL/XML element.
+    #[test]
+    fn nothing_is_offered_in_a_text_the_rdf_xml_parse_does_not_read() {
+        let marked = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" xml:base=\"http://example.org/o\">\n    <|Prefix name=\"\" IRI=\"http://example.org/o#\"/>\n</Ontology>\n";
+        let offset = marked.find('|').expect("a cursor");
+        let text = marked.replacen('|', "", 1);
+        let a = Arc::new(Analysis::with_syntax(
+            URI.into(),
+            &text,
+            Arc::default(),
+            true,
+            Syntax::RdfXml,
+        ));
+        let codes: Vec<_> = a.parsed.errors.iter().map(|e| e.code).collect();
+        assert_eq!(codes, ["unsupported-syntax"]);
+        let mut k = Knowledge::default();
+        k.set(URI, Source::Open, a.clone());
+        let at = At { a, k, text, offset };
+        assert_eq!(adding_errors(&at), [], "{:?}", at.labels());
+        assert_eq!(at.labels(), Vec::<String>::new());
+    }
+
+    /// Chaos 20261126152, iteration 12941, and 20261126153, iteration
+    /// 20458: the scanner reads a tag's name up to white space, `>`, `/`,
+    /// `<`, `=`, a quote or `?`, so `</rdfs:label&x;>` closes no
+    /// `rdfs:label` and `<owl:Class&x;>` is no `owl:Class`. The end tag of the
+    /// element being named, after them, is still its own, and no name is
+    /// offered there.
+    #[test]
+    fn the_end_tags_a_name_meets_are_named_as_the_scanner_names_them() {
+        let mut failures = Vec::new();
+        for body in [
+            "  <|owl:Class rdf:about=\"http://example.org/A\">\n    <rdfs:label>A</rdfs:label&x;>\n    <owl:Class>\n    </rdfs:label>\n  </owl:Class>\n",
+            "  <|owl:Class rdf:about=\"http://example.org/A\">\n    <owl:Class&x; rdf:about=\"http://example.org/B\">\n  </owl:Class>\n",
+        ] {
+            let at = at(&onto(body));
+            let labels = at.labels();
+            let added = adding_errors(&at);
+            if !labels.is_empty() || !added.is_empty() {
+                let added: Vec<_> = added.into_iter().take(2).collect();
+                failures.push(format!(
+                    "{body}: {} offered, adding errors {added:?}",
+                    labels.len()
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Chaos 20261126154, iteration 191068: inside `rdf:parseType="Triple"`,
+    /// renaming a name the grammar reads changes the Triple's count unless
+    /// the new name reads the same way. The Triple's node here has no end tag
+    /// of its own: its type is the one triple, and `rdf:Description` would
+    /// leave none. A name in a complete start tag keeps what it counts: a
+    /// typed node gets classes, a property properties, and a name that reads
+    /// as neither (in no namespace) nothing. No offer adds a declaration,
+    /// which would make a name being typed count.
+    #[test]
+    fn a_name_in_a_triple_keeps_what_the_triple_counts() {
+        let triple = |inner: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      {inner}\n    </ex:says>\n  </rdf:Description>\n"
+            ))
+        };
+        let errors = |text: &str| {
+            Analysis::new(URI.into(), text, Arc::default(), true)
+                .parsed
+                .errors
+                .len()
+        };
+        let mut failures = Vec::new();
+        for (inner, want) in [
+            ("<|ex:Pump>", Some("ex:Valve")),
+            ("<|rdf:Descripti:Description>", Some("ex:Valve")),
+            (
+                "<ex:Pump rdf:about=\"http://example.org/a\">\n        <|ex:feeds rdf:resource=\"http://example.org/b\"/>\n      </ex:Pump>",
+                Some("ex:feeds"),
+            ),
+            (
+                "<ex:Pump rdf:about=\"http://example.org/a\">\n        <|feeds rdf:resource=\"http://example.org/b\"/>\n      </ex:Pump>",
+                None,
+            ),
+            ("<skos:Con|", Some("")),
+        ] {
+            let at = at(&triple(inner));
+            let before = errors(&at.text);
+            let items = at.items();
+            let labels: Vec<_> = items.iter().map(|i| i.label.clone()).collect();
+            let more: Vec<_> = items
+                .iter()
+                .filter(|i| errors(&at.accepted(i)) > before)
+                .map(|i| i.label.clone())
+                .take(3)
+                .collect();
+            let declares = items
+                .iter()
+                .filter(|i| i.additional_text_edits.is_some())
+                .count();
+            let ok = more.is_empty()
+                && declares == 0
+                && !has(&labels, "rdf:Description")
+                && match want {
+                    Some("") => true,
+                    Some(w) => has(&labels, w),
+                    None => labels.is_empty(),
+                };
+            if !ok {
+                failures.push(format!(
+                    "{inner}: {} offered, {declares} declaring, adding an error {more:?}",
+                    labels.len()
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A Triple typed by hand: a fresh element name is offered as anywhere
+    /// else, without a declaration: `rdf:Description` and the classes for
+    /// its node, the properties in it.
+    #[test]
+    fn a_triple_typed_by_hand_still_gets_names() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      ";
+        let node = at(&onto(&format!("{open}<|\n")));
+        let labels = node.labels();
+        for want in ["rdf:Description", "ex:Pump", "ex:Valve"] {
+            assert!(has(&labels, want), "{want} not in {labels:?}");
+        }
+        assert!(
+            node.items()
+                .iter()
+                .all(|i| i.additional_text_edits.is_none())
+        );
+        let partial = at(&onto(&format!("{open}<ex:Pu|\n")));
+        assert!(has(&partial.labels(), "ex:Pump"), "{:?}", partial.labels());
+        let property = at(&onto(&format!(
+            "{open}<ex:Pump rdf:about=\"http://example.org/a\">\n        <|\n"
+        )));
+        assert!(
+            has(&property.labels(), "ex:feeds"),
+            "{:?}",
+            property.labels()
+        );
+    }
+
+    /// Chaos 20261126157, iteration 110396: the grammar refuses
+    /// `rdf:annotation` and `rdf:annotationNodeID` on a property element
+    /// with `rdf:parseType="Collection"` (RDF 1.2, 6.2.20), so
+    /// `Collection` is not offered on a tag that has either. The other
+    /// values still are.
+    #[test]
+    fn no_collection_on_a_property_element_with_an_annotation() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n";
+        let close = "  </rdf:Description>\n";
+        for attr in [
+            "rdf:annotation=\"http://example.org/r\"",
+            "rdf:annotationNodeID=\"r\"",
+        ] {
+            let body = format!("    <ex:feeds rdf:parseType=\"|Literal\" {attr}/>\n");
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            assert_eq!(adding_errors(&at), [], "{body}");
+            assert_eq!(at.labels(), ["Resource", "Literal"], "{body}");
+        }
     }
 }

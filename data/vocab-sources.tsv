@@ -49,7 +49,7 @@ geo	http://www.opengis.net/ont/geosparql#	-	ttl	https://raw.githubusercontent.co
 gn	http://www.geonames.org/ontology#	https://www.geonames.org/ontology#	rdfxml	https://www.geonames.org/ontology/ontology_v3.3.rdf	3.3	CC-BY-3.0	dcd85810b10623520567700e4c6ab560ab9e16bd7f53387b893beee238b9f50c
 gr	http://purl.org/goodrelations/v1#	-	tsv	http://www.heppnetz.de/ontologies/goodrelations/v1.owl	2011; compared 2026-11-12	CC-BY-3.0	e1caf79e72533c23b067e781b4b77149b38f0d31e0accfb8b60caf1f823d655b
 grddl	http://www.w3.org/2003/g/data-view#	-	tsv	https://www.w3.org/2003/g/data-view	compared 2026-11-12	W3C Document License	1b7a75f8d7a55a5af27aa0f88b17c05e96eda3a24863bfc83668298cd94ec55d
-gs1	https://ref.gs1.org/voc/	https://gs1.org/voc/ https://www.gs1.org/voc/	ttl	https://ref.gs1.org/voc/data/gs1Voc.ttl	1.18	Apache-2.0	b6039ed1b3229853a0aed1eb8568527f2d393925fd163d6fce5fddefe7ea1aa7
+gs1	https://ref.gs1.org/voc/	https://gs1.org/voc/ https://www.gs1.org/voc/	ttl	https://ref.gs1.org/voc/data/gs1Voc.ttl	1.19	Apache-2.0	fda7a0989aee876f8422cef8a4c5a29029b997a219fdf629169f37b648af35d3
 gtfs	http://vocab.gtfs.org/terms#	-	tsv	https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl	archived copy, vocab.gtfs.org is gone; compared 2026-11-12	CC-BY-3.0	e75351e3b1cc4980aa586b09a2be62d25bf5e0f7cbcceb9dab4acae6e6e2821e
 http	http://www.w3.org/2011/http#	-	tsv	https://www.w3.org/2011/http	compared 2026-11-12	W3C Document License	40af59b8a831f588ce904c5b4402f5a173f8c2b1eebf1ee708159b9ed0a8c943
 hydra	http://www.w3.org/ns/hydra/core#	-	tsv	https://www.w3.org/ns/hydra/core.jsonld	compared 2026-11-12	CC-BY-4.0 (stated in the file: cc:license)	3febd8c0f7a28c60abdc10d1db94072ecca0e9551cf51a6586780496dc434563

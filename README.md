@@ -186,7 +186,7 @@ Why it is fast:
   their documentation only when you select one.
 - **Background indexing.** Workspace files are parsed in parallel on a
   separate thread, so start-up does not wait for them.
-- **Embedded vocabularies.** `data/vocab.tsv` has 81 namespaces and 24,140
+- **Embedded vocabularies.** `data/vocab.tsv` has 81 namespaces and 24,144
   terms (`grep -c '^@ns' data/vocab.tsv` counts the namespaces). They are
   compiled into the binary and parsed only when first used. Where each one
   comes from is under [Vocabulary data](#vocabulary-data).

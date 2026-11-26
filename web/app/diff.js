@@ -38,7 +38,7 @@ export function createDiff({ monaco, client, mount, toast, options, setup, onClo
   mount.append(page)
   const title = page.querySelector(".dif-title")
   const applyBtn = page.querySelector("[data-act=apply]")
-  let view = null // { diff, temp: models to dispose, apply?: () => void }
+  let view = null // { diff, temp: models to dispose, apply?: () => void, keys: the Escape binding }
 
   page.addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act
@@ -78,25 +78,35 @@ export function createDiff({ monaco, client, mount, toast, options, setup, onClo
       renderMarginRevertIcon: false,
     })
     diff.setModel({ original, modified })
-    for (const ed of [diff.getOriginalEditor(), diff.getModifiedEditor()]) {
-      setup?.(ed)
-      // Escape closes the view unless an editor widget wants it.
-      ed.addCommand(monaco.KeyCode.Escape, () => close(), "!findWidgetVisible && !suggestWidgetVisible && !renameInputVisible && !parameterHintsVisible && !referenceSearchVisible && !markersNavigationVisible")
-    }
-    view = { diff, temp, host, apply }
+    for (const ed of [diff.getOriginalEditor(), diff.getModifiedEditor()]) setup?.(ed)
+    // Escape closes the view unless an editor widget wants it. The binding
+    // goes on close: `editor.addCommand` would keep it after the editor, and
+    // it would take every later Escape on the page.
+    const keys = [
+      monaco.editor.addCommand({ id: "diff.close", run: () => close() }),
+      monaco.editor.addKeybindingRule({ keybinding: monaco.KeyCode.Escape, command: "diff.close", when: "!findWidgetVisible && !suggestWidgetVisible && !renameInputVisible && !parameterHintsVisible && !referenceSearchVisible && !markersNavigationVisible" }),
+    ]
+    view = { diff, temp, host, apply, keys }
     diff.getModifiedEditor().focus()
   }
 
   function close({ quiet } = {}) {
     if (!view) return
-    const { diff, temp, host } = view
+    const { diff, temp, host, keys } = view
     view = null
+    for (const k of keys) k.dispose()
     page.hidden = true
     // Disposing the diff editor while it computes logs an error: let it finish.
     let done = false
     const dispose = () => {
       if (done) return
       done = true
+      // Monaco leaves the gutter (its Revert Block menu) alive after
+      // diff.dispose(): a context key change in the 50 ms before, such as the
+      // inline mode as the view hides, then reaches it and it reads the
+      // disposed editor's keys, which logs an error. Turning the gutter off
+      // first disposes it.
+      diff.updateOptions({ renderGutterMenu: false })
       diff.dispose()
       host.remove()
       for (const m of temp) m.dispose()

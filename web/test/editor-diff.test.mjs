@@ -128,6 +128,95 @@ test("Preview Formatting shows the formatted text; Apply takes it as one undo st
   }
 })
 
+test("after the diff view closes, Escape is the editors' again: it closes the F1 palette and removes extra cursors", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    await page.evaluate((t) => window.monaco.editor.getEditors()[0].getModel().setValue(t), MESSY)
+    await page.locator("body[data-busy='false']").waitFor()
+    const focus0 = () => page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
+    // The palette shows, then takes focus a few milliseconds later.
+    const palette = async () => {
+      await page.keyboard.press("F1")
+      await page.locator(".quick-input-widget input:focus").waitFor({ timeout: 5000 })
+    }
+    // The view opens from the palette, as a person opens it. (A palette shown
+    // for the first time after the view has closed lists no commands.)
+    await focus0()
+    await palette()
+    await page.keyboard.type("RDF: Preview Formatting")
+    await page.locator(".quick-input-list .monaco-list-row.focused", { hasText: "RDF: Preview Formatting" }).waitFor({ timeout: 5000 })
+    await page.keyboard.press("Enter")
+    await view(page).waitFor()
+    await page.keyboard.press("Escape")
+    await view(page).waitFor({ state: "hidden" })
+    await page.waitForFunction(() => !document.querySelector(".dif-editor"), null, { timeout: 5000 })
+
+    await focus0()
+    await palette()
+    await page.keyboard.press("Escape")
+    await page.locator(".quick-input-widget").waitFor({ state: "hidden", timeout: 5000 })
+    // Monaco leaves its palette's keys bound until a timer it starts on Escape runs.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve)))
+
+    await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0]
+      ed.focus()
+      ed.setSelections([
+        { selectionStartLineNumber: 1, selectionStartColumn: 1, positionLineNumber: 1, positionColumn: 1 },
+        { selectionStartLineNumber: 2, selectionStartColumn: 1, positionLineNumber: 2, positionColumn: 1 },
+      ])
+    })
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getSelections().length === 1, null, { timeout: 5000 })
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
+test("the diff view closed just after its inline mode changes logs no error: its gutter goes with it", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    const models = await modelCount(page)
+    await page.evaluate((t) => window.monaco.editor.getEditors()[0].getModel().setValue(t), MESSY)
+    await page.locator("body[data-busy='false']").waitFor()
+    await run(page, "rdf.previewFormat")
+    await view(page).waitFor()
+    // Computed: the diff editor goes at once on close.
+    await page.waitForFunction(() => window.monaco.editor.getDiffEditors()[0]?.getLineChanges() !== null, null, { timeout: 5000 })
+    // The gutter's menu (Revert Block) hears a change of the inline mode 50 ms
+    // late. Monaco kept the gutter after the diff editor, so a change heard
+    // after the close read the disposed editor's keys and logged an error. A
+    // diff that ends just after the view hides does this by chance; here the
+    // view narrows below the inline breakpoint (900 px) and closes in the same
+    // task as Monaco hears it: Monaco's resize observer, older, runs first.
+    const inline = await page.evaluate(() => new Promise((resolve) => {
+      const pane = document.querySelector(".dif")
+      const host = pane.querySelector(".dif-editor")
+      const seen = new ResizeObserver(() => {
+        if (host.getBoundingClientRect().width > 850) return
+        seen.disconnect()
+        const inline = window.monaco.editor.getDiffEditors()[0].getModifiedEditor().getLayoutInfo().width > 700
+        pane.querySelector("[data-act=close]").click()
+        pane.style.width = ""
+        // Timers started now run after the menu's (50 ms) and after the one
+        // that rethrows its error.
+        setTimeout(() => setTimeout(() => resolve(inline)), 50)
+      })
+      seen.observe(host)
+      pane.style.width = "800px"
+    }))
+    assert.equal(inline, true)
+    await view(page).waitFor({ state: "hidden" })
+    await noExtraModels(page, models)
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("Compare with Saved shows the disk text against the edited text; a browser-only file toasts", async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {
