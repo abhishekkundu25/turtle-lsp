@@ -81,7 +81,13 @@
   goes, as qualified names over the prefixes in scope; in `rdf:about`,
   `rdf:resource` and `rdf:datatype`, the subjects, the IRIs of the kind
   the property takes (ranked by its range) and the datatypes, as full IRIs or as `&name;local`
-  after a DOCTYPE entity. A term of a well-known vocabulary the document
+  after a DOCTYPE entity. In both: after `</`, the name of the innermost
+  open element; after a space in a start tag, the attributes the element
+  takes and does not have yet (`IRI` or `abbreviatedIRI`, never both). In
+  RDF/XML also the four values of `rdf:parseType`, and the classes in an
+  `rdf:type` attribute. In a value whose closing quote is not typed yet, an accepted
+  item replaces only the IRI typed so far: the `>` or `/>` that ends the
+  tag, and the text after it, stay. A term of a well-known vocabulary the document
   does not declare adds its `<Prefix>` element (OWL/XML) or its `xmlns:p`
   on the root element (RDF/XML). Nothing is offered in comments, the
   prolog, a literal's text or `rdf:parseType="Literal"` content. A `.owl`
@@ -193,7 +199,12 @@
   XML declaration that is not first, an empty prefixed namespace in XML 1.0,
   and a namespace declaration Namespaces in XML reserves (`xml` or `xmlns`).
   An import with one of these keeps every triple read around it and gets an
-  `import-truncated` warning that names the first.
+  `import-truncated` warning that names the first. The XML literals of one
+  parse (`rdf:parseType="Literal"`) total at most 16 bytes per byte of text,
+  plus 1 MiB: each element in such a literal writes its namespaces again, so
+  one with many elements in a long namespace could be thousands of times
+  its text. Past that, one `rdfxml-syntax` error says so, and that literal
+  and the ones after it give no triple.
 - **Imports name what they cannot read.** An import in Manchester syntax
   fails with a message naming the format and how to save it as RDF/XML or
   Turtle in Protégé. A workspace file in Manchester syntax gets
@@ -239,6 +250,11 @@
   Neovim offer rename in `.owl` and `.rdf` files too, not in `.ofn` files;
   in an `.owx` file the server refuses it.
 - oxrdfxml is now only a test dependency.
+- **The bundled GS1 Web Vocabulary is 1.19** (was 1.18): it adds
+  `gs1:packagingInfo` and the location roles `CROSS_DOCK`,
+  `RESTRICTED_AREA` and `SECURED_AREA`, and deprecates
+  `gs1:productSustainabilityInfo`. The list has 24,144 terms.
+- The browser editor uses Monaco 0.56.0 (was 0.52.2).
 - **A new name reads the same in every file.** `<iri>` is that IRI; a bare
   name with `://`, or whose part before `:` is no declared prefix but could
   be a scheme (`urn:ex:a`), is an absolute IRI; else a prefixed or a local
@@ -274,6 +290,16 @@
   records the contexts of a parse only when it keeps the parse, and forgets
   those of a closed document that the index does not hold (an `untitled:`
   one).
+- **Browser editor: Escape works again after the diff view has been open.**
+  Once Preview Formatting or Compare with Saved had been shown, a key
+  binding of the closed view took every later Escape: the command palette
+  stayed open, and Escape no longer removed extra cursors, cleared the
+  selection or left a snippet.
+
+### Security
+
+- `url` 2.5.9 (RUSTSEC-2026-0592: a stack overflow in `Url::origin()` on
+  nested `blob:` URLs).
 
 ### Internal
 
