@@ -128,6 +128,53 @@ test("Preview Formatting shows the formatted text; Apply takes it as one undo st
   }
 })
 
+test("after the diff view closes, Escape is the editors' again: it closes the F1 palette and removes extra cursors", async () => {
+  const { page, errors, close } = await open()
+  try {
+    await openFile(page, "data/people.ttl")
+    await page.evaluate((t) => window.monaco.editor.getEditors()[0].getModel().setValue(t), MESSY)
+    await page.locator("body[data-busy='false']").waitFor()
+    const focus0 = () => page.evaluate(() => window.monaco.editor.getEditors()[0].focus())
+    // The palette shows, then takes focus a few milliseconds later.
+    const palette = async () => {
+      await page.keyboard.press("F1")
+      await page.locator(".quick-input-widget input:focus").waitFor({ timeout: 5000 })
+    }
+    // The view opens from the palette, as a person opens it. (A palette shown
+    // for the first time after the view has closed lists no commands.)
+    await focus0()
+    await palette()
+    await page.keyboard.type("RDF: Preview Formatting")
+    await page.locator(".quick-input-list .monaco-list-row.focused", { hasText: "RDF: Preview Formatting" }).waitFor({ timeout: 5000 })
+    await page.keyboard.press("Enter")
+    await view(page).waitFor()
+    await page.keyboard.press("Escape")
+    await view(page).waitFor({ state: "hidden" })
+    await page.waitForFunction(() => !document.querySelector(".dif-editor"), null, { timeout: 5000 })
+
+    await focus0()
+    await palette()
+    await page.keyboard.press("Escape")
+    await page.locator(".quick-input-widget").waitFor({ state: "hidden", timeout: 5000 })
+    // Monaco leaves its palette's keys bound until a timer it starts on Escape runs.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve)))
+
+    await page.evaluate(() => {
+      const ed = window.monaco.editor.getEditors()[0]
+      ed.focus()
+      ed.setSelections([
+        { selectionStartLineNumber: 1, selectionStartColumn: 1, positionLineNumber: 1, positionColumn: 1 },
+        { selectionStartLineNumber: 2, selectionStartColumn: 1, positionLineNumber: 2, positionColumn: 1 },
+      ])
+    })
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => window.monaco.editor.getEditors()[0].getSelections().length === 1, null, { timeout: 5000 })
+    assert.deepEqual(errors, [])
+  } finally {
+    await close()
+  }
+})
+
 test("Compare with Saved shows the disk text against the edited text; a browser-only file toasts", async () => {
   const context = await inPlaceContext({ "a.ttl": A })
   try {
