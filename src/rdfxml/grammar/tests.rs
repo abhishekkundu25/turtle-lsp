@@ -1729,3 +1729,121 @@ fn timing_rdfxml_parse() {
     assert!(p.errors.is_empty());
     assert!(took < Duration::from_millis(500), "{took:?}");
 }
+
+/// The XML literals of `p` (`rdf:XMLLiteral` objects), in triple order.
+fn xml_literals(p: &Parsed) -> Vec<&str> {
+    let xml_literal = format!("{RDF}XMLLiteral");
+    p.triples
+        .iter()
+        .filter_map(|t| match &t.o {
+            Node::Literal {
+                value, datatype, ..
+            } if datatype.as_str() == xml_literal => Some(&**value),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An XML literal is exclusive canonical XML, so each sibling inside it
+/// writes the namespaces it uses again: with a long namespace, the
+/// literal grows with siblings × namespace length. Its bytes are bounded
+/// by the text ([`LITERAL_BYTES_PER_BYTE`]): the literal that passes the
+/// budget, and every later one, gives no triple, with one error; the
+/// other triples are kept.
+#[test]
+fn the_xml_literals_a_parse_writes_are_bounded() {
+    let ns = format!("http://example.org/{}/", "a".repeat(4096));
+    let siblings = "<x:a/>".repeat(2000);
+    let text = format!(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:x="{ns}"><rdf:Description rdf:about="http://example.org/s"><x:p rdf:parseType="Literal">{siblings}</x:p><x:q rdf:parseType="Literal"><b/></x:q><x:r>v</x:r></rdf:Description></rdf:RDF>"#
+    );
+    let p = parse(&text, None);
+    spans_hold(&text, &p);
+    let budget = text.len() * LITERAL_BYTES_PER_BYTE + MIN_LITERAL_BYTES;
+    let written: usize = xml_literals(&p).iter().map(|v| v.len()).sum();
+    // Unbounded, the first literal alone would be 2000 × 4,145 bytes.
+    eprintln!(
+        "text {} bytes; literals {written} bytes (budget {budget}, unbounded {})",
+        text.len(),
+        2000 * (r#"<x:a xmlns:x=""></x:a>"#.len() + ns.len())
+    );
+    assert!(written <= budget, "{written} > {budget}");
+    assert_eq!(xml_literals(&p), Vec::<&str>::new());
+    assert_eq!(
+        lines_of(&p),
+        [format!(r#"<http://example.org/s> <{ns}r> "v""#)]
+    );
+    let errors: Vec<(&str, &str)> = errors_at(&text, &p);
+    assert_eq!(errors, [("rdfxml-syntax", "x:a")], "{:?}", p.errors);
+    assert_eq!(
+        p.errors[0].message(),
+        "the XML literals are over 16 bytes per byte of text: this one and the ones after it give no triple"
+    );
+}
+
+/// The budget is the parse's, not each literal's: literals that each
+/// stay far inside it are cut where their total passes it.
+#[test]
+fn the_xml_literal_budget_is_shared_by_the_literals() {
+    let ns = format!("http://example.org/{}/", "a".repeat(4096));
+    let one = format!(
+        r#"<x:p rdf:parseType="Literal">{}</x:p>"#,
+        "<x:a/>".repeat(4)
+    );
+    let literals = 200;
+    let text = format!(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:x="{ns}"><rdf:Description rdf:about="http://example.org/s">{}</rdf:Description></rdf:RDF>"#,
+        one.repeat(literals)
+    );
+    let p = parse(&text, None);
+    let budget = text.len() * LITERAL_BYTES_PER_BYTE + MIN_LITERAL_BYTES;
+    let values = xml_literals(&p);
+    let written: usize = values.iter().map(|v| v.len()).sum();
+    eprintln!(
+        "text {} bytes; {} of {literals} literals, {written} bytes (budget {budget})",
+        text.len(),
+        values.len()
+    );
+    assert!(values[0].len() * 10 < budget);
+    assert!(written <= budget, "{written} > {budget}");
+    assert!(!values.is_empty() && values.len() < literals);
+    assert!(values.iter().all(|v| *v == values[0]));
+    assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
+    assert!(p.errors[0].message().contains("bytes per byte of text"));
+}
+
+/// Literals a document writes, not crafted, stay inside the budget and
+/// keep their canonical form: a namespace per element down a deep
+/// literal (each written once), and a literal of XHTML `<br/>` siblings
+/// over the floor, each of which writes the default namespace again (9.2
+/// bytes per byte).
+#[test]
+fn real_xml_literals_are_inside_the_budget() {
+    let depth = 200;
+    let mut decls = String::new();
+    let mut deep = String::new();
+    let mut expected = String::new();
+    for i in 0..depth {
+        write!(decls, r#" xmlns:p{i}="http://example.org/ns/{i}/""#).unwrap();
+        write!(deep, r#"<p{i}:e p{i}:a="v">"#).unwrap();
+        write!(
+            expected,
+            r#"<p{i}:e xmlns:p{i}="http://example.org/ns/{i}/" p{i}:a="v">"#
+        )
+        .unwrap();
+    }
+    for i in (0..depth).rev() {
+        write!(deep, "</p{i}:e>").unwrap();
+        write!(expected, "</p{i}:e>").unwrap();
+    }
+    let brs = 250_000;
+    let text = format!(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/" xmlns="http://www.w3.org/1999/xhtml"{decls}><rdf:Description rdf:about="http://example.org/s"><ex:deep rdf:parseType="Literal">{deep}</ex:deep><ex:brs rdf:parseType="Literal">{}</ex:brs></rdf:Description></rdf:RDF>"#,
+        "<br/>".repeat(brs)
+    );
+    assert!(text.len() > MIN_LITERAL_BYTES);
+    let p = parse(&text, None);
+    assert_eq!(p.errors, [], "{:?}", p.errors.first());
+    let br = r#"<br xmlns="http://www.w3.org/1999/xhtml"></br>"#;
+    assert_eq!(xml_literals(&p), [expected, br.repeat(brs)]);
+}
