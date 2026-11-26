@@ -1174,6 +1174,83 @@ mod tests {
         assert_eq!(renamed_at(&ttl, &k, at, "C").unwrap_err(), err);
     }
 
+    /// A Turtle, an OWL Functional and an OWL/XML file that use one class:
+    /// a rename started in any of them, at any form of it, gives the same
+    /// new IRI and edits all three, each use in its own form. An OWL/XML
+    /// file that writes the class through an entity refuses the whole
+    /// rename: nothing is added to the changes, not even the other files'.
+    #[test]
+    fn a_rename_edits_turtle_functional_and_owl_xml_documents_from_each() {
+        const OWX: &str = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/x\">\n<Prefix name=\"ex\" IRI=\"http://example.org/\"/>\n<Declaration><Class abbreviatedIRI=\"ex:A\"/></Declaration>\n<SubClassOf><Class IRI=\"http://example.org/A\"/><Class abbreviatedIRI=\"ex:B\"/></SubClassOf>\n</Ontology>\n";
+        let (_, ttl_uri) = in_w("a.ttl");
+        let (_, ofn_uri) = in_w("onto.ofn");
+        let (owx_path, owx_uri) = in_w("onto.owx");
+        let ttl = turtle_doc(&ttl_uri, OFN_TTL);
+        let ofn = turtle_doc(&ofn_uri, OFN);
+        let owx = turtle_doc(&owx_uri, OWX);
+        assert_eq!(owx.parsed.syntax, Syntax::OwlXml);
+        assert!(owx.parsed.errors.is_empty(), "{:?}", owx.parsed.errors);
+        let mut k = Knowledge::default();
+        k.set(&ttl_uri, Source::Open, ttl.clone());
+        k.set(&ofn_uri, Source::Open, ofn.clone());
+        k.set(&owx_uri, Source::Open, owx.clone());
+        let want = [
+            (&ttl, OFN_TTL.replace("ex:A", "ex:C")),
+            (&ofn, OFN.replace("ex:A", "ex:C")),
+            (
+                &owx,
+                OWX.replace("ex:A", "ex:C")
+                    .replace("http://example.org/A", "http://example.org/C"),
+            ),
+        ];
+        let origins = [
+            (&ttl, offset_of(OFN_TTL, "ex:A", 3)),
+            (&ofn, offset_of(OFN, "ex:A", 1)),
+            (&owx, offset_of(OWX, "ex:A", 3)),
+            (&owx, offset_of(OWX, "http://example.org/A", 5)),
+        ];
+        for (a, at) in origins {
+            for name in ["C", "ex:C", "<http://example.org/C>"] {
+                let edit = renamed_at(a, &k, a.position(Encoding::Utf8, at), name).unwrap();
+                assert_eq!(edit.changes.as_ref().unwrap().len(), 3, "{} {name}", a.uri);
+                for (d, text) in &want {
+                    assert_eq!(edited(d, &edit), *text, "from {} {name}: {}", a.uri, d.uri);
+                }
+            }
+        }
+        // The class written through an entity, which no edit rewrites.
+        let anchored = "<?xml version=\"1.0\"?>\n<!DOCTYPE Ontology [<!ENTITY ex \"http://example.org/\">]>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/x\">\n<Declaration><Class IRI=\"&ex;A\"/></Declaration>\n</Ontology>\n";
+        let anchored = turtle_doc(&owx_uri, anchored);
+        assert!(
+            anchored.parsed.errors.is_empty(),
+            "{:?}",
+            anchored.parsed.errors
+        );
+        k.set(&owx_uri, Source::Disk, anchored);
+        let mut changes = HashMap::new();
+        let err = rename_term(
+            &k,
+            Encoding::Utf8,
+            "http://example.org/A",
+            "http://example.org/C",
+            RdfXml::Edit,
+            &mut changes,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "can't rename in {}: line 4: the IRI is written with an entity or character reference, which a rename does not rewrite",
+                owx_path.display()
+            )
+        );
+        assert!(changes.is_empty(), "{changes:?}");
+        for (a, at) in &origins[..2] {
+            let at = a.position(Encoding::Utf8, *at);
+            assert_eq!(renamed_at(a, &k, at, "C").unwrap_err(), err, "{}", a.uri);
+        }
+    }
+
     /// An import read without a cache is named by its IRI, and an IRI may
     /// hold letters a URI must escape: asking for a location in it panicked.
     /// Its URI is the IRI escaped; a name that is no URI even so has no
