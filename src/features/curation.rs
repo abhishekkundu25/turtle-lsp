@@ -310,10 +310,17 @@ impl<'a> Checks<'a> {
             }
         }
         let mut seen: FxHashSet<Iri> = FxHashSet::default();
-        for st in &a.parsed.statements {
-            let Some((s, span)) = st.subject else {
-                continue;
-            };
+        // The subjects of the statements, then every other term the
+        // document defines (an RDF/XML node element inside a property
+        // element has no statement of its own): the terms the reporter is
+        // chosen among.
+        let defined_here = (a.parsed.refs.iter())
+            .filter(|r| r.role == crate::syntax::Role::Subject)
+            .map(|r| (r.iri, r.span));
+        let subjects = (a.parsed.statements.iter())
+            .filter_map(|st| st.subject)
+            .chain(defined_here);
+        for (s, span) in subjects {
             if !seen.insert(s) || !self.is_term(s) {
                 continue;
             }
@@ -1570,6 +1577,34 @@ mod tests {
     /// tag, an OWL/XML `Literal` element) or at the term, and read from
     /// the literal's value (`&#32;` is a space, `&amp;` an `&`).
     /// `missing-label` only when enabled.
+    #[test]
+    fn a_class_rdfxml_declares_inside_another_element_gets_the_missing_checks() {
+        // `Child` is a node element inside a property element: no
+        // statement of its own, but the document defines it (its type).
+        let text = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n\
+            \x20        xmlns:owl=\"http://www.w3.org/2002/07/owl#\">\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/Parent\">\n\
+            \x20   <rdfs:label>Parent</rdfs:label>\n\
+            \x20   <rdfs:comment>A parent class.</rdfs:comment>\n\
+            \x20   <rdfs:subClassOf><owl:Class rdf:about=\"http://example.org/Child\"/></rdfs:subClassOf>\n\
+            \x20 </owl:Class>\n\
+            </rdf:RDF>\n";
+        let codes = [MISSING_LABEL, MISSING_DEFINITION];
+        let mut ws = workspace(&[]);
+        ws.open_doc("file:///w/o.owl".into(), text.to_string(), 1);
+        let got = reported_of(&mut ws, "o.owl", &settings(&codes, &[]), &codes);
+        let child = "http://example.org/Child".to_string();
+        assert_eq!(
+            got.iter()
+                .map(|(code, at, _)| (code.as_str(), at.clone()))
+                .collect::<Vec<_>>(),
+            [(MISSING_LABEL, child.clone()), (MISSING_DEFINITION, child)],
+            "{got:?}"
+        );
+    }
+
     #[test]
     fn owl_files_get_the_label_checks_and_house_style() {
         let rdfxml = "<?xml version=\"1.0\"?>\n\
