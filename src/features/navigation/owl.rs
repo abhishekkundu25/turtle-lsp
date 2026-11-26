@@ -50,7 +50,7 @@ pub(crate) fn plan(
         return Ok(Vec::new());
     }
     if let Some(e) = first_error(parsed)
-        && (spells(text, &old) || parsed.syntax == Syntax::OwlXml && owx::spells(text, &old))
+        && may_spell(text, parsed, &old)
     {
         return Err(Refusal {
             line: line(text, e.span.start),
@@ -300,6 +300,34 @@ fn implied(text: &str, parsed: &Parsed, old: Iri) -> Option<Refusal> {
         column: None,
         reason: format!("the OWL mapping implies <{old}> here, with no text of its own"),
     })
+}
+
+/// Whether the OWL document `text` (parsed as `parsed`) may spell `old`
+/// where its frontend read no use, over-counting: [`spells`]; in OWL/XML
+/// also what may spell it in XML, as the RDF/XML rename reads it (a quoted
+/// prefix IRI with the rest of `old` standing alone after it, the text with
+/// its character references expanded: `rdfxml::rename::names`), a value or
+/// text through a reference ([`owx::spells`]), and the document's own URL,
+/// which `IRI=""` names.
+fn may_spell(text: &str, parsed: &Parsed, old: &str) -> bool {
+    if spells(text, old) {
+        return true;
+    }
+    match parsed.syntax {
+        Syntax::OwlXml => {
+            let base = parsed.document_base.as_deref().map(|b| b.split('#').next());
+            base == Some(old.split('#').next())
+                || crate::rdfxml::rename::names(text, old)
+                || owx::spells(text, old)
+        }
+        Syntax::OwlFunctional
+        | Syntax::Turtle
+        | Syntax::TriG
+        | Syntax::NTriples
+        | Syntax::NQuads
+        | Syntax::JsonLd
+        | Syntax::RdfXml => false,
+    }
 }
 
 /// Whether `text` may spell `old`, over-counting: the IRI itself, its

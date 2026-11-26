@@ -170,7 +170,7 @@ pub(crate) fn blocked(text: &str, parsed: &Parsed, old: &str) -> Option<Refusal>
 /// quoted namespace or entity value the text writes), in the text or in it
 /// with character references and predefined entities expanded. An IRI
 /// with no local name (a namespace) may be spelled by any relative value.
-fn names(text: &str, old: &str) -> bool {
+pub(crate) fn names(text: &str, old: &str) -> bool {
     let cut = old.rfind(['#', '/', ':']).map_or(0, |i| i + 1);
     if cut == old.len() {
         return true;

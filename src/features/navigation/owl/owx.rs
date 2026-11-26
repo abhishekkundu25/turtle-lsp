@@ -518,6 +518,40 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_document_that_spells_the_iri_through_a_prefix_is_not_edited() {
+        // OBO style: the prefix ends inside the local name (`GO:` for
+        // `…/GO_`). The broken item gives no use of `GO_1`; only its
+        // `abbreviatedIRI` and the quoted prefix IRI spell it.
+        let syntax_error = |text: &str, old: &str| {
+            let before = crate::owx::parse(text, Some(URI));
+            assert!(!errors(&before).is_empty(), "{text}");
+            let r = plan(text, &before, Iri::intern(old), &ex("Z")).unwrap_err();
+            assert!(
+                r.reason.starts_with("the document has a syntax error ("),
+                "{old}: {r:?}"
+            );
+        };
+        let prefix = format!("<Prefix name=\"GO\" IRI=\"{EX}GO_\"/>");
+        // Only the broken item uses it.
+        syntax_error(
+            &doc(&format!(
+                "{prefix}\n<SubClassOf><Class abbreviatedIRI=\"GO:1\"/>"
+            )),
+            &ex("GO_1"),
+        );
+        // A read use too: the refusal is the old error, not the new name.
+        syntax_error(
+            &doc(&format!(
+                "{prefix}\n<Declaration><Class abbreviatedIRI=\"GO:1\"/></Declaration>\n\
+                 <SubClassOf><Class abbreviatedIRI=\"GO:1\"/>"
+            )),
+            &ex("GO_1"),
+        );
+        // `IRI=""` names the document itself.
+        syntax_error(&doc("<SubClassOf><Class IRI=\"\"/>"), URI);
+    }
+
+    #[test]
     fn a_broken_document_that_spells_the_iri_with_a_reference_is_not_edited() {
         // The broken item gives no use, and only a reference spells `A`.
         for value in ["&#65;", "&#x41;", "&a;"] {
