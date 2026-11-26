@@ -97,7 +97,7 @@ fn unedited_offset(edits: &[(Span, String)], at: u32) -> u32 {
 
 /// The line (from 1) of `offset` in `text`. An edit writes no line break,
 /// so a line of the edited text is the same line of the text.
-fn line(text: &str, offset: u32) -> u32 {
+pub(crate) fn line(text: &str, offset: u32) -> u32 {
     let end = (offset as usize).min(text.len());
     text.as_bytes()[..end]
         .iter()
@@ -227,7 +227,7 @@ fn quoted_prefix_and_alone(t: &str, old: &str, cut: usize) -> bool {
 }
 
 /// Whether `word` occurs in `t` with no name character on either side.
-fn alone(t: &str, word: &str) -> bool {
+pub(crate) fn alone(t: &str, word: &str) -> bool {
     let name_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '\u{b7}');
     t.match_indices(word).any(|(i, _)| {
         !t[..i].chars().next_back().is_some_and(name_char)
@@ -442,7 +442,11 @@ pub(crate) fn apply(text: &str, edits: &[(Span, String)]) -> String {
 }
 
 /// A triple's terms with `from` read as `to`, for comparing graphs.
-fn renamed(t: &Triple, from: Iri, to: Iri) -> (Node, Iri, Node, Option<crate::syntax::GraphName>) {
+pub(crate) fn renamed(
+    t: &Triple,
+    from: Iri,
+    to: Iri,
+) -> (Node, Iri, Node, Option<crate::syntax::GraphName>) {
     fn node(n: &Node, from: Iri, to: Iri) -> Node {
         match n {
             Node::Iri(i) if *i == from => Node::Iri(to),
@@ -471,7 +475,7 @@ fn renamed(t: &Triple, from: Iri, to: Iri) -> (Node, Iri, Node, Option<crate::sy
 
 /// Where triple `t` names `iri`, if it does: at its predicate, else at its
 /// object (or the predicate's span for its subject).
-fn naming(t: &Triple, iri: Iri) -> Option<Span> {
+pub(crate) fn naming(t: &Triple, iri: Iri) -> Option<Span> {
     fn names(n: &Node, iri: Iri) -> bool {
         match n {
             Node::Iri(i) => *i == iri,

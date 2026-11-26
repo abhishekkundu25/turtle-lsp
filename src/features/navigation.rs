@@ -17,6 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 pub(crate) mod jsonld;
+mod owl;
 
 pub(crate) enum Target {
     Iri(Iri),
