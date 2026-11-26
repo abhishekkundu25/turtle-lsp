@@ -244,7 +244,6 @@ mod syntax_table {
             "writes",
             "completes",
             "follows",
-            "hinted",
             "tokens",
             "splice",
         ]);
@@ -258,7 +257,6 @@ mod syntax_table {
                 yes(super::writes(s)),
                 yes(super::completes(s)),
                 yes(super::kept::follows(s)),
-                yes(super::inlay::hinted(s)),
                 yes(!s.tokens(text(s)).is_empty()),
                 &splice,
             ]);
@@ -274,15 +272,15 @@ mod syntax_table {
             got += &line(&row);
         }
         let want = "\
-            syntax              prefixes  line      keyword   writes    completes follows   hinted    tokens    splice\n\
-            turtle              yes       no        no        yes       yes       yes       yes       yes       ok\n\
-            trig                yes       no        no        yes       yes       yes       yes       yes       ok\n\
-            ntriples            no        yes       no        yes       no        yes       yes       yes       ok\n\
-            nquads              no        yes       no        yes       no        yes       yes       yes       ok\n\
-            jsonld              no        no        no        yes       yes       no        yes       no        Syntax\n\
-            rdfxml              no        no        no        no        yes       no        no        no        Syntax\n\
-            ofn                 no        no        yes       no        yes       no        no        no        Syntax\n\
-            owx                 no        no        yes       no        yes       no        no        no        Syntax\n\
+            syntax              prefixes  line      keyword   writes    completes follows   tokens    splice\n\
+            turtle              yes       no        no        yes       yes       yes       yes       ok\n\
+            trig                yes       no        no        yes       yes       yes       yes       ok\n\
+            ntriples            no        yes       no        yes       no        yes       yes       ok\n\
+            nquads              no        yes       no        yes       no        yes       yes       ok\n\
+            jsonld              no        no        no        yes       yes       no        no        Syntax\n\
+            rdfxml              no        no        no        no        yes       no        no        Syntax\n\
+            ofn                 no        no        yes       no        yes       no        no        Syntax\n\
+            owx                 no        no        yes       no        yes       no        no        Syntax\n\
             runs_on             turtle    trig      ntriples  nquads    jsonld    rdfxml    ofn       owx\n\
             Syntax              yes       yes       yes       yes       yes       yes       yes       yes\n\
             UndeclaredPrefix    yes       yes       yes       yes       yes       no        no        no\n\
@@ -293,10 +291,10 @@ mod syntax_table {
             Literals            yes       yes       yes       yes       yes       yes       yes       yes\n\
             ShaclLint           yes       yes       yes       yes       yes       no        no        no\n\
             UndescribedTerms    yes       yes       yes       yes       yes       yes       yes       yes\n\
-            LabelWhitespace     yes       yes       yes       yes       yes       no        no        no\n\
-            DuplicateLabel      yes       yes       yes       yes       yes       no        no        no\n\
-            MultipleLabels      yes       yes       yes       yes       yes       no        no        no\n\
-            HouseStyle          yes       yes       yes       yes       yes       no        no        no\n\
+            LabelWhitespace     yes       yes       yes       yes       yes       yes       yes       yes\n\
+            DuplicateLabel      yes       yes       yes       yes       yes       yes       yes       yes\n\
+            MultipleLabels      yes       yes       yes       yes       yes       yes       yes       yes\n\
+            HouseStyle          yes       yes       yes       yes       yes       yes       yes       yes\n\
             ";
         assert_eq!(got, want, "\n{got}");
     }

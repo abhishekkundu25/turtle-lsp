@@ -4,8 +4,8 @@
 // publishes, as it is pulled and after an edit. Its axioms are read as RDF
 // (the W3C mapping), so it reads as a Functional file does: hover,
 // definition, references, highlights, symbols and folding, here and from
-// the Turtle and Functional files that use its terms; no semantic tokens or
-// inlay hints. Nothing writes it but completion
+// the Turtle and Functional files that use its terms; label hints after its
+// values and IRI text, no semantic tokens. Nothing writes it but completion
 // (test/owx-completion.test.mjs) and rename: a client that opts in to the
 // dynamic registrations gets completion and rename for it and none of the
 // other writing features, a client that does not gets empty answers from
@@ -273,7 +273,7 @@ describe("an open OWL/XML document", () => {
   // Follows "the writing features are registered for other documents only,
   // and answer nothing in it", its answers, and the tokens and hints of "it
   // reads as RDF/XML does: …".
-  test("nothing writes but completion (test/owx-completion.test.mjs) and rename: no formatting, code actions, semantic tokens or inlay hints", async () => {
+  test("nothing writes but completion (test/owx-completion.test.mjs) and rename: no formatting, code actions or semantic tokens; label hints after the closing quote or end tag", async () => {
     const here = at("&o;A")
     const formatted = await attempt(s, "textDocument/formatting", { textDocument: { uri: w.owx }, options: { tabSize: 2, insertSpaces: true } })
     assert.deepEqual(formatted.result ?? [], [], JSON.stringify(formatted))
@@ -287,11 +287,25 @@ describe("an open OWL/XML document", () => {
       context: { diagnostics: [] },
     })
     assert.deepEqual(actions.result ?? [], [], JSON.stringify(actions))
-    // No semantic tokens (the client's XML grammar colours it) and no hints.
+    // No semantic tokens (the client's XML grammar colours it).
     const tokens = await s.request("textDocument/semanticTokens/full", { textDocument: { uri: w.owx } })
     assert.deepEqual(tokens?.data ?? [], [])
-    const hints = await s.request("textDocument/inlayHint", { textDocument: { uri: w.owx }, range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } } })
-    assert.deepEqual(hints ?? [], [])
+    // Label hints: none by default (`opaque`; `:A` says "A"). With `all`,
+    // one after each labelled value's closing quote and after </IRI>,
+    // outside the written text; none for &o;A, spelt through an entity, nor
+    // in the axioms with an error.
+    const hints = () => s.request("textDocument/inlayHint", { textDocument: { uri: w.owx }, range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } } })
+    const labels = (setting) => s.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: setting } } } })
+    assert.deepEqual(await hints(), [])
+    labels("all")
+    const all = await hints()
+    labels("opaque")
+    assert.deepEqual(all.map((h) => [h.label, h.position]), [
+      ["A", positionOf(ONTO, '<Class IRI="http://example.org/o#A"')],
+      ["label", positionOf(ONTO, 'abbreviatedIRI="rdfs:label"')],
+      ["A", positionOf(ONTO, "<IRI>http://example.org/o#A</IRI>")],
+      ["A", positionOf(ONTO, '<Class abbreviatedIRI=":C"/><Class abbreviatedIRI=":A"')],
+    ])
   })
 
   // Follows "the writing features are registered for other documents only,

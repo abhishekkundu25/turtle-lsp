@@ -130,8 +130,14 @@ entity reference, `rdf:ID`, `rdf:li`, a name in the default namespace) is
 (rename, quick fixes, refactorings, hover's quoted name, inlay hints,
 semantic tokens) leave it out. The syntax gates the writing:
 `features::writes` keeps RDF/XML read-only for quick fixes, refactorings,
-formatting and `check --fix`, and it gets no splice, semantic tokens or
-inlay hints. Completion (`features::completes`) writes RDF/XML too:
+formatting and `check --fix`, and it gets no splice or semantic tokens.
+Its label hints go where the markup that closes a term ends
+(`features::inlay`): after an attribute value's closing quote (and in
+OWL/XML after the end tag of an `<IRI>` element's text); a qualified name
+gets none. The rule
+reads the text after the reference, so a hint after an end tag on a later
+line is missed when the requested range starts below the term's text.
+Completion (`features::completes`) writes RDF/XML too:
 `rdfxml::expected` reads what may come at the cursor from the elements
 the XML cursor (`rdfxml::xml::cursor`) finds open there, and
 `features::completion::rdfxml` offers names and IRIs, a term of an
@@ -168,8 +174,9 @@ use (the use checks skip it as they skip a subject); so the
 knowledge index, SHACL, reasoning, the query graph and the reading features
 need no Functional-specific code. The analysis does not keep the tree.
 It gets the checks and gates of RDF/XML: read-only (`features::writes`),
-no splice, semantic tokens or inlay hints, and the lints of its terms and
-literals, with no fix (`Check::runs_on`). Rename and completion are its
+no splice or semantic tokens, label hints at the end of each term, and the
+lints of its terms and literals, the label checks and house style, with no
+fix (`Check::runs_on`). Rename and completion are its
 two writers. `navigation::rename_term` plans every Functional and OWL/XML
 document of the workspace with `navigation::owl::plan`, as RDF/XML with
 `rdfxml::rename`, but at the references of the shared parse
@@ -190,7 +197,7 @@ the RDF/XML scanner (`rdfxml::xml`), checks it against the Recommendation,
 and builds the same `ofn::tree`, which the same mapping turns into the
 shared `Parsed` (`ofn::rdf::map_with`, through the OWL/XML `Source`). So
 OWL/XML gets what Functional syntax gets, read-only for `features::writes`, its imports included
-(`imports::load::Format::OwlXml`). Rename writes it through the same
+(`imports::load::Format::OwlXml`), its label hints placed as in RDF/XML. Rename writes it through the same
 planner, with the OWL/XML writer (`navigation/owl/owx.rs`). Completion:
 `owx::expected` reads the elements open at the cursor with the XML cursor
 and fills each construct's signature with the slot machine of

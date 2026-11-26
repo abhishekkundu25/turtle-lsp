@@ -40,13 +40,14 @@ pub enum Syntax {
     JsonLd,
     /// RDF/XML 1.1. No language id or extension names it: a `.owl` or
     /// `.rdf` text is RDF/XML when its content says so ([`Syntax::of`]).
-    /// Nothing edits it: it has no tokens, no formatting and no statement
-    /// splice.
+    /// Only rename and completion edit it: it has no tokens, no formatting
+    /// and no statement splice.
     RdfXml,
     /// OWL 2 Functional-Style Syntax (`.ofn`, the `ofn` language id, or a
     /// `.owl` text that starts so). Its frontend checks the text and maps
-    /// its axioms to RDF triples by the W3C mapping. Nothing edits it, as
-    /// RDF/XML: it has no tokens, no formatting and no statement splice.
+    /// its axioms to RDF triples by the W3C mapping. Only rename and
+    /// completion edit it, as RDF/XML: it has no tokens, no formatting and
+    /// no statement splice.
     OwlFunctional,
     /// The OWL 2 XML Serialization (OWL/XML: `.owx`, or a `.owl` or `.rdf`
     /// text whose root is OWL/XML's `Ontology`): a notational variant of OWL

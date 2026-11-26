@@ -3,8 +3,8 @@
 // the code ofn-syntax, as it publishes, as it is pulled and after an edit.
 // Its axioms are read as RDF (the W3C mapping), so it reads as an RDF/XML
 // file does: hover, definition, references, highlights, symbols and
-// folding, here and from the Turtle files that use its terms; no semantic
-// tokens or inlay hints. Nothing writes it but completion
+// folding, here and from the Turtle files that use its terms; label hints
+// after its terms, and no semantic tokens. Nothing writes it but completion
 // (test/ofn-completion.test.mjs) and rename: a client that opts in to the
 // dynamic registrations gets completion and rename for it and none of the
 // other writing features, a client that does not gets empty answers from
@@ -98,7 +98,7 @@ describe("an open OWL Functional document", () => {
     s.change(w.ofn, ONTO)
   })
 
-  test("it reads as RDF/XML does: hover, definition, references, highlights, symbols, folding; no tokens or hints", async () => {
+  test("it reads as RDF/XML does: hover, definition, references, highlights, symbols, folding; label hints after its terms; no tokens", async () => {
     const at = { textDocument: { uri: w.ofn }, position: positionOf(ONTO, "Class(:A", 7) }
     // Hover: the label of the class.
     const hover = await s.request("textDocument/hover", at)
@@ -132,11 +132,23 @@ describe("an open OWL Functional document", () => {
     // there is one prefix, and each axiom is one line.
     const folds = await s.request("textDocument/foldingRange", { textDocument: { uri: w.ofn } })
     assert.deepEqual(folds ?? [], [])
-    // No semantic tokens (the client's grammar colours it) and no hints.
+    // No semantic tokens (the client's grammar colours it).
     const tokens = await s.request("textDocument/semanticTokens/full", { textDocument: { uri: w.ofn } })
     assert.deepEqual(tokens?.data ?? [], [])
-    const hints = await s.request("textDocument/inlayHint", { textDocument: { uri: w.ofn }, range: { start: { line: 0, character: 0 }, end: { line: 9, character: 0 } } })
-    assert.deepEqual(hints ?? [], [])
+    // Label hints after the terms, as in Turtle: none by default (`opaque`;
+    // `:A` says "A"), and with `all` one after each labelled term of the
+    // axioms read (not those of lines 3 and 4).
+    const hints = () => s.request("textDocument/inlayHint", { textDocument: { uri: w.ofn }, range: { start: { line: 0, character: 0 }, end: { line: 9, character: 0 } } })
+    const labels = (setting) => s.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: setting } } } })
+    assert.deepEqual(await hints(), [])
+    labels("all")
+    const all = await hints()
+    labels("opaque")
+    assert.deepEqual(all.map((h) => [h.label, h.position]), [
+      ["A", positionOf(ONTO, "Class(:A")],
+      ["label", positionOf(ONTO, "(rdfs:label")],
+      ["A", positionOf(ONTO, "rdfs:label :A")],
+    ])
   })
 
   test("the writing features are registered for other documents only, and answer nothing in it; completion and rename are registered for it too, and a rename is refused while it has an error", async () => {

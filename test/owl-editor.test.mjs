@@ -142,7 +142,7 @@ describe("a client that opts in and registers features dynamically", () => {
     assert.ok(byId["turtle-code-action"].codeActionKinds.includes("quickfix"))
   })
 
-  test("an open .owl (language id xml): hover, definition, references, symbols and diagnostics", async () => {
+  test("an open .owl (language id xml): hover, definition, references, symbols, label hints and diagnostics", async () => {
     s.open(w.onto, ONTO, "xml")
     assert.ok(Array.isArray(await s.diagnosticsFor(w.onto, 10000)))
     // Hover on the class's IRI: its comment.
@@ -167,6 +167,20 @@ describe("a client that opts in and registers features dynamically", () => {
     // No semantic tokens: VS Code's XML grammar keeps the colours.
     const tokens = await s.request("textDocument/semanticTokens/full", { textDocument: { uri: w.onto } })
     assert.deepEqual(tokens?.data ?? [], [])
+    // Label hints: none by default (`opaque`; Widget says "Widget"). With
+    // `all`, one after each labelled value's closing quote, and none at an
+    // element name (owl:Class, rdfs:label): nothing between a name and its
+    // attributes.
+    const hints = () => s.request("textDocument/inlayHint", { textDocument: { uri: w.onto }, range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } } })
+    const labels = (setting) => s.notify("workspace/didChangeConfiguration", { settings: { turtle: { inlayHints: { labels: setting } } } })
+    assert.deepEqual(await hints(), [])
+    labels("all")
+    const all = await hints()
+    labels("opaque")
+    assert.deepEqual(all.map((h) => [h.label, h.position]), [
+      ["Widget", positionOf(ONTO, 'about="http://example.org/Widget"')],
+      ["Widget", positionOf(ONTO, 'resource="http://example.org/Widget"')],
+    ])
     // Broken XML is a problem of the open file.
     s.open(w.broken, BROKEN, "xml")
     const errors = (await s.diagnosticsFor(w.broken, 10000)).filter((d) => d.severity === 1)

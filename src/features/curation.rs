@@ -310,10 +310,17 @@ impl<'a> Checks<'a> {
             }
         }
         let mut seen: FxHashSet<Iri> = FxHashSet::default();
-        for st in &a.parsed.statements {
-            let Some((s, span)) = st.subject else {
-                continue;
-            };
+        // The subjects of the statements, then every other term the
+        // document defines (an RDF/XML node element inside a property
+        // element has no statement of its own): the terms the reporter is
+        // chosen among.
+        let defined_here = (a.parsed.refs.iter())
+            .filter(|r| r.role == crate::syntax::Role::Subject)
+            .map(|r| (r.iri, r.span));
+        let subjects = (a.parsed.statements.iter())
+            .filter_map(|st| st.subject)
+            .chain(defined_here);
+        for (s, span) in subjects {
             if !seen.insert(s) || !self.is_term(s) {
                 continue;
             }
@@ -675,7 +682,7 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
 /// itself or a value object's string whose value is `value` in JSON-LD.
 /// `None` for a malformed string or one not found, in RDF/XML, whose text
 /// is XML, not a quoted string, and in OWL Functional syntax and OWL/XML,
-/// which turtle-lsp reads but never edits.
+/// which no fix or formatter edits.
 fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
     let text = a.text.get(o_span.start as usize..o_span.end as usize)?;
     let at = |s: Span| Span::new(o_span.start + s.start, o_span.start + s.end);
@@ -1082,6 +1089,18 @@ mod tests {
         name: &str,
         settings: &crate::settings::Settings,
     ) -> Vec<(String, String, String)> {
+        reported_of(ws, name, settings, CODES)
+    }
+
+    /// [`reported`], of the diagnostics with one of `codes`, each with no
+    /// fix data: of the curation checks only `label-whitespace` has a fix,
+    /// and only in a document the fixes write.
+    fn reported_of(
+        ws: &mut crate::workspace::Workspace,
+        name: &str,
+        settings: &crate::settings::Settings,
+        codes: &[&str],
+    ) -> Vec<(String, String, String)> {
         use crate::diagnose::{DiagnosticInputs, Doc, document};
         let a = ws.analysis(&format!("file:///w/{name}")).unwrap();
         let k = ws.knowledge();
@@ -1092,10 +1111,11 @@ mod tests {
                 let Some(NumberOrString::String(code)) = &d.code else {
                     return None;
                 };
-                if !CODES.contains(&code.as_str()) {
+                if !codes.contains(&code.as_str()) {
                     return None;
                 }
                 assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+                assert!(d.data.is_none(), "{d:?}");
                 let (s, e) = (
                     a.offset(Encoding::Utf16, d.range.start).unwrap() as usize,
                     a.offset(Encoding::Utf16, d.range.end).unwrap() as usize,
@@ -1533,7 +1553,7 @@ mod tests {
         );
     }
 
-    /// `label-whitespace` in RDF/XML would carry no fix: the text there is
+    /// `label-whitespace` in RDF/XML carries no fix: the text there is
     /// XML, not a quoted string.
     #[test]
     fn a_label_in_rdfxml_has_no_string_to_trim() {
@@ -1548,5 +1568,149 @@ mod tests {
         assert_eq!(fixes(&fx::turtle(uri)), [true]);
         assert_eq!(fixes(&fx::written(uri, fx::TURTLE)), [false]);
         assert_eq!(fixes(&fx::read(uri)), [false]);
+    }
+
+    /// The label checks and house style in RDF/XML, OWL Functional syntax
+    /// and OWL/XML, with a Turtle file beside each: every finding a
+    /// warning with no fix data, at the literal as the syntax writes it
+    /// (RDF/XML's text between the tags, a Functional literal with its
+    /// tag, an OWL/XML `Literal` element) or at the term, and read from
+    /// the literal's value (`&#32;` is a space, `&amp;` an `&`).
+    /// `missing-label` only when enabled.
+    #[test]
+    fn a_class_rdfxml_declares_inside_another_element_gets_the_missing_checks() {
+        // `Child` is a node element inside a property element: no
+        // statement of its own, but the document defines it (its type).
+        let text = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n\
+            \x20        xmlns:owl=\"http://www.w3.org/2002/07/owl#\">\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/Parent\">\n\
+            \x20   <rdfs:label>Parent</rdfs:label>\n\
+            \x20   <rdfs:comment>A parent class.</rdfs:comment>\n\
+            \x20   <rdfs:subClassOf><owl:Class rdf:about=\"http://example.org/Child\"/></rdfs:subClassOf>\n\
+            \x20 </owl:Class>\n\
+            </rdf:RDF>\n";
+        let codes = [MISSING_LABEL, MISSING_DEFINITION];
+        let mut ws = workspace(&[]);
+        ws.open_doc("file:///w/o.owl".into(), text.to_string(), 1);
+        let got = reported_of(&mut ws, "o.owl", &settings(&codes, &[]), &codes);
+        let child = "http://example.org/Child".to_string();
+        assert_eq!(
+            got.iter()
+                .map(|(code, at, _)| (code.as_str(), at.clone()))
+                .collect::<Vec<_>>(),
+            [(MISSING_LABEL, child.clone()), (MISSING_DEFINITION, child)],
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn owl_files_get_the_label_checks_and_house_style() {
+        let rdfxml = "<?xml version=\"1.0\"?>\n\
+            <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n\
+            \x20        xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n\
+            \x20        xmlns:owl=\"http://www.w3.org/2002/07/owl#\">\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/A\"><rdfs:label>A thing&#32;</rdfs:label></owl:Class>\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/B\"><rdfs:label>R&amp;D</rdfs:label></owl:Class>\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/C\">\n\
+            \x20   <rdfs:label xml:lang=\"en\">x</rdfs:label>\n\
+            \x20   <rdfs:label xml:lang=\"en\">y</rdfs:label>\n\
+            \x20 </owl:Class>\n\
+            \x20 <owl:Class rdf:about=\"http://example.org/D\"/>\n\
+            </rdf:RDF>\n";
+        let functional = "Prefix(:=<http://example.org/>)\n\
+            Ontology(<http://example.org/o>\n\
+            Declaration(Class(:A))\n\
+            Declaration(Class(:B))\n\
+            Declaration(Class(:C))\n\
+            Declaration(Class(:D))\n\
+            AnnotationAssertion(rdfs:label :A \"A thing \")\n\
+            AnnotationAssertion(rdfs:label :B \"R&D\")\n\
+            AnnotationAssertion(rdfs:label :C \"x\"@en)\n\
+            AnnotationAssertion(rdfs:label :C \"y\"@en)\n\
+            )\n";
+        let assertion = |subject: &str, literal: &str| {
+            format!(
+                "  <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:label\"/>\
+                 <IRI>http://example.org/{subject}</IRI>{literal}</AnnotationAssertion>\n"
+            )
+        };
+        let mut owl_xml = "<?xml version=\"1.0\"?>\n\
+            <Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n\
+            \x20 <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n"
+            .to_string();
+        for t in ["A", "B", "C", "D"] {
+            owl_xml +=
+                &format!("  <Declaration><Class IRI=\"http://example.org/{t}\"/></Declaration>\n");
+        }
+        owl_xml += &assertion("A", "<Literal>A thing&#32;</Literal>");
+        owl_xml += &assertion("B", "<Literal>R&amp;D</Literal>");
+        owl_xml += &assertion("C", "<Literal xml:lang=\"en\">x</Literal>");
+        owl_xml += &assertion("C", "<Literal xml:lang=\"en\">y</Literal>");
+        owl_xml += "</Ontology>\n";
+        let other = "ex:E a owl:Class ; rdfs:label \"R&D\" .\n";
+        let mut codes = CODES.to_vec();
+        codes.push(LABEL_WHITESPACE);
+        let found = |name: &str, text: &str, enable: &[&str]| {
+            let mut ws = workspace(&[("e.ttl", other)]);
+            ws.open_doc(format!("file:///w/{name}"), text.to_string(), 1);
+            let settings = settings(enable, &[]);
+            let in_e = reported(&mut ws, "e.ttl", &settings);
+            (reported_of(&mut ws, name, &settings, &codes), in_e)
+        };
+        let rdf = |l: &str| format!("<http://www.w3.org/2000/01/rdf-schema#{l}>");
+        let ws_end = "Label ends with whitespace";
+        // How each names a term (its prefixes, else in full) and `rdfs:label`.
+        let full = ("<http://example.org/", ">");
+        for (name, text, [a, b, x, y, d], ((pre, post), label)) in [
+            (
+                "o.owl",
+                rdfxml,
+                ["A thing&#32;", "R&amp;D", "x", "y", "http://example.org/D"],
+                (full, rdf("label")),
+            ),
+            (
+                "o.ofn",
+                functional,
+                ["\"A thing \"", "\"R&D\"", "\"x\"@en", "\"y\"@en", ":D"],
+                ((":", ""), rdf("label")),
+            ),
+            (
+                "o.owx",
+                &owl_xml,
+                [
+                    "<Literal>A thing&#32;</Literal>",
+                    "<Literal>R&amp;D</Literal>",
+                    "<Literal xml:lang=\"en\">x</Literal>",
+                    "<Literal xml:lang=\"en\">y</Literal>",
+                    "http://example.org/D",
+                ],
+                (full, "rdfs:label".to_string()),
+            ),
+        ] {
+            let term = |t: &str| format!("{pre}{t}{post}");
+            let multiple = format!("{} has 2 {label} values tagged @en", term("C"));
+            let labels = vec![
+                row(LABEL_WHITESPACE, a, ws_end),
+                row(
+                    DUPLICATE_LABEL,
+                    b,
+                    &format!("Label \"R&D\" is also the label of {}", term("E")),
+                ),
+                row(MULTIPLE_LABELS, x, &multiple),
+                row(MULTIPLE_LABELS, y, &multiple),
+            ];
+            let (got, in_e) = found(name, text, &[]);
+            assert_eq!(got, labels, "{name}");
+            // The Turtle file sees the OWL file's label too.
+            assert_eq!(in_e.len(), 1, "{name}: {in_e:?}");
+            assert_eq!(in_e[0].0, DUPLICATE_LABEL, "{name}");
+            let (got, _) = found(name, text, &[MISSING_LABEL]);
+            let missing = format!("{} has no rdfs:label or skos:prefLabel", term("D"));
+            let mut want = labels;
+            want.push(row(MISSING_LABEL, d, &missing));
+            assert_eq!(got, want, "{name}");
+        }
     }
 }
