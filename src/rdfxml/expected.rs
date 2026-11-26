@@ -111,8 +111,14 @@ pub(crate) enum Value {
     /// `rdf:parseType` of a property element; `allow_triple` is false when
     /// the tag is self-closing or already carries another valid `parseType`
     /// on an empty closed element (switching to `Triple` with no child would
-    /// report zero triples).
-    ParseType { allow_triple: bool },
+    /// report zero triples); `allow_collection` is false when the tag has
+    /// `rdf:annotation` or `rdf:annotationNodeID`, which the grammar refuses
+    /// with `Collection` (RDF 1.2, 6.2.20). The other attributes it refuses
+    /// with a `parseType` it refuses with any.
+    ParseType {
+        allow_triple: bool,
+        allow_collection: bool,
+    },
 }
 
 /// A node element: the subject of the property elements in it.
@@ -203,6 +209,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
     let mut taken = Vec::new();
     let mut self_root = None;
     let mut allow_description = true;
+    let mut declarable = true;
     let (slot, span) = match c.at {
         At::Name(span) => {
             let typed = text.get(span.start as usize..span.end as usize)?;
@@ -213,31 +220,24 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
             if taken.last() == Some(&typed) {
                 return None;
             }
-            // Inside `rdf:parseType="Triple"`, at any depth (the triples of
-            // its node's objects are the Triple's too), changing an existing
-            // `rdf:Description` to a typed class adds an `rdf:type` triple,
-            // and changing a self-closing typed node to `rdf:Description`
-            // removes its `rdf:type` triple. That one may be the Triple's
-            // one triple: for the Triple's own node, and deeper when the
-            // property element that holds the node makes none, which it does
-            // when its own end tag closes it right after the node.
-            if in_triple && matches!(content, Content::Nodes | Content::TripleNode) {
-                if is_rdf_description(typed, &c.prefixes) {
-                    return None;
-                }
-                let (next, empty) = scan_tag(text, span.end as usize);
-                let closes_its_property = || {
-                    let rest = text[next..].trim_start_matches(|c: char| c.is_ascii_whitespace());
-                    let property = c.open.last().map(|p| p.tag.name.raw);
-                    rest.strip_prefix("</").is_some_and(|end| {
-                        let len = end.bytes().position(xml::ends_name).unwrap_or(end.len());
-                        property == Some(&end[..len])
-                    })
-                };
-                if !typed.is_empty()
-                    && empty
-                    && (matches!(content, Content::TripleNode) || !closes_its_property())
-                {
+            // Inside `rdf:parseType="Triple"`, at any depth, every triple an
+            // element makes is the Triple's, which must make exactly one. An
+            // offer changes a name only, so the count stays when the name
+            // offered makes a triple (a type, a predicate) exactly when the
+            // name there makes one now; every name offered makes one but
+            // `rdf:Description`, and a declaration would change how a name
+            // reads. So a name in a complete start tag, a rename, is offered
+            // only where it makes a triple now, and not as `rdf:Description`;
+            // a name being typed (none yet, or its tag not closed by `>`) is
+            // offered as anywhere; and no offer declares a prefix.
+            if in_triple {
+                declarable = false;
+                let (next, _) = scan_tag(text, span.end as usize);
+                if !typed.is_empty() && text[..next].ends_with('>') {
+                    let node = matches!(content, Content::Nodes | Content::TripleNode);
+                    if !makes_a_triple(typed, &c.prefixes, node) {
+                        return None;
+                    }
                     allow_description = false;
                 }
             }
@@ -325,6 +325,7 @@ pub(crate) fn at<'d>(text: &'d str, doc: &'d Document<'_>, offset: usize) -> Opt
         .next()
         .map(|e| e.tag)
         .or(self_root)
+        .filter(|_| declarable)
         .filter(|root| {
             let closed = text
                 .get(root.span.start as usize..root.span.end as usize)
@@ -425,7 +426,15 @@ fn parse_type_offer(
     }
     let already_valid_other = matches!(&*v.attr.value.text, "Resource" | "Collection" | "Literal");
     let allow_triple = !self_closing && !(tag_closed && already_valid_other);
-    Some(Value::ParseType { allow_triple })
+    let allow_collection = !v
+        .tag
+        .attrs
+        .iter()
+        .any(|a| a.name.is(RDF, "annotation") || a.name.is(RDF, "annotationNodeID"));
+    Some(Value::ParseType {
+        allow_triple,
+        allow_collection,
+    })
 }
 
 /// The RDF/XML syntax attributes valid on `tag` in `content` that are not
@@ -475,12 +484,31 @@ fn tag_attrs(content: &Content, tag: &Tag<'_>) -> Vec<AttrKind> {
     out
 }
 
-/// Whether raw element name `typed` names `rdf:Description` under `prefixes`.
-fn is_rdf_description(typed: &str, prefixes: &BTreeMap<&str, Cow<'_, str>>) -> bool {
-    match typed.split_once(':') {
-        Some((p, l)) => l == "Description" && prefixes.get(p).map(Cow::as_ref) == Some(RDF),
-        None => typed == "Description" && prefixes.get("").map(Cow::as_ref) == Some(RDF),
+/// Whether [`super::grammar`] makes a triple of the raw element name
+/// `typed` under `prefixes`: a node element's `rdf:type` (none for
+/// `rdf:Description` or a name `rdf:` reserves), a property element's
+/// predicate (`rdf:li` too; none for `rdf:Description` or a reserved name).
+/// A name in no namespace, under a prefix not declared, or whose IRI is not
+/// absolute makes none; so, here, does one under `xml:` or `xmlns:`.
+fn makes_a_triple(typed: &str, prefixes: &BTreeMap<&str, Cow<'_, str>>, node: bool) -> bool {
+    // The prefix as the scanner splits the name.
+    let colon = typed.find(':').filter(|&i| i > 0 && i + 1 < typed.len());
+    let (prefix, local) = colon.map_or(("", typed), |i| (&typed[..i], &typed[i + 1..]));
+    if matches!(prefix, "xml" | "xmlns") {
+        return false;
     }
+    let Some(ns) = prefixes.get(prefix) else {
+        return false;
+    };
+    if ns.as_ref() == RDF {
+        if !node && local == "li" {
+            return true;
+        }
+        if local == "Description" || super::grammar::RESERVED_ELEMENTS.contains(&local) {
+            return false;
+        }
+    }
+    oxiri::Iri::parse(format!("{ns}{local}")).is_ok()
 }
 
 /// Whether `attr` on a property element with no `rdf:parseType` fixes its

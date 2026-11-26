@@ -107,7 +107,11 @@ pub(super) fn complete(
             ));
         }
         expected::Slot::Value {
-            of: Value::ParseType { allow_triple },
+            of:
+                Value::ParseType {
+                    allow_triple,
+                    allow_collection,
+                },
             entity,
             ..
         } => {
@@ -115,6 +119,7 @@ pub(super) fn complete(
                 typed,
                 entity.is_some(),
                 *allow_triple,
+                *allow_collection,
                 range,
             ));
         }
@@ -263,7 +268,13 @@ fn attributes(
 }
 
 /// The four `rdf:parseType` values of RDF 1.2 XML Syntax.
-fn parse_types(typed: &str, in_entity: bool, allow_triple: bool, range: Range) -> CompletionList {
+fn parse_types(
+    typed: &str,
+    in_entity: bool,
+    allow_triple: bool,
+    allow_collection: bool,
+    range: Range,
+) -> CompletionList {
     const VALUES: [(&str, &str); 4] = [
         ("Resource", "blank node with child property elements"),
         ("Collection", "rdf:List of child node elements"),
@@ -273,7 +284,7 @@ fn parse_types(typed: &str, in_entity: bool, allow_triple: bool, range: Range) -
     let mut items = Vec::new();
     if !in_entity {
         for (idx, (val, desc)) in VALUES.iter().enumerate() {
-            if *val == "Triple" && !allow_triple {
+            if (*val == "Triple" && !allow_triple) || (*val == "Collection" && !allow_collection) {
                 continue;
             }
             if fuzzy(typed, val) {
@@ -2080,11 +2091,10 @@ mod tests {
 
     /// Chaos 20261126151, iteration 5610: a node element at any depth in
     /// `rdf:parseType="Triple"` adds its triples to the Triple's one, so
-    /// renaming `rdf:Description` to a class adds an `rdf:type` triple: not
-    /// offered, as for the Triple's own node. Renaming a typed empty node to
-    /// `rdf:Description` removes one: not offered where that is the one
-    /// triple (its property element makes none, not closed by its own end
-    /// tag), offered where its property element's triple stays.
+    /// renaming `rdf:Description` to a class adds an `rdf:type` triple, and
+    /// renaming a typed node to `rdf:Description` removes one: neither is
+    /// offered, as for the Triple's own node
+    /// ([`a_name_in_a_triple_keeps_what_the_triple_counts`]).
     #[test]
     fn a_node_element_deeper_in_a_triple_keeps_its_rdf_type() {
         let triple = |node: &str| {
@@ -2120,12 +2130,12 @@ mod tests {
         );
         assert!(has(&typed.labels(), "ex:Valve"), "{:?}", typed.labels());
         // `ex:feeds` closed by its own end tag: two triples, `a feeds b` and
-        // `b`'s type, and `rdf:Description` leaves the one.
+        // `b`'s type. A rename keeps the count, so no `rdf:Description` here
+        // either, though it would leave the one.
         let two = at(&triple("<|ex:Pump rdf:about=\"http://example.org/b\"/>"));
         assert_eq!(two.a.parsed.errors.len(), 1, "{:?}", two.a.parsed.errors);
-        let after = two.accepted(&two.item("rdf:Description"));
-        let a = Analysis::new(URI.into(), &after, Arc::default(), true);
-        assert!(a.parsed.errors.is_empty(), "{:?}", a.parsed.errors);
+        assert!(!has(&two.labels(), "rdf:Description"), "{:?}", two.labels());
+        assert!(has(&two.labels(), "ex:Valve"), "{:?}", two.labels());
     }
 
     /// Chaos 20261126151, iteration 124658: a DOCTYPE after the root's start
@@ -2192,5 +2202,120 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Chaos 20261126154, iteration 191068: inside `rdf:parseType="Triple"`,
+    /// renaming a name the grammar reads changes the Triple's count unless
+    /// the new name reads the same way. The Triple's node here has no end tag
+    /// of its own: its type is the one triple, and `rdf:Description` would
+    /// leave none. A name in a complete start tag keeps what it counts: a
+    /// typed node gets classes, a property properties, and a name that reads
+    /// as neither (in no namespace) nothing. No offer adds a declaration,
+    /// which would make a name being typed count.
+    #[test]
+    fn a_name_in_a_triple_keeps_what_the_triple_counts() {
+        let triple = |inner: &str| {
+            onto(&format!(
+                "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      {inner}\n    </ex:says>\n  </rdf:Description>\n"
+            ))
+        };
+        let errors = |text: &str| {
+            Analysis::new(URI.into(), text, Arc::default(), true)
+                .parsed
+                .errors
+                .len()
+        };
+        let mut failures = Vec::new();
+        for (inner, want) in [
+            ("<|ex:Pump>", Some("ex:Valve")),
+            ("<|rdf:Descripti:Description>", Some("ex:Valve")),
+            (
+                "<ex:Pump rdf:about=\"http://example.org/a\">\n        <|ex:feeds rdf:resource=\"http://example.org/b\"/>\n      </ex:Pump>",
+                Some("ex:feeds"),
+            ),
+            (
+                "<ex:Pump rdf:about=\"http://example.org/a\">\n        <|feeds rdf:resource=\"http://example.org/b\"/>\n      </ex:Pump>",
+                None,
+            ),
+            ("<skos:Con|", Some("")),
+        ] {
+            let at = at(&triple(inner));
+            let before = errors(&at.text);
+            let items = at.items();
+            let labels: Vec<_> = items.iter().map(|i| i.label.clone()).collect();
+            let more: Vec<_> = items
+                .iter()
+                .filter(|i| errors(&at.accepted(i)) > before)
+                .map(|i| i.label.clone())
+                .take(3)
+                .collect();
+            let declares = items
+                .iter()
+                .filter(|i| i.additional_text_edits.is_some())
+                .count();
+            let ok = more.is_empty()
+                && declares == 0
+                && !has(&labels, "rdf:Description")
+                && match want {
+                    Some("") => true,
+                    Some(w) => has(&labels, w),
+                    None => labels.is_empty(),
+                };
+            if !ok {
+                failures.push(format!(
+                    "{inner}: {} offered, {declares} declaring, adding an error {more:?}",
+                    labels.len()
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A Triple typed by hand: a fresh element name is offered as anywhere
+    /// else, without a declaration: `rdf:Description` and the classes for
+    /// its node, the properties in it.
+    #[test]
+    fn a_triple_typed_by_hand_still_gets_names() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n    <ex:says rdf:parseType=\"Triple\">\n      ";
+        let node = at(&onto(&format!("{open}<|\n")));
+        let labels = node.labels();
+        for want in ["rdf:Description", "ex:Pump", "ex:Valve"] {
+            assert!(has(&labels, want), "{want} not in {labels:?}");
+        }
+        assert!(
+            node.items()
+                .iter()
+                .all(|i| i.additional_text_edits.is_none())
+        );
+        let partial = at(&onto(&format!("{open}<ex:Pu|\n")));
+        assert!(has(&partial.labels(), "ex:Pump"), "{:?}", partial.labels());
+        let property = at(&onto(&format!(
+            "{open}<ex:Pump rdf:about=\"http://example.org/a\">\n        <|\n"
+        )));
+        assert!(
+            has(&property.labels(), "ex:feeds"),
+            "{:?}",
+            property.labels()
+        );
+    }
+
+    /// Chaos 20261126157, iteration 110396: the grammar refuses
+    /// `rdf:annotation` and `rdf:annotationNodeID` on a property element
+    /// with `rdf:parseType="Collection"` (RDF 1.2, 6.2.20), so
+    /// `Collection` is not offered on a tag that has either. The other
+    /// values still are.
+    #[test]
+    fn no_collection_on_a_property_element_with_an_annotation() {
+        let open = "  <rdf:Description rdf:about=\"http://example.org/s\">\n";
+        let close = "  </rdf:Description>\n";
+        for attr in [
+            "rdf:annotation=\"http://example.org/r\"",
+            "rdf:annotationNodeID=\"r\"",
+        ] {
+            let body = format!("    <ex:feeds rdf:parseType=\"|Literal\" {attr}/>\n");
+            let at = at(&onto(&format!("{open}{body}{close}")));
+            assert_eq!(adding_errors(&at), [], "{body}");
+            assert_eq!(at.labels(), ["Resource", "Literal"], "{body}");
+        }
     }
 }

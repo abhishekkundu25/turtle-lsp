@@ -537,7 +537,7 @@ impl Vocab {
 
 /// `rdf:` names that cannot name a node element; a property element cannot
 /// be `rdf:Description` either.
-const RESERVED_ELEMENTS: [&str; 11] = [
+pub(super) const RESERVED_ELEMENTS: [&str; 11] = [
     "about",
     "aboutEach",
     "aboutEachPrefix",
