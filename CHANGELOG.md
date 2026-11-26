@@ -24,6 +24,28 @@
   an IRI its text may spell, at its first error. A rename on a prefix
   declaration is refused. `rename.rdfXml` covers RDF/XML only. VS Code,
   Neovim and the browser editor offer rename in `.ofn` and `.owx` files.
+- **Label and house-style checks in RDF/XML, OWL Functional syntax and
+  OWL/XML.** `label-whitespace`, `duplicate-label` and `multiple-labels`
+  (on by default, so an existing `.owl`, `.rdf`, `.ofn` or `.owx` file can
+  get new warnings) and the house-style checks that `lint.enable` turns
+  on run on these files, in the editors and in `turtle-lsp check`, with the same
+  codes and settings as in Turtle. Each reads the literal's value (`&#32;`
+  is a space), and each finding is a warning at the literal as the file
+  writes it (RDF/XML's text or attribute value, a Functional literal with
+  its tag or datatype, an OWL/XML `Literal` element) or at the term. None
+  has a fix: no code action is offered, and `check --fix` leaves these
+  files as they are. `duplicate-label` compares their labels with every
+  other file's. A `missing-*` finding is reported in one file, the first
+  by URI that declares the term; when that was one of these files, the
+  finding was reported nowhere, and that file reports it now.
+- **Label hints in RDF/XML, OWL Functional syntax and OWL/XML.** An
+  opaque IRI (`obo:GO_0008150`) shows its label after it, outside the
+  written text: after an attribute value's closing quote (`rdf:about`,
+  `rdf:resource`, `IRI`, `abbreviatedIRI`), after the end tag of `<IRI>`
+  or `<AbbreviatedIRI>` text, and after a Functional term. An RDF/XML
+  element or attribute name, and a term written through an entity
+  reference, get none. `inlayHints.labels` works as in Turtle, and the
+  browser editor shows the hints in these files too.
 
 ## 0.20.0 — 2026-11-26
 

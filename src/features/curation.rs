@@ -675,7 +675,7 @@ pub(crate) fn whitespace(a: &Analysis, range: std::ops::Range<usize>) -> Vec<(u3
 /// itself or a value object's string whose value is `value` in JSON-LD.
 /// `None` for a malformed string or one not found, in RDF/XML, whose text
 /// is XML, not a quoted string, and in OWL Functional syntax and OWL/XML,
-/// which turtle-lsp reads but never edits.
+/// which no fix or formatter edits.
 fn string_token(a: &Analysis, o_span: Span, value: &str) -> Option<Span> {
     let text = a.text.get(o_span.start as usize..o_span.end as usize)?;
     let at = |s: Span| Span::new(o_span.start + s.start, o_span.start + s.end);

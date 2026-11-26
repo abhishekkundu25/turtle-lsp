@@ -1303,7 +1303,7 @@ fn the_parse_holds_the_axioms_and_the_errors() {
     assert_eq!(p.triples.len(), 3);
     assert_eq!(p.refs.len(), 4);
     assert_eq!(p.prefixes.len(), 2);
-    // Nothing edits it: no tokens, comments or prefix uses.
+    // No fix or formatter edits it: no tokens, comments or prefix uses.
     assert!(p.prefix_uses.is_empty() && p.tokens.is_empty());
     assert!(p.comments.is_empty() && p.graphs.is_empty());
 }

@@ -37,16 +37,21 @@ the full W3C test suites and real public ontologies; see
 |---|---|---|---|---|---|---|---|
 | Errors, hover, definition, references, outline, folding | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Its data read by reasoning, SHACL validation and queries | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| Label, house-style and SHACL checks | ✓ | ✓ | ✓ | | | | |
+| Label and house-style checks | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| SHACL shape checks | ✓ | ✓ | ✓ | | | | |
 | Prefix checks | ✓ | | | | | | ✓ |
 | Completion | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Rename | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Formatting, quick fixes | ✓ | ✓ | ✓ | | | | ✓ |
-| Label hints | ✓ | ✓ | ✓ | | | | ✓ |
+| Label hints | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Semantic colours | ✓ | ✓ | ✓ | | | | ✓ |
 | Run the query over the workspace | | | | | | | ✓ |
 
-Protégé and ROBOT own the layout of OWL files, so nothing reformats them.
+Protégé and ROBOT own the layout of OWL files, so nothing reformats them
+and no quick fix edits them: their label checks warn with no fix. Their
+colours come from the editor's XML or Functional grammar, and an undeclared
+prefix in them is a syntax error. Their SHACL shapes count in validation,
+but the shape checks (mistakes in the shapes themselves) do not run on them.
 
 ## Features
 
@@ -62,7 +67,7 @@ Protégé and ROBOT own the layout of OWL files, so nothing reformats them.
 - **Workspace graph** (VS Code and the browser editor): the whole workspace as one graph, with filters, search, a focus view of a node's neighbours and a class tree; click a node to go to its definition. Built on `turtle/graph`, a custom request other clients can send too (listed under `experimental` capabilities).
 - **Queries for other extensions and tools**: `turtle/query`, a custom request (listed under `experimental` capabilities) that runs a SPARQL query given as text over the workspace as the editor has it and answers SPARQL 1.1 Query Results JSON. See [Queries from another extension or tool](#queries-from-another-extension-or-tool-turtlequery).
 - **Lints**: terms used in one of your own namespaces but described nowhere (with "did you mean"), and SHACL shapes as you type: a property shape without `sh:path`, an unknown `sh:class`, a non-datatype `sh:datatype`, parameters a node shape cannot have, dangling shape references, `sh:minCount` above `sh:maxCount`.
-- **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
+- **Label checks** (warnings, on by default): two terms of one kind (two classes, two properties or two concepts) in the workspace with the same `rdfs:label` or `skos:prefLabel` in one language, ignoring case (`duplicate-label`, on both labels, naming the other term); a label with whitespace at either end (`label-whitespace`, with a fix that trims it, but not in RDF/XML, OWL Functional or OWL/XML files); a term with two labels in one language (`multiple-labels`). A use of a term that a workspace file marks `owl:deprecated true` is a `deprecated-term` warning; deprecated terms of bundled vocabularies and imports stay hints.
 - **House-style checks** (warnings, off until `lint.enable` lists them): `missing-label`, `missing-definition` (neither `skos:definition` nor `rdfs:comment`), `multiple-definitions`, `duplicate-definition`, `lowercase-definition`, and on each `owl:Ontology`, `missing-ontology-title`, `missing-ontology-description` and `missing-ontology-license`. They look at classes, properties and concepts only, not instance data. `lint.ignore` turns any check off; see [Settings file](#settings-file-turtle-lspjson).
 - **Imports**: `owl:imports` of an ontology in the workspace just work; others resolve through a Protégé `catalog-v001.xml` or the import cache, or (with `turtle.imports.network` on) are fetched once and cached. Imported terms (Turtle, TriG, N-Triples, N-Quads, JSON-LD, RDF/XML, OWL Functional syntax or OWL/XML, followed up to 5 levels deep) feed hover, completion and lints; definition and "Described in" on a term of a local RDF/XML, Functional or OWL/XML import open its line in the real file. An import in Manchester syntax gets a message naming the format and how to save it as RDF/XML or Turtle in Protégé, and an RDF/XML, Functional or OWL/XML import with an error part way through gets an `import-truncated` warning with the line and column. An import that can't be resolved gets an information diagnostic saying how to resolve it, with a quick fix that fetches that one web import and caches it, even with the setting off. Go to definition on an imported term opens the cached copy, which is read-only: it gets no diagnostics. While an import is unresolved, SHACL results it could change are warnings with a note; `imports.unresolved: "ignore"` keeps them at full severity, for projects that validate without their imports on purpose. See [Network access](#network-access) for what is fetched and the limits.
 - **Turtle 1.2**: triple terms `<<( )>>`, reified triples `<< >>`, `~` reifiers, `{| |}` annotations, `@lang--dir`, `VERSION`.
@@ -532,7 +537,12 @@ completion edit them.
   (`xml-syntax`, `rdfxml-syntax`), SHACL results, reasoning findings, and the
   lints of its terms and literals (`invalid-literal`, `undescribed-term`,
   `unknown-term`, `deprecated-term`), each "did you mean" in the message
-  only.
+  only, and the label and house-style checks (see
+  [Features](#features)), as warnings with no fix, at the literal or the
+  term as the file writes it. `turtle-lsp check` reports them with the same
+  codes, and `check --fix` leaves the file as it is. A label hint follows
+  an attribute value's closing quote (`rdf:about`, `rdf:resource`); none
+  stands at an element or attribute name, between it and what comes next.
 - **Rename edits RDF/XML**: renaming an IRI, from any file, edits the
   RDF/XML workspace files that use it too, and a rename can start inside
   one (on an element name in its start or end tag, an attribute name, an
@@ -668,11 +678,13 @@ as Functional syntax. Only completion and rename edit it: nothing formats or fix
 - **In the editor**: hover, definition, references, document highlight,
   the outline (each term once, at its declaration; a term the file never
   declares, at the first axiom about it), workspace symbols and folding,
-  as for an RDF/XML file; no semantic tokens or inlay hints (the editor's
-  grammar colours it). The lints of its terms and literals run on it, at
-  the exact text of each IRI: `invalid-literal`, `unknown-term`,
-  `deprecated-term`, `undescribed-term`, each "did you mean" in the
-  message only.
+  as for an RDF/XML file, and label hints after its terms; no semantic
+  tokens (the editor's grammar colours it). The lints of its terms and
+  literals run on it, at the exact text of each IRI: `invalid-literal`,
+  `unknown-term`, `deprecated-term`, `undescribed-term`, each "did you
+  mean" in the message only. So do the label and house-style checks, at
+  the literal (with its language tag or datatype) or the term, as warnings
+  with no fix, as in RDF/XML.
 - **Errors**: every error has the code `ofn-syntax` and its exact span, in
   the editors and in `check` (same exit codes as any syntax: 1 for an
   error). The parse goes on at the next axiom after an error, so each typo
@@ -793,7 +805,10 @@ as it reads OWL Functional syntax: only completion and rename edit it.
   the exact text of each IRI (the attribute value, or the content of an
   `IRI` element). The lints of its terms and literals run on it:
   `invalid-literal`, `unknown-term`, `deprecated-term`, `undescribed-term`,
-  each "did you mean" in the message only.
+  each "did you mean" in the message only. So do the label and house-style
+  checks, at the `Literal` element or the term, as warnings with no fix, as
+  in RDF/XML. A label hint follows an `IRI` or `abbreviatedIRI` value's
+  closing quote, and the end tag of `<IRI>` or `<AbbreviatedIRI>` text.
 - **Errors**: two codes. `xml-syntax` is what the XML scanner reports, as
   in RDF/XML: an unclosed element, a broken attribute, an undeclared
   entity. `owx-syntax` is the rest, each at its exact span: an element
@@ -1227,7 +1242,7 @@ browser. Files never leave the tab.
   RDF/XML (`.owl`, `.rdf`), OWL Functional (`.ofn`), OWL/XML (`.owx`) and
   SPARQL files. `.owl`, `.rdf` and `.owx` files open in the editor's XML
   colouring, `.ofn` files in their own; each gets the features that read,
-  completion and rename.
+  label hints, completion and rename.
 - **Graph**: the Graph button in the activity bar opens the workspace graph
   as an editor tab. Split (Ctrl+\\) moves it beside a file, and Go to
   definition opens the file in the other group, so the graph stays in view.
@@ -1654,7 +1669,11 @@ vim.api.nvim_set_hl(0, "@lsp.mod.undescribed.turtle", { undercurl = true })
 
 Label inlay hints show the label (`rdfs:label`, `skos:prefLabel`, `sh:name`
 from any workspace file, else the vocabulary label) after a term whose
-written name does not already say it. The `inlayHints.labels` setting is
+written name does not already say it. In RDF/XML and OWL/XML a hint
+follows the markup that closes the term: an attribute value's closing quote,
+or the end tag of an `<IRI>` element's text; an element or attribute name
+gets none. A term written through an entity reference (`&ex;A`) gets none
+either. The `inlayHints.labels` setting is
 `opaque` (default), `all` (every term with a label) or `off`. Neovim does not
 show inlay hints until you turn them on:
 

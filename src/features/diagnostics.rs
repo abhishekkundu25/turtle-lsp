@@ -793,7 +793,7 @@ pub(crate) fn term_uses<'a>(
         &mk,
         &mut vocab,
     );
-    // Nothing edits the document: the "did you mean" stays in the message,
+    // No fix edits the document: the "did you mean" stays in the message,
     // with no fix to apply.
     if !super::writes(a.parsed.syntax) {
         for f in &mut vocab {

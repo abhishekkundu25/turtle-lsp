@@ -121,9 +121,9 @@
 //! - the prefix declarations (`Prefix( … )`, OWL/XML's `Prefix`
 //!   elements), as [`PrefixDecl`](crate::syntax::PrefixDecl)s: an OWL
 //!   document's prefixes hold for the whole document, as Turtle's do;
-//! - no tokens, comments or prefix uses (nothing edits the document, and
-//!   an undeclared prefix is an error of its producer, `ofn-syntax` or
-//!   `owx-syntax`).
+//! - no tokens, comments or prefix uses (no fix or formatter edits the
+//!   document, and an undeclared prefix is an error of its producer,
+//!   `ofn-syntax` or `owx-syntax`).
 
 use super::tree::{Document, Keyword as K, NodeKind};
 use super::{CODE, MAX_ERRORS, MAX_WARNINGS, STANDARD, more_warnings};
