@@ -23,6 +23,8 @@ use crate::syntax::names::is_pn_local;
 use crate::syntax::{Form, Iri, Parsed, PrefixMap, Severity, Span, Syntax};
 use std::cmp::Reverse;
 
+mod owx;
+
 /// Why no edit of a use names another IRI: its text is not the IRI.
 const ANCHORED: &str =
     "the IRI is written with an entity or character reference, which a rename does not rewrite";
@@ -46,7 +48,7 @@ pub(crate) fn plan(
         return Ok(Vec::new());
     }
     if let Some(e) = first_error(parsed)
-        && spells(text, &old)
+        && (spells(text, &old) || parsed.syntax == Syntax::OwlXml && owx::spells(text, &old))
     {
         return Err(Refusal {
             line: line(text, e.span.start),
@@ -208,7 +210,7 @@ fn written(
 ) -> Result<(Span, String), String> {
     match syntax {
         Syntax::OwlFunctional => functional(text, span, form, new, prefixes),
-        Syntax::OwlXml => Err("OWL/XML is not planned yet".into()),
+        Syntax::OwlXml => owx::written(text, span, form, new, prefixes),
         Syntax::Turtle
         | Syntax::TriG
         | Syntax::NTriples
@@ -650,23 +652,21 @@ mod tests {
     }
 
     #[test]
-    fn owl_xml_is_not_planned_yet() {
+    fn a_rename_starts_on_owl_xml_values_and_iri_text() {
         let text = format!(
             "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"{EX}o\">\n\
              <Prefix name=\"ex\" IRI=\"{EX}\"/>\n\
+             <Prefix name=\"rdfs\" IRI=\"http://www.w3.org/2000/01/rdf-schema#\"/>\n\
              <Declaration><Class IRI=\"{EX}A\"/></Declaration>\n\
-             <Declaration><Class abbreviatedIRI=\"ex:B\"/></Declaration>\n</Ontology>\n"
+             <Declaration><Class abbreviatedIRI=\"ex:B\"/></Declaration>\n\
+             <AnnotationAssertion><AnnotationProperty abbreviatedIRI=\"rdfs:comment\"/><IRI>{EX}C</IRI><AbbreviatedIRI>ex:D</AbbreviatedIRI></AnnotationAssertion>\n\
+             </Ontology>\n"
         );
         let uri = "file:///w/onto.owx";
-        let before = crate::owx::parse(&text, Some(uri));
-        assert_eq!(errors(&before), Vec::<String>::new());
-        let r = plan(&text, &before, Iri::intern(&ex("A")), &ex("Z")).unwrap_err();
-        assert_eq!(
-            (r.line, r.reason.as_str()),
-            (4, "OWL/XML is not planned yet")
-        );
-        // A rename starts on a value, read with the declared prefixes only.
         let a = analysis(uri, &text);
+        assert_eq!(errors(&a.parsed), Vec::<String>::new());
+        // A rename starts on a value or an IRI element's text, read with
+        // the declared prefixes only.
         let span_at = |needle: &str| {
             let u = at(&a, text.find(needle).unwrap() as u32 + 1)
                 .unwrap()
@@ -680,9 +680,12 @@ mod tests {
         assert_eq!(written, ex("A"));
         let read = |name: &str| super::super::renamed_iri(&u.iri, name, &u.prefixes);
         assert_eq!(read("ex:Q").as_deref(), Ok(ex("Q").as_str()));
-        // No standard prefix is bound: `rdfs:` reads as a scheme.
-        assert_eq!(read("rdfs:Q").as_deref(), Ok("rdfs:Q"));
+        // No standard prefix is bound: `owl:` reads as a scheme.
+        assert_eq!(read("owl:Q").as_deref(), Ok("owl:Q"));
         assert_eq!(span_at("ex:B").0, "ex:B");
+        assert_eq!(span_at(&format!("{EX}C")).0, ex("C"));
+        let (written, u) = span_at("ex:D");
+        assert_eq!((written.as_str(), &*u.iri), ("ex:D", ex("D").as_str()));
         let r = at(&a, text.find("\"ex\"").unwrap() as u32 + 1).unwrap_err();
         assert_eq!(r.line, 3);
         assert!(
@@ -690,7 +693,10 @@ mod tests {
                 .contains("can't rename a prefix in an OWL document"),
             "{r:?}"
         );
-        let none = plan(&text, &before, Iri::intern(&ex("Q")), &ex("Z")).unwrap();
+        // The OWL/XML writer plans the edits.
+        let edits = plan(&text, &a.parsed, Iri::intern(&ex("B")), &ex("Z")).unwrap();
+        assert_eq!(apply(&text, &edits), text.replace("ex:B", "ex:Z"));
+        let none = plan(&text, &a.parsed, Iri::intern(&ex("Q")), &ex("Z")).unwrap();
         assert!(none.is_empty());
     }
 }
