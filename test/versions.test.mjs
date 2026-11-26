@@ -40,6 +40,13 @@ test("Cargo.lock records the same server version", () => {
   assert.equal(lockVersion("Cargo.lock", "turtle-lsp"), version)
 })
 
+// The browser engine depends on the server by path, so its lock file records
+// the server's version too: left behind, `cargo build --locked` in web/engine
+// fails, and with it the browser build, the web .vsix and the site.
+test("web/engine/Cargo.lock records the same server version", () => {
+  assert.equal(lockVersion("web/engine/Cargo.lock", "turtle-lsp"), version)
+})
+
 test("the extension's package.json has the same version", () => {
   assert.equal(json("editors/vscode/package.json").version, version)
 })

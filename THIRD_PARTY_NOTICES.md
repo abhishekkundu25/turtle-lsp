@@ -53,7 +53,7 @@ which TurbOWL uses under the MIT licence; its copyright is in the row below.
 | [digest](https://github.com/RustCrypto/traits) | 0.11.3 | MIT OR Apache-2.0 | Copyright (c) 2017 Artyom Pavlov; Copyright (c) 2017-2025 RustCrypto Developers | binary, browser |
 | [either](https://github.com/rayon-rs/either) | 1.19.0 | MIT OR Apache-2.0 | the either authors | binary, browser |
 | [fluent-uri](https://github.com/yescallop/fluent-uri-rs) | 0.1.4 | MIT | Copyright (c) 2021 Scallop Ye | binary, browser |
-| [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | MIT OR Apache-2.0 | Copyright (c) 2013-2016 The rust-url developers | binary, browser |
+| [form_urlencoded](https://github.com/servo/rust-url) | 1.2.3 | MIT OR Apache-2.0 | Copyright (c) 2013-2016 The rust-url developers | binary, browser |
 | [getrandom](https://github.com/rust-random/getrandom) | 0.2.17 | MIT OR Apache-2.0 | Copyright (c) 2014 The Rust Project Developers; Copyright (c) 2018-2024 The rust-random Project Developers | binary |
 | [getrandom](https://github.com/rust-random/getrandom) | 0.3.4 | MIT OR Apache-2.0 | Copyright (c) 2014 The Rust Project Developers; Copyright (c) 2018-2025 The rust-random Project Developers | binary, browser |
 | [hex](https://github.com/KokaKiwi/rust-hex) | 0.4.3 | MIT OR Apache-2.0 | Copyright (c) 2013-2014 The Rust Project Developers.; Copyright (c) 2015-2020 The rust-hex Developers | binary, browser |
@@ -126,9 +126,9 @@ which TurbOWL uses under the MIT licence; its copyright is in the row below.
 | [turbowl](https://github.com/abhishekkundu25/turbowl) | 0.2.2 | MIT | Abhishek Kundu; datafrog: Frank McSherry, The Rust Project Developers and the Datafrog Developers | binary, browser |
 | [typenum](https://github.com/paholg/typenum) | 1.20.1 | MIT OR Apache-2.0 | Copyright (c) 2014 Paho Lurie-Gregg | binary, browser |
 | [untrusted](https://github.com/briansmith/untrusted) | 0.9.0 | ISC | Brian Smith | binary |
-| [ureq](https://github.com/algesten/ureq) | 3.4.2 | MIT OR Apache-2.0 | Copyright (c) 2019 Martin Algesten | binary |
-| [ureq-proto](https://github.com/algesten/ureq-proto) | 0.6.4 | MIT OR Apache-2.0 | Copyright 2022 Martin Algesten | binary |
-| [url](https://github.com/servo/rust-url) | 2.5.8 | MIT OR Apache-2.0 | Copyright (c) 2013-2025 The rust-url developers | binary, browser |
+| [ureq](https://github.com/algesten/ureq) | 3.5.2 | MIT OR Apache-2.0 | Copyright (c) 2019 Martin Algesten | binary |
+| [ureq-proto](https://github.com/algesten/ureq-proto) | 0.7.1 | MIT OR Apache-2.0 | Copyright 2022 Martin Algesten | binary |
+| [url](https://github.com/servo/rust-url) | 2.5.9 | MIT OR Apache-2.0 | Copyright (c) 2013-2025 The rust-url developers | binary, browser |
 | [utf8_iter](https://github.com/hsivonen/utf8_iter) | 1.0.4 | Apache-2.0 OR MIT | Copyright Mozilla Foundation | binary, browser |
 | [utf8-zero](https://github.com/algesten/utf8-zero) | 0.8.1 | MIT OR Apache-2.0 | Simon Sapin, Martin Algesten | binary |
 | [wasi](https://github.com/bytecodealliance/wasi) | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | The Cranelift Project Developers | binary |
@@ -217,7 +217,7 @@ is the `@ns` line in `data/vocab.tsv`.
 | `gn` | https://www.geonames.org/ontology/ontology_v3.3.rdf | 3.3 | CC-BY-3.0 |
 | `gr` | http://www.heppnetz.de/ontologies/goodrelations/v1.owl | 2011; compared 2026-11-12 | CC-BY-3.0 |
 | `grddl` | https://www.w3.org/2003/g/data-view | compared 2026-11-12 | W3C Document License |
-| `gs1` | https://ref.gs1.org/voc/data/gs1Voc.ttl | 1.18 | Apache-2.0 |
+| `gs1` | https://ref.gs1.org/voc/data/gs1Voc.ttl | 1.19 | Apache-2.0 |
 | `gtfs` | https://raw.githubusercontent.com/OpenTransport/linked-gtfs/master/gtfs.ttl | archived copy, vocab.gtfs.org is gone; compared 2026-11-12 | CC-BY-3.0 |
 | `http` | https://www.w3.org/2011/http | compared 2026-11-12 | W3C Document License |
 | `hydra` | https://www.w3.org/ns/hydra/core.jsonld | compared 2026-11-12 | CC-BY-4.0 (stated in the file: cc:license) |
